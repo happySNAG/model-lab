@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Please read the **Things that are deliberate, not oversights** section of
-        [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) first — several obvious-looking ideas
+        [CONTRIBUTING.md](https://github.com/happySNAG/model-lab/blob/main/CONTRIBUTING.md#things-that-are-deliberate-not-oversights) first — several obvious-looking ideas
         (an LLM judge, editable suites, remote Ollama hosts, telemetry) are ruled out on purpose.
   - type: textarea
     id: problem
