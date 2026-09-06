@@ -11,7 +11,7 @@
 # uninstall that KEEPS the evidence store) plus a portable executable. Unsigned unless configured.
 appId: org.modellab.desktop
 productName: Model Lab
-copyright: Model Lab contributors
+copyright: Copyright (c) 2026 Model Lab contributors. MIT licensed.
 directories:
   output: dist
   buildResources: build
@@ -48,7 +48,7 @@ mac:
   gatekeeperAssess: false
   notarize: false
   extendInfo:
-    NSHumanReadableCopyright: Model Lab contributors. Local benchmarking; nothing leaves this computer.
+    NSHumanReadableCopyright: Copyright (c) 2026 Model Lab contributors. MIT licensed.
     LSApplicationCategoryType: public.app-category.developer-tools
 dmg:
   title: Model Lab ${version}
@@ -87,7 +87,7 @@ nsis:
   deleteAppDataOnUninstall: false
   artifactName: Model-Lab-Setup-${version}-${arch}.${ext}
   uninstallDisplayName: Model Lab
-  license: LICENSE.txt
+  license: build/installer-license.txt
 portable:
   artifactName: Model-Lab-Portable-${version}-${arch}.${ext}
   requestExecutionLevel: user

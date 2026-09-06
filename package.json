@@ -1,12 +1,35 @@
 {
   "name": "model-lab",
   "productName": "Model Lab",
-  "version": "1.0.0",
-  "description": "Model Lab \u2014 a local benchmarking laboratory for language models running under Ollama, for macOS and Windows.",
+  "version": "0.1.0",
+  "description": "A desktop benchmarking environment for comparing local language models on repeatable, deterministic evaluations.",
+  "keywords": [
+    "llm",
+    "benchmark",
+    "evaluation",
+    "ollama",
+    "local-ai",
+    "electron",
+    "desktop",
+    "model-comparison",
+    "macos",
+    "windows"
+  ],
+  "homepage": "https://github.com/happySNAG/model-lab#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/happySNAG/model-lab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/happySNAG/model-lab/issues"
+  },
   "main": "./out/main/index.js",
   "author": "Model Lab contributors",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
