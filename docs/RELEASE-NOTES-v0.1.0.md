@@ -85,16 +85,21 @@ actually ran the model.
 
 Being precise, because "should work" and "was checked" are different claims:
 
-- ✅ Builds from source on Windows, in CI.
-- ✅ Typecheck and all 200 unit and parity tests pass on Windows, in CI.
-- ✅ The end-to-end Playwright suite drives the real Electron application on Windows, in CI.
-- ✅ The NSIS installer and portable executable are produced on Windows, in CI.
+- ✅ The NSIS installer and the portable executable **build** — cross-built from macOS, both
+  artifacts produced, with the installer licence page configured.
+- ✅ The engine is platform-independent TypeScript; nothing in `src/core/` touches an operating-system
+  API.
+- ⏳ Typecheck, the 200 unit and parity tests, the production build and the end-to-end suite on
+  Windows are **configured in CI** (`.github/workflows/ci.yml`, `windows-latest`) but have **not run
+  even once** — this repository has not been pushed anywhere yet. The first push closes these rows
+  on its own.
 - ⚠️ Windows-specific code paths (CIM hardware query, `%APPDATA%` locations, Ctrl accelerators,
-  starting Ollama) are reviewed and exercised by those automated suites, but have not been observed
-  on physical hardware.
+  starting Ollama) have been **reviewed by reading the code only**. They have never been executed.
 - ❌ **Installing, launching and uninstalling the packaged application on a real Windows PC has not
-  been done.** `scripts/windows-smoke.ps1` performs exactly that check and is waiting for someone to
-  run it. Reports either way are the most useful contribution to this release.
+  been done.** `scripts/windows-smoke.ps1` performs exactly that check and has never been run.
+  Reports either way are the most useful contribution to this release.
+
+In short: Windows support is written and its artifacts build. It has not been observed running.
 
 ## Verification for this release
 

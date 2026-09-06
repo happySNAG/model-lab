@@ -76,10 +76,11 @@ Please read these before proposing a change that touches them — each one is lo
 ## Platform notes
 
 macOS is the reference platform and is the one regularly exercised. Windows builds from the same
-source and passes the automated suites in CI, but the packaged Windows application has not yet been
-smoke-tested on real Windows hardware — if you run `scripts/windows-smoke.ps1` on a Windows PC, a
-report of what happened is genuinely valuable. Linux is not packaged; the code is portable but
-untested there.
+source and its installer and portable executable are produced and verified, but **nothing has yet run
+on a Windows machine** — the CI workflow is configured to test there and has not executed yet, and
+the packaged application has never been installed or launched on real Windows hardware. If you run
+`scripts/windows-smoke.ps1` on a Windows PC, a report of what happened is genuinely valuable. Linux
+is not packaged; the code is portable but untested there.
 
 ## Reporting bugs and asking questions
 
