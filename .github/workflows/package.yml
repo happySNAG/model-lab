@@ -1,0 +1,63 @@
+name: Package
+
+# Builds the distributable applications. Deliberately NOT run on every push: packaging is slow and
+# the artifacts are large. Run it by hand before a release, or let a version tag trigger it.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  macos:
+    name: macOS (arm64 + x64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Unsigned/ad-hoc-signed on purpose: no Developer ID is configured in CI. Setting CSC_LINK and
+      # the APPLE_* secrets on the repository is all that is needed to sign and notarize instead.
+      - name: Build DMG and ZIP
+        run: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Bundle smoke test
+        run: npm run smoke:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-lab-macos
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          retention-days: 14
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build NSIS installer and portable executable
+        run: npm run dist:win
+      # Proves the artifacts exist and are the expected shape. It does NOT install or launch them:
+      # a real Windows smoke test is scripts/windows-smoke.ps1, run by a human on a physical PC.
+      - name: Check artifacts
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter 'Model-Lab-Setup-*-x64.exe'
+          $portable = Get-ChildItem dist -Filter 'Model-Lab-Portable-*-x64.exe'
+          if (-not $setup) { throw 'NSIS installer was not produced' }
+          if (-not $portable) { throw 'portable executable was not produced' }
+          $setup, $portable | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-lab-windows
+          path: dist/*.exe
+          retention-days: 14
