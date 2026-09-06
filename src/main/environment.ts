@@ -78,7 +78,7 @@ export async function macGPU(): Promise<{ gpu?: string; failure?: string }> {
   }
 }
 
-/** The user-facing computer name macOS shows in Finder and Sharing ("Seth's MacBook Pro"), when set. */
+/** The user-facing computer name macOS shows in Finder and Sharing (e.g. "Ada's MacBook Pro"), when set. */
 async function macComputerName(): Promise<string | undefined> {
   try {
     const name = await run('scutil', ['--get', 'ComputerName'], 3_000);
@@ -98,7 +98,7 @@ export async function captureEnvironment(inferenceRuntimeVersion: Measurement<st
   let hardwareModel: Measurement<string>;
   let osVersion: Measurement<string> = measured(`${os.type()} ${os.release()}`);
   // The machine identifier is the hostname everywhere; macOS additionally has a user-facing computer
-  // name, which is what people recognise ("Seth's MacBook Pro" rather than "Seths-MacBook-Pro.local").
+  // name, which is what people recognise (e.g. "Ada's MacBook Pro" rather than "Adas-MacBook-Pro.local").
   let friendlyName: string | undefined;
 
   if (platform === 'win32') {

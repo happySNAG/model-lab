@@ -284,6 +284,7 @@ function AttemptModal({ detail, onClose }: { detail: AttemptDetail; onClose: () 
     <Modal title={`${a.candidate.exactModelIdentity} · ${caseLabel(a.caseID.raw)}`} onClose={onClose} actions={<button className="btn" onClick={onClose}>Close</button>}>
       <p className="muted small">{detail.caseCapability}</p>
       <h3>Prompt</h3>
+      <p className="faint small">Shown exactly as it was sent to the model. Suite fixtures are sealed — their wording is never edited, so every result stays comparable with every earlier one.</p>
       <div className="stack" style={{ gap: 6 }}>
         {a.inputPackage.messages.map((m, i) => <div key={i} className="answer"><span className="faint small">{m.role}</span><br />{m.content}</div>)}
         {a.inputPackage.syntheticContext && <div className="answer"><span className="faint small">context supplied</span><br />{a.inputPackage.syntheticContext}</div>}

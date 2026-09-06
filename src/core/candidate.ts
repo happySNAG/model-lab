@@ -143,6 +143,14 @@ export const deterministicFake: CandidateDescriptor = makeCandidate({
   availability: { state: 'available' },
 });
 
+/**
+ * A second registry entry that exists ONLY so this registry stays byte-identical to the sealed
+ * reference corpus (see docs/PARITY.md). It describes a private network relay from the project the
+ * engine was first written for; it is permanently `unavailable`, has no adapter and no transport in
+ * this codebase, and Model Lab never lists or runs it — the application offers the Ollama models it
+ * finds plus the built-in reference model, and nothing else. Its wording is pinned test data and is
+ * deliberately left exactly as the corpus recorded it.
+ */
 export const skippyRelayGemma: CandidateDescriptor = makeCandidate({
   id: deterministicCandidateID('skippy-relay', 'gemma4-e4b', 'unreported', 'unreported'),
   displayName: 'Skippy Relay (gemma4:e4b)',
@@ -163,4 +171,5 @@ export const skippyRelayGemma: CandidateDescriptor = makeCandidate({
   availability: { state: 'unavailable', reason: 'Campaign 1 constructs no live transport; wiring one is a later explicit act' },
 });
 
+/** The sealed registry, in conception order. Used by the parity suite; not a menu of runnable models. */
 export const registryAll: CandidateDescriptor[] = [deterministicFake, skippyRelayGemma];

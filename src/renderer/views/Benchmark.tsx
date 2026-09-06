@@ -157,7 +157,7 @@ export function BenchmarkView({ shell }: { shell: Shell }) {
           actions={<><button className="btn" onClick={() => setConfirming(false)} disabled={starting}>Cancel</button><button className="btn primary" onClick={start} disabled={starting} data-testid="confirm-start">{starting ? 'Starting…' : 'Start'}</button></>}>
           <dl className="kv">
             <dt>Models</dt><dd>{preflight.models.map((m) => m.name).join(', ')}</dd>
-            <dt>Suites</dt><dd>{preflight.suites.map((s) => s.title.replace(/^Skippy /, '').replace(/^Model Lab /, '')).join(', ')}</dd>
+            <dt>Suites</dt><dd>{preflight.suites.map((s) => s.title).join(', ')}</dd>
             <dt>Attempts</dt><dd>{preflight.totalAttempts}</dd>
           </dl>
           <ul className="list-plain small muted">{preflight.statements.map((s) => <li key={s}>{s}</li>)}</ul>

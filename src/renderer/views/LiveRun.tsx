@@ -48,7 +48,7 @@ export function LiveRunView({ shell }: { shell: Shell }) {
           </div>
           <Progress value={progress.recordedAttempts} max={progress.totalAttempts} />
           <div className="row small muted">
-            <span>Suite {Math.min(progress.currentRunIndex + 1, progress.totalRuns)} of {progress.totalRuns}{progress.currentSuiteTitle ? ` · ${progress.currentSuiteTitle.replace(/^Skippy /, '').replace(/^Model Lab /, '')}` : ''}</span>
+            <span>Suite {Math.min(progress.currentRunIndex + 1, progress.totalRuns)} of {progress.totalRuns}{progress.currentSuiteTitle ? ` · ${progress.currentSuiteTitle}` : ''}</span>
           </div>
           {running && progress.currentModelName && (
             <div className="note accent"><strong>{progress.currentModelName}</strong> is answering <em>{caseLabel(progress.currentCaseID ?? '')}</em>{currentElapsed > 0 ? ` · ${duration(currentElapsed)}` : ''}</div>

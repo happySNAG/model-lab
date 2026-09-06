@@ -23,7 +23,8 @@ import { runOverviews } from '../core/history';
 import { compareEvaluations, ComparabilityReason } from '../core/comparability';
 import { isoSeconds, compareCodePoints } from '../core/digest';
 import { AttemptDetail, BenchmarkConfiguration, BenchmarkPreflight, CaseResultRow, HistoryEntry, MachineSummary, ModelResult, ModelRow,
-         SessionComparison, SessionProgress, SessionRecord, SessionResults, SuiteRow, AttemptProgress } from '../shared/ipc';
+         SessionComparison, SessionProgress, SessionRecord, SessionResults, SuiteRow, AttemptProgress,
+         displaySuiteTitle, displayModelName } from '../shared/ipc';
 import { SessionIndex } from './sessions';
 import { captureEnvironment, summarize } from './environment';
 import { detectOllama, listInstalledModels, statusTransport } from './ollama-runtime';
@@ -114,7 +115,7 @@ export class LabService extends EventEmitter {
     }
     rows.sort((a, b) => compareCodePoints(a.name, b.name));
     rows.push({
-      key: REFERENCE_MODEL_KEY, kind: 'reference', name: deterministicFake.displayName,
+      key: REFERENCE_MODEL_KEY, kind: 'reference', name: displayModelName(deterministicFake.displayName),
       readiness: 'referenceOnly', readinessDetail: 'Built into Model Lab. Produces the same fixed answers every time, so you can try the whole workflow without Ollama. Its answers are not a real model\'s.',
       runsInHistory: runsByModel.get(deterministicFake.exactModelIdentity) ?? 0,
     });
@@ -133,7 +134,7 @@ export class LabService extends EventEmitter {
     return registeredSuites.map((suite) => ({
       id: suite.id.raw,
       version: suite.version,
-      title: suite.title.replace(/^Skippy /, '').replace(/^Model Lab /, ''),
+      title: displaySuiteTitle(suite.title),
       summary: SUITE_SUMMARIES[suite.id.raw] ?? '',
       dimension: suite.cases[0]?.category ?? '',
       caseCount: suite.cases.length,
@@ -174,7 +175,7 @@ export class LabService extends EventEmitter {
     }
     const attemptsPerModel = suites.reduce((n, s) => n + s.cases.reduce((m, c) => m + c.repetitionPolicy.plannedRepetitions, 0), 0);
     const budgetPerModelMs = suites.reduce((n, s) => n + s.cases.reduce((m, c) => m + c.repetitionPolicy.plannedRepetitions * c.executionBudgetMilliseconds, 0), 0);
-    const models = configuration.modelKeys.map((key) => ({ key, name: key === REFERENCE_MODEL_KEY ? deterministicFake.displayName : key, kind: key === REFERENCE_MODEL_KEY ? 'reference' as const : 'ollama' as const }));
+    const models = configuration.modelKeys.map((key) => ({ key, name: key === REFERENCE_MODEL_KEY ? displayModelName(deterministicFake.displayName) : key, kind: key === REFERENCE_MODEL_KEY ? 'reference' as const : 'ollama' as const }));
     return {
       ok: problems.length === 0,
       problems,
@@ -182,7 +183,7 @@ export class LabService extends EventEmitter {
       attemptsPerModel,
       estimatedMaxMinutes: Math.ceil((budgetPerModelMs * ollamaKeys.length) / 60_000),
       models,
-      suites: suites.map((s) => ({ id: s.id.raw, title: s.title, caseCount: s.cases.length })),
+      suites: suites.map((s) => ({ id: s.id.raw, title: displaySuiteTitle(s.title), caseCount: s.cases.length })),
       endpoint: settings.ollamaEndpoint,
       statements: [
         `Model Lab will send ${attemptsPerModel} synthetic prompts to each selected model${ollamaKeys.length > 0 ? ` through Ollama at ${settings.ollamaEndpoint}` : ''}. Nothing leaves ${HERE}.`,
@@ -254,7 +255,7 @@ export class LabService extends EventEmitter {
         if (token.isCancelled) { finalState = 'cancelled'; break; }
         const suite = suites[index];
         progress.currentRunIndex = index;
-        progress.currentSuiteTitle = suite.title;
+        progress.currentSuiteTitle = displaySuiteTitle(suite.title);
         const runID = runIDFor(session.sessionID, suite, index);
         session.runIDs.push(runID);
         this.sessions.upsert(session);
@@ -454,7 +455,7 @@ export class LabService extends EventEmitter {
       return { candidateID: m.candidate.id.raw, modelName: m.modelName, record, recorded, index };
     });
 
-    const suiteTitles = session.suiteIDs.map((id) => suiteByID(id)?.title.replace(/^Skippy /, '').replace(/^Model Lab /, '') ?? id);
+    const suiteTitles = session.suiteIDs.map((id) => displaySuiteTitle(suiteByID(id)?.title ?? id));
     return {
       session, models, dimensions, cases, recommendation: recommendation.map(({ index: _i, ...rest }) => rest), recommendationPolicy: standardRecommendationPolicy,
       workloadSummary: `${suiteTitles.length} suite${suiteTitles.length === 1 ? '' : 's'} (${suiteTitles.join(', ')}) · ${attempts.length} attempts across ${models.length} model${models.length === 1 ? '' : 's'}`,
@@ -501,7 +502,7 @@ export class LabService extends EventEmitter {
       entries.push({
         session, runs, createdAt: session.createdAt, label: session.label,
         modelNames: session.candidates.map((c) => c.exactModelIdentity),
-        suiteTitles: session.suiteIDs.map((id) => suiteByID(id)?.title.replace(/^Skippy /, '').replace(/^Model Lab /, '') ?? id),
+        suiteTitles: session.suiteIDs.map((id) => displaySuiteTitle(suiteByID(id)?.title ?? id)),
         state: session.state,
         attemptCount: runs.reduce((n, r) => n + r.recordedAttemptCount, 0),
         governanceFailureCount: runs.reduce((n, r) => n + r.governanceFailureCount, 0),
@@ -570,7 +571,7 @@ function runIDFor(sessionID: string, suite: BenchmarkSuite, index: number): stri
 
 function defaultLabel(candidates: CandidateDescriptor[], suites: BenchmarkSuite[]): string {
   const models = candidates.map((c) => c.exactModelIdentity).join(', ');
-  const scope = suites.length === registeredSuites.length ? 'Full lab' : suites.length === 1 ? suites[0].title.replace(/^Skippy /, '').replace(/^Model Lab /, '') : `${suites.length} suites`;
+  const scope = suites.length === registeredSuites.length ? 'Full lab' : suites.length === 1 ? displaySuiteTitle(suites[0].title) : `${suites.length} suites`;
   return `${scope} · ${models}`;
 }
 

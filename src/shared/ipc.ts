@@ -326,3 +326,29 @@ export const IPC = {
   eventOllama: 'lab:event:ollama',
   eventNavigate: 'lab:event:navigate',
 } as const;
+
+/**
+ * The title a suite is shown under in the interface.
+ *
+ * The benchmark suites are sealed, versioned fixtures: their stored titles are part of the record
+ * that every result is judged against and can never be edited without invalidating the evidence
+ * already on disk. A few of them still carry the prefix of the project this engine was first built
+ * for. This one function is the single place that turns a stored title into a displayed one, so the
+ * sealed record stays byte-exact while the interface reads as Model Lab's own.
+ */
+export function displaySuiteTitle(storedTitle: string): string {
+  return storedTitle.replace(/^(Skippy|Model Lab) /, '');
+}
+
+/**
+ * The name a candidate model is shown under in the interface.
+ *
+ * Like suite titles, candidate descriptors are sealed records: the built-in reference model's stored
+ * name is part of every result already written to disk and cannot be edited. Its stored name uses the
+ * word the engine's tests use for a scripted adapter; this presents it in the product's own language.
+ * Only the display name is affected — results, history and comparisons key off the model identity
+ * (`exactModelIdentity`), never off this string.
+ */
+export function displayModelName(storedName: string): string {
+  return storedName === 'Deterministic Reference Fake' ? 'Deterministic Reference Model' : storedName;
+}
