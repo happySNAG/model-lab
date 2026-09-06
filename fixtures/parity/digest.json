@@ -1,0 +1,70 @@
+{
+  "digestVectors" : [
+    {
+      "fnv1a64Hex" : "cbf29ce484222325",
+      "input" : ""
+    },
+    {
+      "fnv1a64Hex" : "af63dc4c8601ec8c",
+      "input" : "a"
+    },
+    {
+      "fnv1a64Hex" : "e71fa2190541574b",
+      "input" : "abc"
+    },
+    {
+      "fnv1a64Hex" : "779a65e7023cd2e7",
+      "input" : "hello world"
+    },
+    {
+      "fnv1a64Hex" : "e620c3190468cf61",
+      "input" : "a\/b"
+    },
+    {
+      "fnv1a64Hex" : "7c6a5275c2698691",
+      "input" : "\"quoted\""
+    },
+    {
+      "fnv1a64Hex" : "768bf015399c6829",
+      "input" : "é ü 日本 😀"
+    },
+    {
+      "fnv1a64Hex" : "1dc2a37b947a5a51",
+      "input" : "mlb1:"
+    },
+    {
+      "fnv1a64Hex" : "e1add1d93134d2c5",
+      "input" : "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "fnv1a64Hex" : "9c3e82dd6fcae8b1",
+      "input" : "{\"a\":1}"
+    },
+    {
+      "fnv1a64Hex" : "e21e4f6a78d234c0",
+      "input" : "line\nbreak\ttab"
+    }
+  ],
+  "encodingVectors" : [
+    {
+      "canonicalJSON" : "{\"a\":-5,\"d\":\"2025-10-09T11:00:00Z\",\"dictionary\":{\"A\":0,\"_\":3,\"a\":1,\"b\":2,\"z z\":4},\"empty\":[],\"flag\":true,\"measurement\":{\"measured\":42},\"measurementMissing\":{\"unavailableReason\":\"not reported\"},\"nested\":[[],[\"x\"]],\"z\":\"a\\\/b \\\"q\\\" \\\\ tab\\t nl\\n cr\\r bs\\b ff\\f ctl\\u0001 del é ü 日本 😀   <>& 'single'\"}",
+      "name" : "probe",
+      "sealedDigest" : "test:befd3eec2a6760d7"
+    },
+    {
+      "canonicalJSON" : "{\"capabilityUnderTest\":\"follows a single unambiguous instruction exactly\",\"category\":\"instruction-following\",\"executionBudgetMilliseconds\":30000,\"expectedReference\":{\"kind\":\"containsText\",\"value\":\"pond\"},\"generationSettings\":{\"maxOutputTokens\":16,\"stopSequences\":[],\"temperatureMilli\":0},\"id\":{\"raw\":\"case:foundation:echo-instruction\"},\"inputs\":{\"messages\":[{\"content\":\"You are a careful assistant being evaluated inside the Skippy Model Lab on synthetic fixtures.\",\"role\":\"system\"},{\"content\":\"Reply with exactly one word: pond.\",\"role\":\"user\"}],\"origin\":\"synthetic:model-lab-c1-foundation\"},\"privacyClassification\":\"synthetic\",\"provenance\":\"model-lab-campaign-1\",\"repetitionPolicy\":{\"plannedRepetitions\":2},\"requiredCapabilities\":[\"textGeneration\"],\"resourceBudgetID\":\"budget.resource.model-lab-c1-unmetered\",\"responseFormat\":\"plainText\",\"scoringPolicyID\":\"policy.scoring.model-lab-foundation\",\"scoringPolicyVersion\":\"1\",\"setupMetadata\":[{\"key\":\"fixtureKind\",\"value\":\"instruction\"}],\"suiteID\":{\"raw\":\"suite.model-lab.foundation\"},\"suiteVersion\":\"1\",\"tags\":[\"foundation\",\"instruction\"]}",
+      "name" : "foundation.echoInstruction",
+      "sealedDigest" : "mlb1:356de73b5488a62a"
+    },
+    {
+      "canonicalJSON" : "{\"artifactDigest\":{\"unavailableReason\":\"no artifact exists — the fake runs in-process\"},\"availability\":{\"state\":\"available\"},\"declaredContextLimitTokens\":{\"measured\":8192},\"displayName\":\"Deterministic Reference Fake\",\"exactModelIdentity\":\"deterministic-reference:1\",\"executionClass\":\"inProcess\",\"id\":{\"raw\":\"candidate:model-lab-fake:deterministic-reference:1:none\"},\"inputModalities\":[\"text\"],\"outputModalities\":[\"text\"],\"privacyClass\":\"onDeviceOnly\",\"provider\":\"model-lab-fake\",\"quantization\":\"none\",\"reproducibility\":\"deterministic\",\"runtimeConfiguration\":{\"settings\":[{\"key\":\"mode\",\"value\":\"deterministic\"}]},\"streaming\":\"notSupported\",\"structuredOutput\":\"declared\",\"toolCalls\":\"notSupported\"}",
+      "name" : "registry.deterministicFake",
+      "sealedDigest" : "mlc1:6d6847f11b3e16da"
+    },
+    {
+      "canonicalJSON" : "{\"artifactDigest\":{\"unavailableReason\":\"the bridge does not report the model artifact; capture at the Ollama boundary is Campaign 3 work\"},\"availability\":{\"reason\":\"Campaign 1 constructs no live transport; wiring one is a later explicit act\",\"state\":\"unavailable\"},\"declaredContextLimitTokens\":{\"unavailableReason\":\"the bridge does not report a context limit; capture at the Ollama boundary is Campaign 3 work\"},\"displayName\":\"Skippy Relay (gemma4:e4b)\",\"exactModelIdentity\":\"gemma4:e4b\",\"executionClass\":\"localNetworkRelay\",\"id\":{\"raw\":\"candidate:skippy-relay:gemma4-e4b:unreported:unreported\"},\"inputModalities\":[\"text\"],\"outputModalities\":[\"text\"],\"privacyClass\":\"ownerNetworkOnly\",\"provider\":\"skippy-relay\",\"quantization\":\"unreported\",\"reproducibility\":\"unknown\",\"runtimeConfiguration\":{\"settings\":[{\"key\":\"transport\",\"value\":\"bridge-relay-chat\"}]},\"streaming\":\"notSupported\",\"structuredOutput\":\"unknown\",\"toolCalls\":\"unknown\"}",
+      "name" : "registry.skippyRelayGemma",
+      "sealedDigest" : "mlc1:e01629a21b5fc4ad"
+    }
+  ]
+}

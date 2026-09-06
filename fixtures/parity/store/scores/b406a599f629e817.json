@@ -1,0 +1,25 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-foundation:1",
+    "categoryMetricsMilli" : {
+      "conversation" : {
+        "normalizedMatch" : 0
+      }
+    },
+    "evaluatedAt" : "2025-10-09T11:00:13Z",
+    "evaluatorID" : "evaluator.normalized-match",
+    "evaluatorVersion" : "1",
+    "governanceOutcomes" : [
+
+    ],
+    "notes" : [
+      "status:fail"
+    ],
+    "scoreID" : "score:attempt:parity-disk-foundation:1:evaluator.normalized-match:1",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1"
+  },
+  "payloadDigest" : "mla1:4f51c27c10790afb",
+  "recordType" : "derived-score",
+  "schemaVersion" : 1
+}

@@ -1,0 +1,26 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-foundation:0",
+    "confidence" : "low",
+    "items" : [
+      {
+        "label" : "feels supportive",
+        "note" : "parity fixture",
+        "outcome" : "mixed"
+      }
+    ],
+    "notes" : [
+      "parity fixture"
+    ],
+    "overall" : "cannotDetermine",
+    "reviewID" : "review:attempt:parity-disk-foundation:0:reviewer-7:rubric.conversation.warmth:1:0",
+    "reviewedAt" : "2025-10-09T11:00:33Z",
+    "reviewerPseudonym" : "reviewer-7",
+    "rubricID" : "rubric.conversation.warmth",
+    "rubricVersion" : "1",
+    "sequence" : 0
+  },
+  "payloadDigest" : "mla1:3934e56080a6f2f3",
+  "recordType" : "human-review",
+  "schemaVersion" : 1
+}

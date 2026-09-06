@@ -1,0 +1,373 @@
+{
+  "chatBodies" : [
+    {
+      "bodyJSON" : "{\"messages\":[{\"content\":\"s\",\"role\":\"system\"},{\"content\":\"u\\\/v \\\"q\\\"\",\"role\":\"user\"}],\"model\":\"m:1b\",\"options\":{\"num_predict\":16,\"temperature\":0},\"stream\":false,\"think\":false}",
+      "request" : {
+        "maxOutputTokens" : 16,
+        "messages" : [
+          {
+            "content" : "s",
+            "role" : "system"
+          },
+          {
+            "content" : "u\/v \"q\"",
+            "role" : "user"
+          }
+        ],
+        "model" : "m:1b",
+        "requireJSONFormat" : false,
+        "stopSequences" : [
+
+        ],
+        "temperatureMilli" : 0,
+        "thinkingMode" : "disabled",
+        "timeoutMilliseconds" : 30000
+      }
+    },
+    {
+      "bodyJSON" : "{\"format\":\"json\",\"messages\":[{\"content\":\"json please\",\"role\":\"user\"}],\"model\":\"m:1b\",\"options\":{\"num_predict\":64,\"seed\":7,\"stop\":[\"END\",\"STOP\"],\"temperature\":0.69999999999999996,\"top_p\":0.90000000000000002},\"stream\":false,\"think\":true}",
+      "request" : {
+        "maxOutputTokens" : 64,
+        "messages" : [
+          {
+            "content" : "json please",
+            "role" : "user"
+          }
+        ],
+        "model" : "m:1b",
+        "requireJSONFormat" : true,
+        "seed" : 7,
+        "stopSequences" : [
+          "END",
+          "STOP"
+        ],
+        "temperatureMilli" : 700,
+        "thinkingMode" : "enabled",
+        "timeoutMilliseconds" : 1000,
+        "topPMilli" : 900
+      }
+    },
+    {
+      "bodyJSON" : "{\"messages\":[],\"model\":\"m:1b\",\"stream\":false}",
+      "request" : {
+        "messages" : [
+
+        ],
+        "model" : "m:1b",
+        "requireJSONFormat" : false,
+        "stopSequences" : [
+
+        ],
+        "thinkingMode" : "runtimeDefault",
+        "timeoutMilliseconds" : 1
+      }
+    }
+  ],
+  "chatReports" : [
+    {
+      "rawResponse" : "{\"model\":\"m:1b\",\"message\":{\"role\":\"assistant\",\"content\":\"pond\"},\"done_reason\":\"stop\",\"done\":true,\"total_duration\":1500000000,\"load_duration\":20000000,\"prompt_eval_count\":12,\"prompt_eval_duration\":300000000,\"eval_count\":4,\"eval_duration\":400000000}",
+      "report" : {
+        "content" : "pond",
+        "doneReason" : "stop",
+        "evalCount" : 4,
+        "evalDurationNanoseconds" : 400000000,
+        "loadDurationNanoseconds" : 20000000,
+        "model" : "m:1b",
+        "promptEvalCount" : 12,
+        "promptEvalDurationNanoseconds" : 300000000,
+        "totalDurationNanoseconds" : 1500000000
+      }
+    },
+    {
+      "rawResponse" : "{\"model\":\"m:1b\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"Let me think about this carefully...\"},\"done_reason\":\"length\",\"eval_count\":64,\"eval_duration\":800000000}",
+      "report" : {
+        "content" : "",
+        "doneReason" : "length",
+        "evalCount" : 64,
+        "evalDurationNanoseconds" : 800000000,
+        "model" : "m:1b",
+        "thinkingTrace" : "Let me think about this carefully..."
+      }
+    },
+    {
+      "rawResponse" : "{\"model\":\"m:1b\",\"message\":{\"role\":\"assistant\",\"content\":\"answer\",\"thinking\":\"\"}}",
+      "report" : {
+        "content" : "answer",
+        "model" : "m:1b"
+      }
+    },
+    {
+      "failure" : "malformedResponse(detail: \"chat response names no model\")",
+      "rawResponse" : "{\"message\":{\"content\":\"no model\"}}"
+    },
+    {
+      "failure" : "malformedResponse(detail: \"chat response did not decode: DecodingError.dataCorrupted: Data was corrupted. Debug description: The given data was not valid JSON.. Underlying error: Error Domain=NSCocoaErrorDomain Code=3840 \\\"Unexpected character \\'o\\' in expected null value around line 1, column 2.\\\" UserInfo={NSDebugDescription=Unexpected character \\'o\\' in expected null value around line 1, column 2., NSJSONSerializationErrorIndex=1}\")",
+      "rawResponse" : "not json at all"
+    },
+    {
+      "rawResponse" : "{\"model\":\"m:1b\"}",
+      "report" : {
+        "content" : "",
+        "model" : "m:1b"
+      }
+    }
+  ],
+  "probes" : [
+    {
+      "candidate" : {
+        "artifactDigest" : {
+          "measured" : "sha256:a2af6cc3eb7fa8be8504aaf2f77b4b6d7e8e0dd3d2f7a5c2b1d3e4f5a6b7c8d9"
+        },
+        "availability" : {
+          "state" : "available"
+        },
+        "declaredContextLimitTokens" : {
+          "measured" : 131072
+        },
+        "displayName" : "Ollama gemma3:4b",
+        "exactModelIdentity" : "gemma3:4b",
+        "executionClass" : "localHostProcess",
+        "id" : {
+          "raw" : "candidate:ollama:gemma3-4b:digest-a2af6cc3eb7f:q4_k_m"
+        },
+        "inputModalities" : [
+          "text"
+        ],
+        "outputModalities" : [
+          "text"
+        ],
+        "privacyClass" : "onDeviceOnly",
+        "provider" : "ollama",
+        "quantization" : "Q4_K_M",
+        "reproducibility" : "bestEffort",
+        "runtimeConfiguration" : {
+          "settings" : [
+            {
+              "key" : "ollamaThinkingMode",
+              "value" : "disabled"
+            },
+            {
+              "key" : "reportedFamily",
+              "value" : "gemma3"
+            },
+            {
+              "key" : "reportedParameterSize",
+              "value" : "4.3B"
+            },
+            {
+              "key" : "runtime",
+              "value" : "ollama"
+            },
+            {
+              "key" : "transport",
+              "value" : "loopback-http"
+            }
+          ]
+        },
+        "streaming" : "declared",
+        "structuredOutput" : "declared",
+        "toolCalls" : "unknown"
+      },
+      "descriptorDigest" : "mlc1:42fc266e81f4f46e",
+      "report" : {
+        "contextLengthTokens" : 131072,
+        "digest" : "sha256:a2af6cc3eb7fa8be8504aaf2f77b4b6d7e8e0dd3d2f7a5c2b1d3e4f5a6b7c8d9",
+        "family" : "gemma3",
+        "name" : "gemma3:4b",
+        "parameterSize" : "4.3B",
+        "quantizationLevel" : "Q4_K_M"
+      },
+      "thinkingMode" : "disabled"
+    },
+    {
+      "candidate" : {
+        "artifactDigest" : {
+          "measured" : "abcdef0123456789abcdef"
+        },
+        "availability" : {
+          "state" : "available"
+        },
+        "declaredContextLimitTokens" : {
+          "unavailableReason" : "the runtime's model metadata declares no context length"
+        },
+        "displayName" : "Ollama qwen3:4b",
+        "exactModelIdentity" : "qwen3:4b",
+        "executionClass" : "localHostProcess",
+        "id" : {
+          "raw" : "candidate:ollama:qwen3-4b:digest-abcdef012345:unreported"
+        },
+        "inputModalities" : [
+          "text"
+        ],
+        "outputModalities" : [
+          "text"
+        ],
+        "privacyClass" : "onDeviceOnly",
+        "provider" : "ollama",
+        "quantization" : "unreported",
+        "reproducibility" : "bestEffort",
+        "runtimeConfiguration" : {
+          "settings" : [
+            {
+              "key" : "ollamaThinkingMode",
+              "value" : "enabled"
+            },
+            {
+              "key" : "runtime",
+              "value" : "ollama"
+            },
+            {
+              "key" : "transport",
+              "value" : "loopback-http"
+            }
+          ]
+        },
+        "streaming" : "declared",
+        "structuredOutput" : "declared",
+        "toolCalls" : "unknown"
+      },
+      "descriptorDigest" : "mlc1:8cb1e58f3c85d005",
+      "report" : {
+        "digest" : "abcdef0123456789abcdef",
+        "name" : "qwen3:4b"
+      },
+      "thinkingMode" : "enabled"
+    },
+    {
+      "candidate" : {
+        "artifactDigest" : {
+          "unavailableReason" : "the runtime reported no content digest for Mixed Case:Tag"
+        },
+        "availability" : {
+          "state" : "available"
+        },
+        "declaredContextLimitTokens" : {
+          "measured" : 2048
+        },
+        "displayName" : "Ollama Mixed Case:Tag",
+        "exactModelIdentity" : "Mixed Case:Tag",
+        "executionClass" : "localHostProcess",
+        "id" : {
+          "raw" : "candidate:ollama:mixed-case-tag:unreported:unreported"
+        },
+        "inputModalities" : [
+          "text"
+        ],
+        "outputModalities" : [
+          "text"
+        ],
+        "privacyClass" : "onDeviceOnly",
+        "provider" : "ollama",
+        "quantization" : "unreported",
+        "reproducibility" : "bestEffort",
+        "runtimeConfiguration" : {
+          "settings" : [
+            {
+              "key" : "ollamaThinkingMode",
+              "value" : "runtimeDefault"
+            },
+            {
+              "key" : "runtime",
+              "value" : "ollama"
+            },
+            {
+              "key" : "transport",
+              "value" : "loopback-http"
+            }
+          ]
+        },
+        "streaming" : "declared",
+        "structuredOutput" : "declared",
+        "toolCalls" : "unknown"
+      },
+      "descriptorDigest" : "mlc1:d94964ac32a876e1",
+      "report" : {
+        "contextLengthTokens" : 2048,
+        "family" : "",
+        "name" : "Mixed Case:Tag",
+        "parameterSize" : "",
+        "quantizationLevel" : ""
+      },
+      "thinkingMode" : "runtimeDefault"
+    }
+  ],
+  "telemetry" : [
+    {
+      "evalDurationNanoseconds" : {
+        "measured" : 400000000
+      },
+      "evalTokens" : {
+        "measured" : 4
+      },
+      "tokensPerSecondMilli" : {
+        "measured" : 10000
+      }
+    },
+    {
+      "evalDurationNanoseconds" : {
+        "measured" : 1
+      },
+      "evalTokens" : {
+        "measured" : 1000
+      },
+      "tokensPerSecondMilli" : {
+        "measured" : 1000000000000000
+      }
+    },
+    {
+      "evalDurationNanoseconds" : {
+        "measured" : 5
+      },
+      "evalTokens" : {
+        "measured" : 0
+      },
+      "tokensPerSecondMilli" : {
+        "measured" : 0
+      }
+    },
+    {
+      "evalDurationNanoseconds" : {
+        "measured" : 0
+      },
+      "evalTokens" : {
+        "measured" : 7
+      },
+      "tokensPerSecondMilli" : {
+        "unavailableReason" : "the runtime reported no positive evaluation duration"
+      }
+    },
+    {
+      "evalDurationNanoseconds" : {
+        "measured" : 5
+      },
+      "evalTokens" : {
+        "unavailableReason" : "none"
+      },
+      "tokensPerSecondMilli" : {
+        "unavailableReason" : "the runtime reported no completion token count"
+      }
+    },
+    {
+      "evalDurationNanoseconds" : {
+        "unavailableReason" : "none"
+      },
+      "evalTokens" : {
+        "measured" : 5
+      },
+      "tokensPerSecondMilli" : {
+        "unavailableReason" : "the runtime reported no positive evaluation duration"
+      }
+    },
+    {
+      "evalDurationNanoseconds" : {
+        "measured" : 9876543210
+      },
+      "evalTokens" : {
+        "measured" : 123
+      },
+      "tokensPerSecondMilli" : {
+        "measured" : 12453
+      }
+    }
+  ]
+}

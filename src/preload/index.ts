@@ -1,0 +1,46 @@
+// Model Lab · preload bridge. Exposes a typed, narrow API to the renderer; nothing else crosses.
+
+import { contextBridge, ipcRenderer } from 'electron';
+import { IPC, ModelLabAPI, SessionProgress, PullProgress, OllamaStatus, ScreenID } from '../shared/ipc';
+
+function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
+  const handler = (_event: unknown, payload: T) => listener(payload);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+}
+
+const api: ModelLabAPI = {
+  getBuildInfo: () => ipcRenderer.invoke(IPC.buildInfo),
+  getSettings: () => ipcRenderer.invoke(IPC.getSettings),
+  saveSettings: (settings) => ipcRenderer.invoke(IPC.saveSettings, settings),
+  getMachine: (refresh) => ipcRenderer.invoke(IPC.getMachine, refresh),
+  getOllamaStatus: () => ipcRenderer.invoke(IPC.ollamaStatus),
+  startOllama: () => ipcRenderer.invoke(IPC.startOllama),
+  openOllamaDownload: () => ipcRenderer.invoke(IPC.openOllamaDownload),
+  listModels: () => ipcRenderer.invoke(IPC.listModels),
+  pullModel: (model) => ipcRenderer.invoke(IPC.pullModel, model),
+  cancelPull: () => ipcRenderer.invoke(IPC.cancelPull),
+  listSuites: () => ipcRenderer.invoke(IPC.listSuites),
+  preflight: (configuration) => ipcRenderer.invoke(IPC.preflight, configuration),
+  startBenchmark: (configuration) => ipcRenderer.invoke(IPC.startBenchmark, configuration),
+  cancelBenchmark: () => ipcRenderer.invoke(IPC.cancelBenchmark),
+  getActiveProgress: () => ipcRenderer.invoke(IPC.activeProgress),
+  listSessions: () => ipcRenderer.invoke(IPC.listSessions),
+  getSessionResults: (sessionID) => ipcRenderer.invoke(IPC.sessionResults, sessionID),
+  getAttemptDetail: (attemptID) => ipcRenderer.invoke(IPC.attemptDetail, attemptID),
+  recordRecommendation: (sessionID, candidateID) => ipcRenderer.invoke(IPC.recordRecommendation, sessionID, candidateID),
+  getHistory: () => ipcRenderer.invoke(IPC.history),
+  compareSessions: (a, b) => ipcRenderer.invoke(IPC.compareSessions, a, b),
+  getDiagnostics: () => ipcRenderer.invoke(IPC.diagnostics),
+  exportEvidence: () => ipcRenderer.invoke(IPC.exportEvidence),
+  openPath: (target) => ipcRenderer.invoke(IPC.openPath, target),
+  revealPath: (target) => ipcRenderer.invoke(IPC.revealPath, target),
+  copyDiagnostics: () => ipcRenderer.invoke(IPC.copyDiagnostics),
+  onProgress: (listener) => subscribe<SessionProgress>(IPC.eventProgress, listener),
+  onPullProgress: (listener) => subscribe<PullProgress>(IPC.eventPull, listener),
+  onOllamaStatus: (listener) => subscribe<OllamaStatus>(IPC.eventOllama, listener),
+  onNavigate: (listener) => subscribe<ScreenID>(IPC.eventNavigate, listener),
+  platform: process.platform,
+};
+
+contextBridge.exposeInMainWorld('modelLab', api);

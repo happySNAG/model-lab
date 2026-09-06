@@ -1,0 +1,166 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-foundation:2",
+    "candidate" : {
+      "artifactDigest" : {
+        "unavailableReason" : "no artifact exists — the fake runs in-process"
+      },
+      "availability" : {
+        "state" : "available"
+      },
+      "declaredContextLimitTokens" : {
+        "measured" : 8192
+      },
+      "displayName" : "Deterministic Reference Fake",
+      "exactModelIdentity" : "deterministic-reference:1",
+      "executionClass" : "inProcess",
+      "id" : {
+        "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+      },
+      "inputModalities" : [
+        "text"
+      ],
+      "outputModalities" : [
+        "text"
+      ],
+      "privacyClass" : "onDeviceOnly",
+      "provider" : "model-lab-fake",
+      "quantization" : "none",
+      "reproducibility" : "deterministic",
+      "runtimeConfiguration" : {
+        "settings" : [
+          {
+            "key" : "mode",
+            "value" : "deterministic"
+          }
+        ]
+      },
+      "streaming" : "notSupported",
+      "structuredOutput" : "declared",
+      "toolCalls" : "notSupported"
+    },
+    "candidateDigest" : "mlc1:6d6847f11b3e16da",
+    "caseDigest" : "mlb1:356de73b5488a62a",
+    "caseID" : {
+      "raw" : "case:foundation:echo-instruction"
+    },
+    "comparabilityKey" : "mlk1:f5933a2f4a59561",
+    "environment" : {
+      "cpuCoreCount" : {
+        "measured" : 8
+      },
+      "hardware" : {
+        "appleSilicon" : {
+          "measured" : true
+        },
+        "architecture" : {
+          "measured" : "synthetic-arch"
+        },
+        "buildConfiguration" : {
+          "measured" : "debug"
+        },
+        "chipBrand" : {
+          "measured" : "Synthetic Chip 1"
+        },
+        "efficiencyCoreCount" : {
+          "measured" : 4
+        },
+        "gpu" : {
+          "unavailableReason" : "synthetic profile records no GPU, exactly like a real capture"
+        },
+        "modelIdentifier" : {
+          "measured" : "synthetic-model"
+        },
+        "performanceCoreCount" : {
+          "measured" : 4
+        },
+        "thermalStateAtCapture" : {
+          "measured" : "nominal"
+        },
+        "totalCoreCount" : {
+          "measured" : 8
+        },
+        "unifiedMemoryArchitecture" : {
+          "measured" : true
+        }
+      },
+      "hardwareModel" : {
+        "measured" : "synthetic-model"
+      },
+      "inferenceRuntimeVersion" : {
+        "measured" : "synthetic-runtime 1.0"
+      },
+      "machineIdentifier" : {
+        "measured" : "synthetic-machine"
+      },
+      "osVersion" : {
+        "measured" : "synthetic-os 1.0"
+      },
+      "physicalMemoryBytes" : {
+        "measured" : 17179869184
+      }
+    },
+    "finishedAt" : "2025-10-09T11:00:06Z",
+    "inputPackage" : {
+      "messages" : [
+        {
+          "content" : "You are a careful assistant being evaluated inside the Skippy Model Lab on synthetic fixtures.",
+          "role" : "system"
+        },
+        {
+          "content" : "Reply with exactly one word: pond.",
+          "role" : "user"
+        }
+      ],
+      "origin" : "synthetic:model-lab-c1-foundation"
+    },
+    "inputPackageDigest" : "mlip1:d1dbeff0188f5776",
+    "observation" : {
+      "errors" : [
+
+      ],
+      "identityVerification" : {
+        "reported" : "deterministic-reference:1",
+        "state" : "verifiedMatch"
+      },
+      "outputText" : "deterministic-completion:mlo1:b349d89ac7aac718",
+      "providerReportedUsage" : {
+        "measured" : {
+          "completionTokens" : 46,
+          "promptTokens" : 128
+        }
+      },
+      "requestDigest" : "mlo1:b349d89ac7aac718",
+      "runtimeConfigurationID" : "mlrc1:49f0a31c3734fec5",
+      "terminalStatus" : "completed",
+      "timing" : {
+        "firstTokenMilliseconds" : {
+          "unavailableReason" : "fake runtime does not stream"
+        },
+        "totalElapsedMilliseconds" : {
+          "measured" : 1
+        }
+      },
+      "toolCallObservationsRaw" : [
+
+      ],
+      "warnings" : [
+
+      ]
+    },
+    "ordinal" : 2,
+    "repetitionIndex" : 1,
+    "runID" : "parity-disk-foundation",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1",
+    "startedAt" : "2025-10-09T11:00:05Z",
+    "suiteID" : {
+      "raw" : "suite.model-lab.foundation"
+    },
+    "suiteVersion" : "1",
+    "terminalStatus" : "completed"
+  },
+  "payloadDigest" : "mla1:4cc0e96ba5cdef49",
+  "recordType" : "attempt",
+  "schemaVersion" : 1
+}

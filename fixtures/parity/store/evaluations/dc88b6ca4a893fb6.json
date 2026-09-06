@@ -1,0 +1,58 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-timeout:0",
+    "candidateID" : {
+      "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+    },
+    "caseDigest" : "mlb1:d2348ee025838f4e",
+    "caseID" : {
+      "raw" : "case:foundation:context-recall"
+    },
+    "category" : "contextIntegration",
+    "comparabilityKey" : "mlk1:b8276ff0e18a8ab8",
+    "evaluatedAt" : "2025-10-09T11:00:28Z",
+    "evaluationID" : "evaluation:attempt:parity-disk-timeout:0:evaluator.required-concepts:1",
+    "evaluatorID" : "evaluator.required-concepts",
+    "evaluatorVersion" : "1",
+    "scoringPolicyDigest" : "mlsp1:19beffaa5e5d7887",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1",
+    "suiteID" : {
+      "raw" : "suite.model-lab.foundation"
+    },
+    "suiteVersion" : "1",
+    "verdict" : {
+      "dimension" : "contextIntegration",
+      "evidenceExcerpts" : [
+
+      ],
+      "governance" : {
+        "state" : "notAssessed"
+      },
+      "metrics" : [
+        {
+          "detail" : "the attempt timed out before an answer arrived",
+          "dimension" : "contextIntegration",
+          "name" : "answerPresent",
+          "status" : "notApplicable",
+          "valueMilli" : {
+            "unavailableReason" : "the attempt timed out before an answer arrived"
+          }
+        }
+      ],
+      "missingEvidence" : [
+        {
+          "field" : "answer",
+          "reason" : "the attempt timed out before an answer arrived"
+        }
+      ],
+      "status" : "notApplicable",
+      "warnings" : [
+
+      ]
+    }
+  },
+  "payloadDigest" : "mla1:b01173284c9683f7",
+  "recordType" : "evaluation",
+  "schemaVersion" : 1
+}

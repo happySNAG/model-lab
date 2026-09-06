@@ -1,0 +1,8 @@
+node_modules/
+out/
+dist/
+test-results/
+playwright-report/
+.scratch/
+# The repository root ignores every build/ directory (Xcode outputs); electron-builder resources live here on purpose.
+!build/

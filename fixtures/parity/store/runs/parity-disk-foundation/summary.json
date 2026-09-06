@@ -1,0 +1,17 @@
+{
+  "payload" : {
+    "completedAt" : "2025-10-09T11:00:11Z",
+    "planDigest" : "mlp1:ebbfa5c96bd7e767",
+    "plannedAttemptCount" : 5,
+    "recordedAttemptCount" : 5,
+    "runID" : "parity-disk-foundation",
+    "state" : "completed",
+    "statusCounts" : {
+      "completed" : 4,
+      "malformedOutput" : 1
+    }
+  },
+  "payloadDigest" : "mla1:b084fec9ceaddb3",
+  "recordType" : "run-summary",
+  "schemaVersion" : 1
+}

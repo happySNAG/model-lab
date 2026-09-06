@@ -1,0 +1,479 @@
+[
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : true,
+      "word" : false
+    },
+    "excerpt" : "teal",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : 0,
+      "word" : null
+    },
+    "input" : "Teal.",
+    "normalized" : "teal",
+    "tokens" : [
+      "teal"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : true,
+      "teal" : true,
+      "word" : false
+    },
+    "excerpt" : "teal notebook",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : 5,
+      "teal" : 0,
+      "word" : null
+    },
+    "input" : "TEAL notebook",
+    "normalized" : "teal notebook",
+    "tokens" : [
+      "teal",
+      "notebook"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : true,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "i don t have any record of that",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : 2,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "I don't have any record of that",
+    "normalized" : "i don t have any record of that",
+    "tokens" : [
+      "i",
+      "don",
+      "t",
+      "have",
+      "any",
+      "record",
+      "of",
+      "that"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : true,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "multiple spaces and tabs",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : 0,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "  multiple   spaces\tand\ttabs\n",
+    "normalized" : "multiple spaces and tabs",
+    "tokens" : [
+      "multiple",
+      "spaces",
+      "and",
+      "tabs"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "straße école ölçek",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "Straße ÉCOLE Ölçek",
+    "normalized" : "straße école ölçek",
+    "tokens" : [
+      "straße",
+      "école",
+      "ölçek"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : true,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "punctuation everywhere yes really ok das…",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : 37,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "punctuation!?, everywhere; (yes) [really] {ok} — dash",
+    "normalized" : "punctuation everywhere yes really ok dash",
+    "tokens" : [
+      "punctuation",
+      "everywhere",
+      "yes",
+      "really",
+      "ok",
+      "dash"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "日本語のテキスト 句読点",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "日本語のテキスト、句読点。",
+    "normalized" : "日本語のテキスト 句読点",
+    "tokens" : [
+      "日本語のテキスト",
+      "句読点"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "emoji inside",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "emoji 😀 inside",
+    "normalized" : "emoji inside",
+    "tokens" : [
+      "emoji",
+      "inside"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "",
+    "normalized" : "",
+    "tokens" : [
+
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : true
+    },
+    "excerpt" : "word word word word word word word word …",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : 0
+    },
+    "input" : "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+    "normalized" : "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+    "tokens" : [
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word",
+      "word"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "under score and hyphen ated",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "under_score and hyphen-ated",
+    "normalized" : "under score and hyphen ated",
+    "tokens" : [
+      "under",
+      "score",
+      "and",
+      "hyphen",
+      "ated"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : true,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "can t cannot can t",
+    "firstIndex" : {
+      "can t" : 0,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "can't cannot can’t",
+    "normalized" : "can t cannot can t",
+    "tokens" : [
+      "can",
+      "t",
+      "cannot",
+      "can",
+      "t"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "ⅷ ½ ² ①",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "Ⅷ ½ ² ①",
+    "normalized" : "ⅷ ½ ² ①",
+    "tokens" : [
+      "ⅷ",
+      "½",
+      "²",
+      "①"
+    ]
+  },
+  {
+    "containsPhrase" : {
+      "can t" : false,
+      "dash" : false,
+      "don't have" : false,
+      "multiple spaces" : false,
+      "notebook" : false,
+      "teal" : false,
+      "word" : false
+    },
+    "excerpt" : "combining é e  ́",
+    "firstIndex" : {
+      "can t" : null,
+      "dash" : null,
+      "don't have" : null,
+      "multiple spaces" : null,
+      "notebook" : null,
+      "teal" : null,
+      "word" : null
+    },
+    "input" : "combining é (e + ́)",
+    "normalized" : "combining é e  ́",
+    "tokens" : [
+      "combining",
+      "é",
+      "e",
+      " ́"
+    ]
+  }
+]

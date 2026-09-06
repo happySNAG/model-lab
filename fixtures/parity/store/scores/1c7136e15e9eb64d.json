@@ -1,0 +1,25 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-timeout:3",
+    "categoryMetricsMilli" : {
+      "structuredOutputReliability" : {
+
+      }
+    },
+    "evaluatedAt" : "2025-10-09T11:00:31Z",
+    "evaluatorID" : "evaluator.structured-schema",
+    "evaluatorVersion" : "1",
+    "governanceOutcomes" : [
+
+    ],
+    "notes" : [
+      "status:notApplicable"
+    ],
+    "scoreID" : "score:attempt:parity-disk-timeout:3:evaluator.structured-schema:1",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1"
+  },
+  "payloadDigest" : "mla1:6b79c590daa51156",
+  "recordType" : "derived-score",
+  "schemaVersion" : 1
+}

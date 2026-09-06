@@ -1,0 +1,55 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-foundation:2",
+    "candidateID" : {
+      "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+    },
+    "caseDigest" : "mlb1:356de73b5488a62a",
+    "caseID" : {
+      "raw" : "case:foundation:echo-instruction"
+    },
+    "category" : "conversation",
+    "comparabilityKey" : "mlk1:f5933a2f4a59561",
+    "evaluatedAt" : "2025-10-09T11:00:14Z",
+    "evaluationID" : "evaluation:attempt:parity-disk-foundation:2:evaluator.normalized-match:1",
+    "evaluatorID" : "evaluator.normalized-match",
+    "evaluatorVersion" : "1",
+    "scoringPolicyDigest" : "mlsp1:19beffaa5e5d7887",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1",
+    "suiteID" : {
+      "raw" : "suite.model-lab.foundation"
+    },
+    "suiteVersion" : "1",
+    "verdict" : {
+      "dimension" : "conversation",
+      "evidenceExcerpts" : [
+        "deterministic completion mlo1 b349d89ac7aac718"
+      ],
+      "governance" : {
+        "state" : "notAssessed"
+      },
+      "metrics" : [
+        {
+          "detail" : "normalized comparison with the expected answer",
+          "dimension" : "conversation",
+          "name" : "normalizedMatch",
+          "status" : "fail",
+          "valueMilli" : {
+            "measured" : 0
+          }
+        }
+      ],
+      "missingEvidence" : [
+
+      ],
+      "status" : "fail",
+      "warnings" : [
+
+      ]
+    }
+  },
+  "payloadDigest" : "mla1:1dd345cd39c08b10",
+  "recordType" : "evaluation",
+  "schemaVersion" : 1
+}

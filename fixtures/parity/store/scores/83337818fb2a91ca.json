@@ -1,0 +1,25 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-foundation:0",
+    "categoryMetricsMilli" : {
+      "contextIntegration" : {
+        "requiredConcepts" : 0
+      }
+    },
+    "evaluatedAt" : "2025-10-09T11:00:12Z",
+    "evaluatorID" : "evaluator.required-concepts",
+    "evaluatorVersion" : "1",
+    "governanceOutcomes" : [
+
+    ],
+    "notes" : [
+      "status:fail"
+    ],
+    "scoreID" : "score:attempt:parity-disk-foundation:0:evaluator.required-concepts:1",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1"
+  },
+  "payloadDigest" : "mla1:b56e575dcd7c4a56",
+  "recordType" : "derived-score",
+  "schemaVersion" : 1
+}

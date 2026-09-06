@@ -1,0 +1,58 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-timeout:1",
+    "candidateID" : {
+      "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+    },
+    "caseDigest" : "mlb1:356de73b5488a62a",
+    "caseID" : {
+      "raw" : "case:foundation:echo-instruction"
+    },
+    "category" : "conversation",
+    "comparabilityKey" : "mlk1:f5933a2f4a59561",
+    "evaluatedAt" : "2025-10-09T11:00:29Z",
+    "evaluationID" : "evaluation:attempt:parity-disk-timeout:1:evaluator.normalized-match:1",
+    "evaluatorID" : "evaluator.normalized-match",
+    "evaluatorVersion" : "1",
+    "scoringPolicyDigest" : "mlsp1:19beffaa5e5d7887",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1",
+    "suiteID" : {
+      "raw" : "suite.model-lab.foundation"
+    },
+    "suiteVersion" : "1",
+    "verdict" : {
+      "dimension" : "conversation",
+      "evidenceExcerpts" : [
+
+      ],
+      "governance" : {
+        "state" : "notAssessed"
+      },
+      "metrics" : [
+        {
+          "detail" : "the attempt timed out before an answer arrived",
+          "dimension" : "conversation",
+          "name" : "answerPresent",
+          "status" : "notApplicable",
+          "valueMilli" : {
+            "unavailableReason" : "the attempt timed out before an answer arrived"
+          }
+        }
+      ],
+      "missingEvidence" : [
+        {
+          "field" : "answer",
+          "reason" : "the attempt timed out before an answer arrived"
+        }
+      ],
+      "status" : "notApplicable",
+      "warnings" : [
+
+      ]
+    }
+  },
+  "payloadDigest" : "mla1:43390709dd788260",
+  "recordType" : "evaluation",
+  "schemaVersion" : 1
+}

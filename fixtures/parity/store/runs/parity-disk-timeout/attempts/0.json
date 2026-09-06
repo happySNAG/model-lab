@@ -1,0 +1,131 @@
+{
+  "payload" : {
+    "attemptID" : "attempt:parity-disk-timeout:0",
+    "candidate" : {
+      "artifactDigest" : {
+        "unavailableReason" : "no artifact exists — the fake runs in-process"
+      },
+      "availability" : {
+        "state" : "available"
+      },
+      "declaredContextLimitTokens" : {
+        "measured" : 8192
+      },
+      "displayName" : "Deterministic Reference Fake",
+      "exactModelIdentity" : "deterministic-reference:1",
+      "executionClass" : "inProcess",
+      "id" : {
+        "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+      },
+      "inputModalities" : [
+        "text"
+      ],
+      "outputModalities" : [
+        "text"
+      ],
+      "privacyClass" : "onDeviceOnly",
+      "provider" : "model-lab-fake",
+      "quantization" : "none",
+      "reproducibility" : "deterministic",
+      "runtimeConfiguration" : {
+        "settings" : [
+          {
+            "key" : "mode",
+            "value" : "deterministic"
+          }
+        ]
+      },
+      "streaming" : "notSupported",
+      "structuredOutput" : "declared",
+      "toolCalls" : "notSupported"
+    },
+    "candidateDigest" : "mlc1:6d6847f11b3e16da",
+    "caseDigest" : "mlb1:d2348ee025838f4e",
+    "caseID" : {
+      "raw" : "case:foundation:context-recall"
+    },
+    "comparabilityKey" : "mlk1:b8276ff0e18a8ab8",
+    "environment" : {
+      "cpuCoreCount" : {
+        "measured" : 8
+      },
+      "hardwareModel" : {
+        "measured" : "synthetic-model"
+      },
+      "inferenceRuntimeVersion" : {
+        "unavailableReason" : "no inference runtime is attached in Campaign 1"
+      },
+      "machineIdentifier" : {
+        "measured" : "synthetic-machine"
+      },
+      "osVersion" : {
+        "measured" : "synthetic-os 1.0"
+      },
+      "physicalMemoryBytes" : {
+        "measured" : 17179869184
+      }
+    },
+    "finishedAt" : "2025-10-09T11:00:18Z",
+    "inputPackage" : {
+      "messages" : [
+        {
+          "content" : "You are a careful assistant being evaluated inside the Skippy Model Lab on synthetic fixtures.",
+          "role" : "system"
+        },
+        {
+          "content" : "According to the provided context, what is the fixture character's favorite color?",
+          "role" : "user"
+        }
+      ],
+      "origin" : "synthetic:model-lab-c1-foundation",
+      "syntheticContext" : "Fixture context (invented for evaluation): the fixture character Alba Marsh keeps a teal notebook and names teal as her favorite color."
+    },
+    "inputPackageDigest" : "mlip1:d53d630ef6064394",
+    "observation" : {
+      "errors" : [
+        {
+          "code" : "adapter.timeout",
+          "detail" : "execution budget of 30000ms elapsed"
+        }
+      ],
+      "identityVerification" : {
+        "reason" : "no response arrived",
+        "state" : "unverifiable"
+      },
+      "providerReportedUsage" : {
+        "unavailableReason" : "no output before budget elapsed"
+      },
+      "requestDigest" : "mlo1:3e53f19fdff2626e",
+      "runtimeConfigurationID" : "mlrc1:49f0a31c3734fec5",
+      "terminalStatus" : "timedOut",
+      "timing" : {
+        "firstTokenMilliseconds" : {
+          "unavailableReason" : "no token before budget elapsed"
+        },
+        "totalElapsedMilliseconds" : {
+          "measured" : 30000
+        }
+      },
+      "toolCallObservationsRaw" : [
+
+      ],
+      "warnings" : [
+
+      ]
+    },
+    "ordinal" : 0,
+    "repetitionIndex" : 0,
+    "runID" : "parity-disk-timeout",
+    "scoringPolicyID" : "policy.scoring.model-lab-foundation",
+    "scoringPolicyVersion" : "1",
+    "startedAt" : "2025-10-09T11:00:17Z",
+    "suiteID" : {
+      "raw" : "suite.model-lab.foundation"
+    },
+    "suiteVersion" : "1",
+    "terminalStatus" : "timedOut"
+  },
+  "payloadDigest" : "mla1:713bc634d82acd5f",
+  "recordType" : "attempt",
+  "schemaVersion" : 1
+}

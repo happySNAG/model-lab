@@ -1,0 +1,16 @@
+{
+  "payload" : {
+    "completedAt" : "2025-10-09T11:00:27Z",
+    "planDigest" : "mlp1:6a7754f18fc03f47",
+    "plannedAttemptCount" : 5,
+    "recordedAttemptCount" : 5,
+    "runID" : "parity-disk-timeout",
+    "state" : "completed",
+    "statusCounts" : {
+      "timedOut" : 5
+    }
+  },
+  "payloadDigest" : "mla1:a2a221a934aedfa3",
+  "recordType" : "run-summary",
+  "schemaVersion" : 1
+}

@@ -1,0 +1,111 @@
+{
+  "payload" : {
+    "candidates" : [
+      {
+        "artifactDigest" : {
+          "unavailableReason" : "no artifact exists — the fake runs in-process"
+        },
+        "availability" : {
+          "state" : "available"
+        },
+        "declaredContextLimitTokens" : {
+          "measured" : 8192
+        },
+        "displayName" : "Deterministic Reference Fake",
+        "exactModelIdentity" : "deterministic-reference:1",
+        "executionClass" : "inProcess",
+        "id" : {
+          "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+        },
+        "inputModalities" : [
+          "text"
+        ],
+        "outputModalities" : [
+          "text"
+        ],
+        "privacyClass" : "onDeviceOnly",
+        "provider" : "model-lab-fake",
+        "quantization" : "none",
+        "reproducibility" : "deterministic",
+        "runtimeConfiguration" : {
+          "settings" : [
+            {
+              "key" : "mode",
+              "value" : "deterministic"
+            }
+          ]
+        },
+        "streaming" : "notSupported",
+        "structuredOutput" : "declared",
+        "toolCalls" : "notSupported"
+      }
+    ],
+    "planDigest" : "mlp1:ebbfa5c96bd7e767",
+    "plannedAttempts" : [
+      {
+        "attemptID" : "attempt:parity-disk-foundation:0",
+        "candidateID" : {
+          "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+        },
+        "caseID" : {
+          "raw" : "case:foundation:context-recall"
+        },
+        "ordinal" : 0,
+        "repetitionIndex" : 0
+      },
+      {
+        "attemptID" : "attempt:parity-disk-foundation:1",
+        "candidateID" : {
+          "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+        },
+        "caseID" : {
+          "raw" : "case:foundation:echo-instruction"
+        },
+        "ordinal" : 1,
+        "repetitionIndex" : 0
+      },
+      {
+        "attemptID" : "attempt:parity-disk-foundation:2",
+        "candidateID" : {
+          "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+        },
+        "caseID" : {
+          "raw" : "case:foundation:echo-instruction"
+        },
+        "ordinal" : 2,
+        "repetitionIndex" : 1
+      },
+      {
+        "attemptID" : "attempt:parity-disk-foundation:3",
+        "candidateID" : {
+          "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+        },
+        "caseID" : {
+          "raw" : "case:foundation:json-shape"
+        },
+        "ordinal" : 3,
+        "repetitionIndex" : 0
+      },
+      {
+        "attemptID" : "attempt:parity-disk-foundation:4",
+        "candidateID" : {
+          "raw" : "candidate:model-lab-fake:deterministic-reference:1:none"
+        },
+        "caseID" : {
+          "raw" : "case:foundation:memory-honesty"
+        },
+        "ordinal" : 4,
+        "repetitionIndex" : 0
+      }
+    ],
+    "runID" : "parity-disk-foundation",
+    "suiteDigest" : "mls1:28675712b87acb5c",
+    "suiteID" : {
+      "raw" : "suite.model-lab.foundation"
+    },
+    "suiteVersion" : "1"
+  },
+  "payloadDigest" : "mla1:fade40addb33a404",
+  "recordType" : "run-plan",
+  "schemaVersion" : 1
+}

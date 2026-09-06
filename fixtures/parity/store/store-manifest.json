@@ -1,0 +1,4 @@
+{
+  "purpose" : "Skippy Model Lab permanent evaluation history. Evidence, not authorization. Append-only; records are never overwritten; model files are never stored here.",
+  "storeSchemaVersion" : 1
+}

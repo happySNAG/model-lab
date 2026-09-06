@@ -1,0 +1,97 @@
+# Model Lab · packaging.
+#
+# macOS (primary): an application bundle "Model Lab.app" for Apple Silicon (arm64) and Intel (x64),
+# each shipped as a DMG (drag to Applications) and a ZIP. Builds are UNSIGNED and NOT NOTARIZED unless
+# a Developer ID identity is configured through the standard electron-builder environment variables
+# (CSC_LINK / CSC_KEY_PASSWORD, APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID). Without one,
+# electron-builder ad-hoc signs the bundle so Apple Silicon can execute it; Gatekeeper still shows the
+# "Apple could not verify" dialog for a downloaded copy — see README.md, "Opening an unsigned build".
+#
+# Windows: an NSIS installer (per-user, no admin required, Start Menu and Desktop shortcuts, clean
+# uninstall that KEEPS the evidence store) plus a portable executable. Unsigned unless configured.
+appId: org.modellab.desktop
+productName: Model Lab
+copyright: Model Lab contributors
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+extraResources:
+  # The user guide travels with the app so Help → "Model Lab Guide" works offline.
+  - from: README.md
+    to: README.md
+asar: true
+compression: normal
+npmRebuild: false
+# macOS: ad-hoc sign the finished bundle when no Developer ID is configured (see scripts/after-pack.js).
+afterPack: scripts/after-pack.js
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  artifactName: Model-Lab-${version}-macos-${arch}.${ext}
+  darkModeSupport: true
+  minimumSystemVersion: "12.0"
+  # No signing identity by default (see header). `identity: null` stops electron-builder from
+  # searching the keychain; the bundle is then ad-hoc signed.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  notarize: false
+  extendInfo:
+    NSHumanReadableCopyright: Model Lab contributors. Local benchmarking; nothing leaves this computer.
+    LSApplicationCategoryType: public.app-category.developer-tools
+dmg:
+  title: Model Lab ${version}
+  icon: build/icon.icns
+  iconSize: 96
+  window:
+    width: 560
+    height: 380
+  contents:
+    - x: 150
+      y: 190
+    - x: 410
+      y: 190
+      type: link
+      path: /Applications
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: Model-Lab-${version}-win-${arch}.${ext}
+  # Signing is opt-in: set WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD (or an Azure Trusted Signing config) to sign.
+  verifyUpdateCodeSignature: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Model Lab
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  artifactName: Model-Lab-Setup-${version}-${arch}.${ext}
+  uninstallDisplayName: Model Lab
+  license: LICENSE.txt
+portable:
+  artifactName: Model-Lab-Portable-${version}-${arch}.${ext}
+  requestExecutionLevel: user
+
+linux:
+  target: [AppImage]
+  category: Utility

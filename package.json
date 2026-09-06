@@ -1,0 +1,43 @@
+{
+  "name": "model-lab",
+  "productName": "Model Lab",
+  "version": "1.0.0",
+  "description": "Model Lab \u2014 a local benchmarking laboratory for language models running under Ollama, for macOS and Windows.",
+  "main": "./out/main/index.js",
+  "author": "Model Lab contributors",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test -c test/e2e/playwright.config.ts",
+    "test:all": "npm run typecheck && npm test && npm run build && npm run test:e2e",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac:arm64": "npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run build && electron-builder --mac --x64",
+    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:all": "npm run build && electron-builder --mac --win",
+    "dist:dir": "npm run build && electron-builder --dir",
+    "smoke:mac": "bash scripts/macos-smoke.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.20.1",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  }
+}
