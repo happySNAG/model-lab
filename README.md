@@ -175,7 +175,7 @@ This is the whole story, and it is short:
 
 1. Download `Model-Lab-<version>-macos-arm64.dmg` (Apple Silicon) or
    `Model-Lab-<version>-macos-x64.dmg` (Intel) from the [releases page][releases]. Not sure which Mac
-   you have?  Apple menu → *About This Mac*: "Chip: Apple M…" means arm64.
+   you have? Apple menu → *About This Mac*: "Chip: Apple M…" means arm64.
 2. Open the disk image and drag **Model Lab** into **Applications**.
 3. Open it from Applications, Launchpad or Spotlight. The first launch needs one extra step — see
    below.
@@ -238,13 +238,13 @@ Please read [Windows verification status](#windows-verification-status) before r
 2. Go to **Models**. If the list is empty, use *Add a model* — `gemma3:270m` and `qwen3:0.6b` are both
    small and quick to try.
 
-![The Models screen: every model Ollama has installed with its size, parameter count, quantization and family, an Add a model field, and the built-in reference model.](docs/screenshots/model-lab-models.png)
+   ![The Models screen: every model Ollama has installed with its size, parameter count, quantization and family, an Add a model field, and the built-in reference model.](docs/screenshots/model-lab-models.png)
 3. Go to **Benchmark**. Tick two models, leave *Quick check* selected, press **Start benchmark**, read
    the pre-flight dialog, and confirm.
 4. Watch the **Live run**. Every attempt is written to disk as it finishes, so nothing is lost if the
    application closes.
 
-![The Live run screen: overall progress, per-model progress, outcomes so far, and the most recent attempts with their judgments as they land.](docs/screenshots/model-lab-live-run.png)
+   ![The Live run screen: overall progress, per-model progress, outcomes so far, and the most recent attempts with their judgments as they land.](docs/screenshots/model-lab-live-run.png)
 5. Open **Results**. Start with the verdict paragraph, then the ranking table, then click any case to
    see the exact prompt, the exact answer and exactly why it was judged the way it was.
 6. Run it again — or run the *Full lab* — and compare the two in **History**.
