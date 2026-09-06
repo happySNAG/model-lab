@@ -1,8 +1,42 @@
+# Dependencies
 node_modules/
+
+# Build output
 out/
 dist/
+*.tsbuildinfo
+
+# Test output
 test-results/
 playwright-report/
+coverage/
+
+# Local scratch
 .scratch/
-# The repository root ignores every build/ directory (Xcode outputs); electron-builder resources live here on purpose.
+
+# Secrets and local configuration — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision
+*.secret
+
+# Logs and local runtime data
+*.log
+model-lab.log
+evidence/
+
+# OS and editor noise
+.DS_Store
+**/.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# The application icons and the Windows installer notice live in build/ on purpose.
+# (The private monorepo this project was extracted from ignores every build/ directory
+#  because that is where Xcode writes; this negation keeps the packaging resources tracked.)
 !build/

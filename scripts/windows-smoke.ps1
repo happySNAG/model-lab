@@ -1,6 +1,6 @@
 # Model Lab · Windows installer smoke test. Run on a Windows PC (PowerShell) from a folder that
 # contains the installer, e.g. the USB drive:
-#   powershell -ExecutionPolicy Bypass -File windows-smoke.ps1 -Installer .\Model-Lab-Setup-1.0.0-x64.exe
+#   powershell -ExecutionPolicy Bypass -File windows-smoke.ps1 -Installer .\Model-Lab-Setup-0.1.0-x64.exe
 # It performs a silent per-user install, checks the shortcuts and executable, launches the app,
 # confirms the window and the evidence store appear, closes it, and (optionally) uninstalls.
 param(

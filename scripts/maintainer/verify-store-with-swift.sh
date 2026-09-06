@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# MAINTAINER-ONLY. This script requires a checkout of the private Swift reference implementation as
+# the PARENT directory of this repository; it cannot run against this repository alone. See
+# docs/PARITY.md — in particular, the committed corpus is a frozen snapshot and regenerating it
+# against a current Swift checkout WILL break the parity suite. Nothing in a normal build, test or
+# release run needs this file.
 # Cross-implementation check in the OTHER direction: a store written by the portable (TypeScript)
 # engine is validated by the canonical Swift CLI (`validate-store` recomputes every envelope digest).
 set -euo pipefail
