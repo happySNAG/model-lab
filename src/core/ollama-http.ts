@@ -11,8 +11,9 @@
 // Every request carries its own timeout; cancellation aborts the transfer mid-flight.
 
 import { CancellationToken } from './adapter';
-import { OllamaChatReport, OllamaChatRequest, OllamaInstalledModel, OllamaModelReport, OllamaRunningModelReport, OllamaTransport,
-         OllamaTransportFailure, OllamaVersionReport, chatReportFrom, chatRequestBody } from './ollama';
+import { OllamaChatReport, OllamaChatRequest, OllamaInstalledModel, OllamaModelReport, OllamaRunningModelReport, OllamaStreamChunk,
+         OllamaStreamingTransport, OllamaTransport, OllamaTransportFailure, OllamaVersionReport, chatReportFrom, chatReportFromStream,
+         chatRequestBody, chatStreamChunkFrom, chatStreamRequestBody } from './ollama';
 
 export class LiveExecutionAuthorization {
   private constructor() {}
@@ -48,14 +49,25 @@ export function validateLoopbackEndpoint(endpoint: string): URL {
   return url;
 }
 
+/** The reader half of a `fetch` response body. Named so a test can supply one without a browser. */
+export interface ByteStreamReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+  cancel(reason?: unknown): Promise<void>;
+}
+export interface ByteStream {
+  getReader(): ByteStreamReader;
+}
+
 export interface FetchLike {
   (input: string, init: { method: string; headers?: Record<string, string>; body?: string; signal: AbortSignal }): Promise<{
     status: number;
     text(): Promise<string>;
+    /** Present on a real `fetch` response. Only the streaming path reads it. */
+    body?: ByteStream | null;
   }>;
 }
 
-export class OllamaHTTPTransport implements OllamaTransport {
+export class OllamaHTTPTransport implements OllamaStreamingTransport {
   private readonly endpoint: URL;
   private readonly fetchImpl: FetchLike;
 
@@ -132,6 +144,26 @@ export class OllamaHTTPTransport implements OllamaTransport {
     return chatReportFrom(text);
   }
 
+  /**
+   * Send one chat and hand every NDJSON line to `onChunk` as it lands, with the millisecond offset
+   * from the instant the request was sent.
+   *
+   * The clock is read HERE, at the point of arrival, and nowhere else. That is the entire reason
+   * this method exists: `chat` above can report what the runtime says it spent, but only this one
+   * can report when anything actually showed up.
+   */
+  async chatStream(request: OllamaChatRequest, cancellation: CancellationToken,
+                   onChunk: (chunk: OllamaStreamChunk, atMilliseconds: number) => void): Promise<OllamaChatReport> {
+    const startedAt = Date.now();
+    const chunks: OllamaStreamChunk[] = [];
+    await this.performStreaming('api/chat', chatStreamRequestBody(request), request.timeoutMilliseconds, cancellation, (line) => {
+      const chunk = chatStreamChunkFrom(line);
+      chunks.push(chunk);
+      onChunk(chunk, Date.now() - startedAt);
+    });
+    return chatReportFromStream(request.model, chunks);
+  }
+
   // MARK: HTTP plumbing (loopback-only by construction above)
 
   private async getJSON(path: string, timeoutMilliseconds: number): Promise<Record<string, unknown>> {
@@ -190,6 +222,81 @@ export class OllamaHTTPTransport implements OllamaTransport {
         throw new OllamaTransportFailure('httpFailure', detail, response.status);
       }
       return text;
+    } finally {
+      clearTimeout(timer);
+      unsubscribe?.();
+    }
+  }
+
+  /**
+   * The streaming twin of `perform`. Same loopback constraint, same timeout, same cancellation —
+   * the difference is that the body is consumed incrementally instead of after it is complete.
+   */
+  private async performStreaming(path: string, body: string, timeoutMilliseconds: number,
+                                 cancellation: CancellationToken | undefined, onLine: (line: string) => void): Promise<void> {
+    const controller = new AbortController();
+    let timedOut = false;
+    let cancelled = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMilliseconds);
+    const unsubscribe = cancellation?.onCancel(() => { cancelled = true; controller.abort(); });
+    if (cancellation?.isCancelled) { cancelled = true; controller.abort(); }
+    try {
+      const url = new URL(path, this.endpoint.href.endsWith('/') ? this.endpoint.href : this.endpoint.href + '/').href;
+      let response: { status: number; text(): Promise<string>; body?: ByteStream | null };
+      try {
+        response = await this.fetchImpl(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (cancelled) throw new OllamaTransportFailure('cancelled');
+        if (timedOut) throw new OllamaTransportFailure('timeout');
+        throw new OllamaTransportFailure('connectionFailed', describeNetworkError(error));
+      }
+      if (response.status < 200 || response.status >= 300) {
+        // A failure arrives as an ordinary body, so it is read the ordinary way.
+        const detail = (await response.text().catch(() => '')).slice(0, 500);
+        if (response.status === 404 && detail.includes('not found')) {
+          const quoted = detail.split("'");
+          throw new OllamaTransportFailure('modelNotFound', detail, 404, quoted.length > 1 ? quoted[1] : 'unreported');
+        }
+        throw new OllamaTransportFailure('httpFailure', detail, response.status);
+      }
+      if (!response.body) {
+        throw new OllamaTransportFailure('malformedResponse',
+          'the runtime accepted a streaming request but returned no readable stream, so no arrival time could be observed');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffered = '';
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) buffered += decoder.decode(value, { stream: true });
+          let newline = buffered.indexOf('\n');
+          while (newline >= 0) {
+            const line = buffered.slice(0, newline).trim();
+            buffered = buffered.slice(newline + 1);
+            if (line.length > 0) onLine(line);
+            newline = buffered.indexOf('\n');
+          }
+        }
+      } catch (error) {
+        if (cancelled) throw new OllamaTransportFailure('cancelled');
+        if (timedOut) throw new OllamaTransportFailure('timeout');
+        if (error instanceof OllamaTransportFailure) throw error;
+        throw new OllamaTransportFailure('connectionFailed', describeNetworkError(error));
+      } finally {
+        // Cancelling a reader that already finished is harmless; leaving one open is not.
+        await reader.cancel().catch(() => undefined);
+      }
+      buffered += decoder.decode();
+      const trailing = buffered.trim();
+      if (trailing.length > 0) onLine(trailing);
     } finally {
       clearTimeout(timer);
       unsubscribe?.();

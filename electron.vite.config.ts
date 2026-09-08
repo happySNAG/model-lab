@@ -16,7 +16,26 @@ const defines = {
 const alias = { '@core': resolve(__dirname, 'src/core'), '@shared': resolve(__dirname, 'src/shared') };
 
 export default defineConfig({
-  main: { plugins: [externalizeDepsPlugin()], define: defines, resolve: { alias }, build: { sourcemap: true } },
+  // Two entries, one build. `index` is the Electron main process; `cernum` is the terminal
+  // interface. They are emitted side by side into `out/main`, travel inside the same asar, and
+  // import the same `src/engine/index.ts` — which is what makes "the installed command and the
+  // desktop UI use the same engine" a fact about the artefact rather than a promise about two
+  // code paths.
+  main: {
+    plugins: [externalizeDepsPlugin()],
+    define: defines,
+    resolve: { alias },
+    build: {
+      sourcemap: true,
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          cernum: resolve(__dirname, 'src/cli/cernum.ts'),
+        },
+        output: { format: 'cjs', entryFileNames: '[name].js' },
+      },
+    },
+  },
   preload: { plugins: [externalizeDepsPlugin()], resolve: { alias } },
   renderer: { plugins: [react()], define: defines, resolve: { alias }, build: { sourcemap: true } },
 });

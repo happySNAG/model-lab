@@ -16,11 +16,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import {
-  Campaign, CampaignConfiguration, CampaignStatus, Ledger, LiveHost, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE,
-  SyntheticHost, allRankableSuiteIDs, buildEngineCatalogue, campaignPaths, discoverLocalModels, guardPolicyForEndpoint,
-  modelStoreBaseline, steppingClock, syntheticCandidate,
+  Campaign, CampaignConfiguration, CampaignError, CampaignLockError, CampaignStatus, Ledger, LiveHost, SYNTHETIC_HARDWARE,
+  SYNTHETIC_STORE_BASELINE, SyntheticHost, allRankableSuiteIDs, breakCampaignLock, buildEngineCatalogue, campaignPaths,
+  discoverLocalModels, guardPolicyForEndpoint, inspectCampaignLock, modelStoreBaseline, steppingClock, syntheticCandidate,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
+import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
 const DEFAULT_ENDPOINT = process.env.MODEL_LAB_OLLAMA_ENDPOINT ?? 'http://127.0.0.1:11434';
 
@@ -33,6 +34,14 @@ export function defaultCampaignRoot(): string {
     : process.platform === 'win32' ? path.join(process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming'), PRODUCT.name)
       : path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'), PRODUCT.slug);
   return path.join(base, CAMPAIGN_DIRECTORY_NAME);
+}
+
+/**
+ * How this invocation describes itself in a campaign lock. A refusal that can print the exact
+ * command the other process is running is one a person can act on; "locked" is not.
+ */
+function invocation(argv: string[]): string {
+  return [TERMINAL_COMMAND, ...argv].join(' ').slice(0, 200);
 }
 
 interface Options { [key: string]: string | boolean }
@@ -57,9 +66,11 @@ function say(line = ''): void {
   process.stdout.write(line + '\n');
 }
 
-function fail(message: string): never {
-  process.stderr.write(`${TERMINAL_COMMAND}: ${message}\n`);
-  process.exit(1);
+function fail(message: string, code = 1): never {
+  const [first, ...rest] = message.split('\n');
+  process.stderr.write(`${TERMINAL_COMMAND}: ${first}\n`);
+  for (const line of rest) process.stderr.write(`  ${line}\n`);
+  process.exit(code);
 }
 
 function campaignDirectory(root: string, name: string): string {
@@ -85,6 +96,12 @@ function renderStatus(status: CampaignStatus): void {
     say(`  ABORTED at ${status.standingAbort.stage}: ${status.standingAbort.reason}`);
     say(`  ${status.standingAbort.blockedSlotCount} slot(s) blocked; they were never attempted and carry no result.`);
     say(`  Resolve the breach, then: ${TERMINAL_COMMAND} resume ${path.basename(status.root)}`);
+  }
+  // Ownership is only worth printing when it belongs to someone else. "held by: me" is noise on
+  // the status this very command just finished producing.
+  if (status.owner && status.owner.state !== 'selfHeld') {
+    say(`  held by: ${status.owner.processType} process ${status.owner.pid} on ${status.owner.hostname} [${status.owner.state}]`);
+    say(`           ${status.owner.command}, since ${status.owner.acquiredAt}`);
   }
   if (!status.reconciliation.balances) say('  WARNING: the ledger does not balance; every rate derived from it is provisional.');
 }
@@ -177,7 +194,7 @@ async function commandCreate(positional: string[], options: Options): Promise<vo
   say(`Start it with: ${TERMINAL_COMMAND} run ${name}${options.synthetic ? ' --synthetic' : ''}`);
 }
 
-async function commandRun(positional: string[], options: Options, resuming: boolean): Promise<void> {
+async function commandRun(positional: string[], options: Options, resuming: boolean, invocationLine: string): Promise<void> {
   const [name] = positional;
   if (!name) fail(`usage: ${TERMINAL_COMMAND} ${resuming ? 'resume' : 'run'} <name> [--max-attempts n]`);
   const directory = campaignDirectory(String(options.root ?? defaultCampaignRoot()), name);
@@ -204,17 +221,32 @@ async function commandRun(positional: string[], options: Options, resuming: bool
   process.on('SIGTERM', onSignal);
 
   const maxAttempts = options['max-attempts'] !== undefined ? Number(options['max-attempts']) : undefined;
-  say(`${resuming ? 'Resuming' : 'Running'} ${configuration.label}…`);
-  const status = await campaign.run({
-    maxAttempts,
-    shouldPause: () => stopping,
-    onProgress: (progress, trace) => {
-      const bar = `${String(progress.terminalCount).padStart(4)}/${progress.slotCount}`;
-      say(`  ${bar}  ${trace.status.padEnd(20)} ${trace.slotKey}`);
-    },
-  });
-  process.off('SIGINT', onSignal);
-  process.off('SIGTERM', onSignal);
+  let status: CampaignStatus;
+  try {
+    status = await campaign.run({
+      maxAttempts,
+      shouldPause: () => stopping,
+      // Announced only once the campaign is genuinely ours and the manifest still holds. Saying
+      // "Running…" and then being refused is a worse message than saying nothing yet.
+      onStarted: () => say(`${resuming ? 'Resuming' : 'Running'} ${configuration.label}…`),
+      // Ownership is taken before the first request. A campaign the desktop application is already
+      // running is refused here rather than discovered later by the ledger, after both processes
+      // have paid for the same inference.
+      owner: { processType: 'terminal', command: invocationLine },
+      onProgress: (progress, trace) => {
+        const bar = `${String(progress.terminalCount).padStart(4)}/${progress.slotCount}`;
+        say(`  ${bar}  ${trace.status.padEnd(20)} ${trace.slotKey}`);
+      },
+    });
+  } catch (error) {
+    if (error instanceof CampaignLockError) {
+      fail(`${error.message}\n\nNothing was run. Once it is genuinely stopped: ${TERMINAL_COMMAND} unlock ${name}`, 4);
+    }
+    throw error;
+  } finally {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+  }
 
   say('');
   renderStatus(status);
@@ -254,7 +286,13 @@ async function commandFinalize(positional: string[], options: Options): Promise<
   // A blinding secret is generated per finalize and never stored beside the packet. Losing it means
   // a new packet must be built, which is the correct failure: an unblindable packet is safe.
   const secret = String(options.secret ?? randomBytes(24).toString('hex'));
-  const report = campaign.finalize({ blindingSecret: secret });
+  let report;
+  try {
+    report = campaign.finalize({ blindingSecret: secret });
+  } catch (error) {
+    if (error instanceof CampaignError && error.code === 'campaignInUse') fail(error.message, 4);
+    throw error;
+  }
   const paths = campaignPaths(directory);
 
   say(`${report.label}`);
@@ -326,6 +364,86 @@ async function commandRetest(positional: string[], options: Options): Promise<vo
   say(`  Written: ${campaignPaths(targetDirectory).manifest}`);
 }
 
+// MARK: - Ownership
+
+async function commandLock(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} lock <name>`);
+  const inspection = inspectCampaignLock(campaignDirectory(root, name));
+  say(inspection.message);
+  if (inspection.record) {
+    say('');
+    say(`  process    ${inspection.record.processType} pid ${inspection.record.pid} on ${inspection.record.hostname}`);
+    say(`  command    ${inspection.record.command}`);
+    say(`  acquired   ${inspection.record.acquiredAt}`);
+    say(`  heartbeat  ${inspection.record.heartbeatAt} (${Math.round((inspection.heartbeatAgeMilliseconds ?? 0) / 1000)}s ago)`);
+    say(`  state      ${inspection.state}`);
+  }
+}
+
+async function commandUnlock(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} unlock <name> [--force]`);
+  const directory = campaignDirectory(root, name);
+  try {
+    const previous = breakCampaignLock(directory, `released by ${invocation(process.argv.slice(2))}`, { force: options.force === true });
+    if (!previous.held) { say(`No process holds ${name}.`); return; }
+    say(`Released the lock on ${name}.`);
+    if (previous.record) say(`  it was held by ${previous.record.processType} process ${previous.record.pid} on ${previous.record.hostname} (${previous.state})`);
+    say(`  the release is recorded in ${directory}/locks/`);
+  } catch (error) {
+    if (error instanceof CampaignLockError) fail(error.message, 4);
+    throw error;
+  }
+}
+
+// MARK: - The installed command
+
+function renderTerminalCommandStatus(): void {
+  const status = terminalCommandStatus();
+  say(status.message);
+  say('');
+  say(`  command          ${status.command}`);
+  say(`  in-app launcher  ${status.launcherPath ?? '(none — this is a development checkout)'}`);
+  say(`  install path     ${status.installPath}`);
+  say(`  installed        ${status.installed ? (status.installedIsOurs ? 'yes' : 'a file exists that we did not write') : 'no'}`);
+  say(`  on PATH          ${status.directoryOnPath ? 'yes' : 'no'}`);
+  if (status.pathHint) { say(''); for (const line of status.pathHint.split('\n')) say(`  ${line}`); }
+}
+
+async function commandWhere(): Promise<void> {
+  say(`${PRODUCT.name} ${PRODUCT.version}`);
+  say(`  campaigns        ${defaultCampaignRoot()}`);
+  say(`  running from     ${process.argv[1]}`);
+  say('');
+  renderTerminalCommandStatus();
+}
+
+async function commandInstallCommand(): Promise<void> {
+  try {
+    const status = installTerminalCommand();
+    for (const line of status.message.split('\n')) say(line);
+    say('');
+    say('That is the only file the install created. No PATH, shell profile, system directory or');
+    say('privileged location was touched, and nothing runs at login.');
+  } catch (error) {
+    if (error instanceof TerminalCommandError) fail(error.message);
+    throw error;
+  }
+}
+
+async function commandUninstallCommand(): Promise<void> {
+  try {
+    const status = uninstallTerminalCommand();
+    for (const line of status.message.split('\n')) say(line);
+  } catch (error) {
+    if (error instanceof TerminalCommandError) fail(error.message);
+    throw error;
+  }
+}
+
 function commandHelp(): void {
   say(`${PRODUCT.name} benchmark engine · ${TERMINAL_COMMAND} ${PRODUCT.version}`);
   say('');
@@ -338,6 +456,13 @@ function commandHelp(): void {
   say('  verify <name>                   recompute every manifest binding and report what moved');
   say('  finalize <name>                 reconcile, rank, interpret, and build the blinded packet');
   say('  retest <name> <new-name>        derive a manifest for this machine from another one');
+  say('');
+  say('  lock <name>                     who holds this campaign, and whether they are still alive');
+  say('  unlock <name> [--force]         release a crashed owner\'s lock; --force for a live one');
+  say('');
+  say('  where                           where campaigns live, and whether this command is installed');
+  say('  install-command                 install this command for your account (one file, no PATH change)');
+  say('  uninstall-command               remove exactly the file install-command wrote');
   say('');
   say('  --root <dir>        campaign directory (default: the application\'s own)');
   say('  --endpoint <url>    Ollama endpoint (default: ' + DEFAULT_ENDPOINT + ')');
@@ -352,17 +477,29 @@ function commandHelp(): void {
 }
 
 export async function main(argv: string[]): Promise<void> {
+  // A terminal command has to survive its reader going away. `cernum status | head -3` closes the
+  // pipe while there is still output queued, and without this Node turns that into an unhandled
+  // 'error' event and a stack trace, where a person expected three lines and their prompt back.
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on('error', (error: NodeJS.ErrnoException) => { if (error.code === 'EPIPE') process.exit(0); });
+  }
   const { command, positional, options } = parse(argv);
+  const invocationLine = invocation(argv);
   switch (command) {
     case 'models': return commandModels(options);
     case 'suites': return commandSuites();
     case 'create': return commandCreate(positional, options);
-    case 'run': return commandRun(positional, options, false);
-    case 'resume': return commandRun(positional, options, true);
+    case 'run': return commandRun(positional, options, false, invocationLine);
+    case 'resume': return commandRun(positional, options, true, invocationLine);
     case 'status': return commandStatus(positional, options);
     case 'verify': return commandVerify(positional, options);
     case 'finalize': return commandFinalize(positional, options);
     case 'retest': return commandRetest(positional, options);
+    case 'lock': return commandLock(positional, options);
+    case 'unlock': return commandUnlock(positional, options);
+    case 'where': return commandWhere();
+    case 'install-command': return commandInstallCommand();
+    case 'uninstall-command': return commandUninstallCommand();
     case 'help': case '--help': case '-h': return commandHelp();
     default: fail(`unknown command '${command}'. Try '${TERMINAL_COMMAND} help'.`);
   }

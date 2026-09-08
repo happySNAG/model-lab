@@ -106,6 +106,26 @@ export interface OllamaTransport {
   chat(request: OllamaChatRequest, cancellation: CancellationToken): Promise<OllamaChatReport>;
 }
 
+/**
+ * A transport that can be watched while it answers.
+ *
+ * Optional on purpose: a transport that cannot stream must say so by not implementing this, so a
+ * caller has to decide what to record instead. The alternative — a default that reconstructs
+ * arrival times — is how a derived number ends up labelled measured.
+ */
+export interface OllamaStreamingTransport extends OllamaTransport {
+  /**
+   * Send one chat and call `onChunk` as each NDJSON line lands. `onChunk` receives the chunk and
+   * the millisecond offset from the moment the request was sent — the offset IS the measurement.
+   */
+  chatStream(request: OllamaChatRequest, cancellation: CancellationToken,
+             onChunk: (chunk: OllamaStreamChunk, atMilliseconds: number) => void): Promise<OllamaChatReport>;
+}
+
+export function supportsStreaming(transport: OllamaTransport): transport is OllamaStreamingTransport {
+  return typeof (transport as OllamaStreamingTransport).chatStream === 'function';
+}
+
 /** The ONLY transport this module provides: always refuses (fail-closed by construction). */
 export class UnconfiguredOllamaTransport implements OllamaTransport {
   async version(): Promise<OllamaVersionReport> { throw new OllamaTransportFailure('notConfigured'); }
@@ -169,6 +189,93 @@ export function chatReportFrom(text: string): OllamaChatReport {
     promptEvalDurationNanoseconds: int(wire.prompt_eval_duration),
     evalCount: int(wire.eval_count),
     evalDurationNanoseconds: int(wire.eval_duration),
+  };
+}
+
+// MARK: - Streaming wire codec
+//
+// The non-streaming `/api/chat` call returns durations, and durations are not arrival times. A
+// first-token latency computed from `load_duration + prompt_eval_duration` is a RECONSTRUCTION of
+// when the first token probably arrived; presenting it beside a measured value makes the two
+// indistinguishable to a reader. Streaming replaces the reconstruction with an observation: the
+// clock is read when the byte actually lands.
+
+/** One decoded line of an `/api/chat` NDJSON stream. */
+export interface OllamaStreamChunk {
+  model?: string;
+  /** Visible answer text carried by this chunk. Empty string when the chunk carries none. */
+  contentDelta: string;
+  /** Reasoning text carried by this chunk, when the runtime separates the two channels. */
+  thinkingDelta: string;
+  done: boolean;
+  doneReason?: string;
+  totalDurationNanoseconds?: number;
+  loadDurationNanoseconds?: number;
+  promptEvalCount?: number;
+  promptEvalDurationNanoseconds?: number;
+  evalCount?: number;
+  evalDurationNanoseconds?: number;
+}
+
+/** The request body for a STREAMING chat. Identical to the non-streaming body but for `stream`. */
+export function chatStreamRequestBody(request: OllamaChatRequest): string {
+  const nonStreaming = JSON.parse(chatRequestBody(request)) as Record<string, unknown>;
+  nonStreaming.stream = true;
+  return JSON.stringify(sortKeys(nonStreaming));
+}
+
+/**
+ * Decode one NDJSON line. A line that does not decode is a malformed stream, not an empty chunk:
+ * silently skipping it would let a truncated or interleaved response look like a short answer.
+ */
+export function chatStreamChunkFrom(line: string): OllamaStreamChunk {
+  const wire = parseJSONContainer(line);
+  if (!wire || Array.isArray(wire)) {
+    throw new OllamaTransportFailure('malformedResponse',
+      `a chat stream line did not decode: ${line.length === 0 ? 'empty line' : 'not a JSON object'}`);
+  }
+  const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined);
+  const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+  const message = (wire.message && typeof wire.message === 'object' ? wire.message : {}) as Record<string, unknown>;
+  return {
+    model: str(wire.model),
+    contentDelta: str(message.content) ?? '',
+    thinkingDelta: str(message.thinking) ?? '',
+    done: wire.done === true,
+    doneReason: str(wire.done_reason),
+    totalDurationNanoseconds: int(wire.total_duration),
+    loadDurationNanoseconds: int(wire.load_duration),
+    promptEvalCount: int(wire.prompt_eval_count),
+    promptEvalDurationNanoseconds: int(wire.prompt_eval_duration),
+    evalCount: int(wire.eval_count),
+    evalDurationNanoseconds: int(wire.eval_duration),
+  };
+}
+
+/** Fold a completed stream into the same report shape a non-streaming call produces. */
+export function chatReportFromStream(model: string, chunks: OllamaStreamChunk[]): OllamaChatReport {
+  let content = '';
+  let thinking = '';
+  const final = chunks[chunks.length - 1];
+  for (const chunk of chunks) {
+    content += chunk.contentDelta;
+    thinking += chunk.thinkingDelta;
+  }
+  if (!final?.done) {
+    throw new OllamaTransportFailure('malformedResponse',
+      'the chat stream ended before the runtime reported done; the answer is incomplete and is not recorded as one');
+  }
+  return {
+    model: final.model ?? model,
+    content,
+    thinkingTrace: thinking.length > 0 ? thinking : undefined,
+    doneReason: final.doneReason,
+    totalDurationNanoseconds: final.totalDurationNanoseconds,
+    loadDurationNanoseconds: final.loadDurationNanoseconds,
+    promptEvalCount: final.promptEvalCount,
+    promptEvalDurationNanoseconds: final.promptEvalDurationNanoseconds,
+    evalCount: final.evalCount,
+    evalDurationNanoseconds: final.evalDurationNanoseconds,
   };
 }
 

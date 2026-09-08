@@ -33,6 +33,7 @@ import { AttemptTelemetry, RuntimeReportedTiming, StreamEvent, explainEmptyAnswe
 import { FinalRankings, outcomesFromLedger, rankCandidates } from './ranking';
 import { RetentionReport, recommendRetention } from './retention';
 import { AdjudicableResponse, BlindedPacket, PacketAudit, PacketKey, auditPacket, buildBlindedPacket } from './blinded';
+import { CampaignLockError, CampaignLockHandle, LockOptions, LockOwnerState, LockProcessType, acquireCampaignLock, inspectCampaignLock } from './lock';
 
 export const CAMPAIGN_FORMAT_VERSION = 1;
 
@@ -115,6 +116,8 @@ export interface CampaignStatus {
   standingAbort?: { reason: string; stage: string; blockedSlotCount: number };
   reconciliation: Reconciliation;
   root: string;
+  /** The process that currently holds the campaign, when one does. Read from disk, not from memory. */
+  owner?: { processType: LockProcessType; command: string; pid: number; hostname: string; acquiredAt: string; state: LockOwnerState; message: string };
 }
 
 export interface AttemptTrace {
@@ -133,6 +136,24 @@ export interface RunOptions {
   shouldPause?: () => boolean;
   /** Stop after this many attempts. Used by the smoke run to keep a live campaign small. */
   maxAttempts?: number;
+  /**
+   * Who is asking. Recorded in the campaign lock so a refusal can name the process holding it —
+   * "the desktop application is running this" is a useful message; "it is locked" is not.
+   */
+  owner?: { processType: LockProcessType; command: string };
+  /**
+   * Pass a handle to run under a lock the caller already holds, or `false` to run without taking
+   * one. `false` exists for a single-process test that drives `run` twice in a row; nothing that
+   * touches a real runtime should use it.
+   */
+  lock?: CampaignLockHandle | false;
+  lockOptions?: LockOptions;
+  /**
+   * Called once the campaign is genuinely this caller's: ownership taken and the frozen manifest
+   * re-verified. A caller that announced "running…" before this point would announce it and then
+   * be refused, which is a worse message than no message.
+   */
+  onStarted?: (status: CampaignStatus) => void;
 }
 
 export interface FinalReport {
@@ -286,6 +307,73 @@ export class Campaign {
    * order. Two code paths for "start" and "resume" would eventually disagree about one of them.
    */
   async run(options: RunOptions = {}): Promise<CampaignStatus> {
+    const ownership = this.takeOwnership(options);
+    try {
+      return await this.runOwned(options);
+    } finally {
+      if (ownership.ours && ownership.handle) {
+        const released = ownership.handle.release();
+        this.ledger.event('lockReleased', { pid: ownership.handle.record.pid, removed: released });
+      }
+    }
+  }
+
+  /**
+   * Take the campaign for the duration of a run.
+   *
+   * Ownership is taken BEFORE the manifest is verified and before a single request is sent, so a
+   * second runner is turned away while it has cost nothing. A crashed owner's lock is reclaimed
+   * here and the reclaim is written into the ledger's event trace, because "this campaign was
+   * resumed after a crash" is a fact about the evidence, not an implementation detail.
+   */
+  private takeOwnership(options: RunOptions): { handle?: CampaignLockHandle; ours: boolean } {
+    if (options.lock === false) return { ours: false };
+    if (options.lock) return { handle: options.lock, ours: false };
+    const owner = options.owner ?? { processType: 'terminal' as LockProcessType, command: 'unattributed' };
+    try {
+      const handle = acquireCampaignLock(this.root, {
+        processType: owner.processType,
+        command: owner.command,
+        campaignID: this.campaignID,
+        campaignName: path.basename(this.root),
+      }, options.lockOptions);
+      if (handle.recovered) {
+        this.ledger.event('lockRecovered', {
+          crashedPid: handle.recovered.pid,
+          crashedProcessType: handle.recovered.processType,
+          crashedCommand: handle.recovered.command,
+          crashedHostname: handle.recovered.hostname,
+          heldSince: handle.recovered.acquiredAt,
+          lastHeartbeat: handle.recovered.heartbeatAt,
+          why: 'the recorded owner no longer exists, so the campaign was left locked by a crash; the lock was reclaimed and the crashed owner kept as evidence',
+        });
+      }
+      this.ledger.event('lockAcquired', {
+        pid: handle.record.pid, processType: handle.record.processType, command: handle.record.command,
+        recoveredCrash: handle.recovered !== undefined,
+      });
+      return { handle, ours: true };
+    } catch (error) {
+      if (error instanceof CampaignLockError) {
+        this.ledger.event('lockRefused', {
+          code: error.code,
+          state: error.inspection.state,
+          heldByPID: error.inspection.record?.pid,
+          heldByProcessType: error.inspection.record?.processType,
+          heldOnHost: error.inspection.record?.hostname,
+          refusedPID: process.pid,
+        });
+      }
+      throw error;
+    }
+  }
+
+  /** What the campaign currently reports about its own ownership. Reads the lock file; writes nothing. */
+  inspectLock(options: LockOptions = {}) {
+    return inspectCampaignLock(this.root, options);
+  }
+
+  private async runOwned(options: RunOptions): Promise<CampaignStatus> {
     const verification = this.verify();
     if (!verification.intact) {
       const reason = `the frozen manifest no longer describes this campaign: ${verification.drifts.map((drift) => `${drift.field} — ${drift.meaning}`).join('; ')}`;
@@ -301,6 +389,7 @@ export class Campaign {
       this.ledger.load();
     }
     this.ledger.event('runStarted', { pending: this.ledger.pending().length });
+    options.onStarted?.(this.status('running'));
 
     let attempted = 0;
     let loadedCandidate: string | undefined;
@@ -457,14 +546,21 @@ export class Campaign {
 
   // -------------------------------------------------------------------- status
 
-  status(override?: CampaignState): CampaignStatus {
+  status(override?: CampaignState, lockOptions: LockOptions = {}): CampaignStatus {
     const reconciliation = this.ledger.reconcile();
     const checkpoint = this.ledger.readCheckpoint();
     const standing = this.ledger.standingAbort();
+    const lock = inspectCampaignLock(this.root, lockOptions);
+    // A campaign someone is running right now reads as `running` from EVERY surface, not only from
+    // the process that started it. Before the lock there was no way to know, so a campaign a
+    // terminal was actively advancing showed as `paused` on the Campaigns screen — which is the
+    // single most misleading thing that screen could say about it.
+    const ownedLive = lock.held && (lock.state === 'live' || lock.state === 'selfHeld');
     let state: CampaignState;
     if (override) state = override;
-    else if (standing) state = 'aborted';
     else if (reconciliation.complete) state = 'complete';
+    else if (ownedLive) state = 'running';
+    else if (standing) state = 'aborted';
     else if (reconciliation.terminal === 0) state = 'created';
     else state = 'paused';
 
@@ -486,6 +582,11 @@ export class Campaign {
       standingAbort: standing ? { reason: standing.reason, stage: standing.stage, blockedSlotCount: standing.blockedSlotCount } : undefined,
       reconciliation,
       root: this.root,
+      owner: lock.held && lock.record ? {
+        processType: lock.record.processType, command: lock.record.command, pid: lock.record.pid,
+        hostname: lock.record.hostname, acquiredAt: lock.record.acquiredAt,
+        state: lock.state ?? 'live', message: lock.message,
+      } : undefined,
     };
   }
 
@@ -497,7 +598,14 @@ export class Campaign {
    * A blinded packet is written whenever anything is awaiting human review, and is written BEFORE
    * the rankings are read by a person, so nobody adjudicates while holding the leaderboard.
    */
-  finalize(options: { blindingSecret?: string } = {}): FinalReport {
+  finalize(options: { blindingSecret?: string; lockOptions?: LockOptions } = {}): FinalReport {
+    // Finalizing reads a ledger that a live runner is still appending to. The numbers would be a
+    // snapshot presented as a conclusion, which is the one thing a final report must not be.
+    const lock = inspectCampaignLock(this.root, options.lockOptions);
+    if (lock.held && lock.state === 'live') {
+      throw new CampaignError('campaignInUse',
+        `${lock.message} Nothing was finalized: a final report read while attempts are still landing would be a snapshot presented as a conclusion.`);
+    }
     const paths = campaignPaths(this.root);
     const reconciliation = this.ledger.reconcile();
     const producedAt = this.host.now().toISOString().replace(/\.\d{3}Z$/, 'Z');

@@ -8,7 +8,7 @@
 // Run `npm run build` first. The campaign is synthetic, so no request reaches any server.
 
 import { test, expect, _electron as electron, ElectronApplication, Page } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
+import { ChildProcess, execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -21,6 +21,19 @@ function cernum(...args: string[]): string {
   return execFileSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaignRoot], {
     cwd: root, encoding: 'utf8', env: { ...process.env }, timeout: 180_000,
   });
+}
+
+/** Run the command expecting it to refuse, and return what it said and the code it said it with. */
+function cernumExpectingFailure(...args: string[]): { status: number; stderr: string; stdout: string } {
+  try {
+    const stdout = execFileSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaignRoot], {
+      cwd: root, encoding: 'utf8', env: { ...process.env }, timeout: 180_000, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { status: 0, stderr: '', stdout };
+  } catch (error) {
+    const failure = error as { status: number; stderr: string; stdout: string };
+    return { status: failure.status, stderr: String(failure.stderr ?? ''), stdout: String(failure.stdout ?? '') };
+  }
 }
 
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
@@ -102,4 +115,103 @@ test('a campaign created, paused and resumed in the terminal is read and finaliz
 
   // The terminal reads the finalized campaign the application wrote.
   expect(cernum('status', 'crossing', '--synthetic')).toContain('[complete]');
+});
+
+// ---------------------------------------------------------------------------------------------
+// One campaign, two processes.
+//
+// The engine boundary makes two surfaces agree about what a campaign IS. The lock makes them agree
+// about who is RUNNING it — which the boundary alone cannot do, because neither process can see the
+// other's memory. This test uses two real operating-system processes and one campaign directory,
+// and it kills one of them, because a crash-recovery claim that was never allowed to crash is not
+// a claim about anything.
+
+test('a second runner is refused while a live one holds the campaign, and a crashed one is recovered', async () => {
+  cernum('create', 'contested', '--synthetic', '--models', 'alpha:1b',
+    '--suites', 'suite.model-lab.foundation', '--repeats', '1');
+  const directory = path.join(campaignRoot, 'contested');
+  const lockFile = path.join(directory, 'campaign.lock');
+
+  // A separate process takes the campaign and holds it, exactly as a desktop window would.
+  const holderScript = path.join(campaignRoot, 'holder.ts');
+  fs.writeFileSync(holderScript, `
+    import { acquireCampaignLock } from '${path.join(root, 'src/engine/lock')}';
+    const handle = acquireCampaignLock(process.argv[2], {
+      processType: 'desktop', command: 'Model Lab · Campaigns screen', campaignID: 'campaign:contested', campaignName: 'contested',
+    });
+    process.stdout.write('held ' + handle.record.pid + '\\n');
+    setInterval(() => handle.heartbeat(), 1_000);
+  `, 'utf8');
+
+  let holder: ChildProcess | undefined;
+  try {
+    holder = spawn('npx', ['tsx', holderScript, directory], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+    const heldByPID = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('the holder never took the campaign')), 60_000);
+      holder!.stdout!.on('data', (buffer: Buffer) => {
+        const match = /held (\d+)/.exec(buffer.toString());
+        if (match) { clearTimeout(timer); resolve(Number(match[1])); }
+      });
+    });
+    expect(fs.existsSync(lockFile)).toBe(true);
+
+    // ---- The terminal refuses, by name, and runs nothing.
+    const refused = cernumExpectingFailure('run', 'contested', '--synthetic');
+    expect(refused.status).toBe(4);
+    expect(refused.stderr).toContain(`desktop process ${heldByPID}`);
+    expect(refused.stderr).toContain('Model Lab · Campaigns screen');
+    expect(refused.stderr).toMatch(/Pause the first one/);
+    expect(JSON.parse(fs.readFileSync(path.join(directory, 'ledger', 'checkpoint.json'), 'utf8')).terminalCount).toBe(0);
+
+    // ---- `unlock` will not break a live lock on its own say-so either.
+    const notBroken = cernumExpectingFailure('unlock', 'contested');
+    expect(notBroken.status).toBe(4);
+    expect(notBroken.stderr).toMatch(/Nothing was released/);
+    expect(fs.existsSync(lockFile)).toBe(true);
+
+    // ---- The desktop application, which started nothing, still shows who has it.
+    const watching = await launch();
+    await watching.page.click('[data-nav="campaigns"]');
+    const table = watching.page.locator('[data-testid="campaign-table"]');
+    await expect(table).toContainText('contested', { timeout: 20_000 });
+    await expect(table).toContainText(`running in a desktop · pid ${heldByPID}`);
+    await watching.app.close();
+
+    // ---- Now it crashes. SIGKILL to the process that actually recorded itself in the lock, so
+    // there is no chance to clean up — which is the point. (Signalling the `npx` wrapper would
+    // leave the real holder alive, and the lock would still be honestly live.)
+    process.kill(heldByPID, 'SIGKILL');
+    holder.kill('SIGKILL');
+    holder = undefined;
+    const gone = async () => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        try { process.kill(heldByPID, 0); } catch { return true; }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return false;
+    };
+    expect(await gone()).toBe(true);
+    // The lock outlives the process that took it. That is what a crash looks like on disk.
+    expect(fs.existsSync(lockFile)).toBe(true);
+  } finally {
+    holder?.kill('SIGKILL');
+  }
+
+  // ---- The next run reclaims the crashed owner's lock, records that it did, and finishes.
+  const recovered = cernum('run', 'contested', '--synthetic');
+  expect(recovered).toContain('[complete]');
+  expect(fs.existsSync(lockFile)).toBe(false);
+
+  const events = fs.readFileSync(path.join(directory, 'ledger', 'events.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(events.filter((event) => event.kind === 'lockRefused')).toHaveLength(1);
+  expect(events.filter((event) => event.kind === 'lockRecovered')).toHaveLength(1);
+  expect(events.filter((event) => event.kind === 'lockReleased').length).toBeGreaterThan(0);
+
+  // The crash is kept as evidence rather than tidied away.
+  const kept = fs.readdirSync(path.join(directory, 'locks'));
+  expect(kept.filter((name) => name.startsWith('recovered-'))).toHaveLength(1);
+
+  // Nothing was lost and nothing was repeated.
+  expect(cernum('status', 'contested', '--synthetic')).toContain('4/4 attempts recorded');
 });

@@ -19,7 +19,16 @@
 // channel with the first thinking token recorded beside it.
 //
 // AN UNMEASURED VALUE IS NEVER SILENTLY REPLACED BY A GUESS. Where a provider does not expose a
-// split, the value is recorded as unavailable WITH A REASON.
+// split, the value is recorded as unavailable WITH A REASON. In particular this module does NOT
+// estimate a token count from text length: a character-per-token ratio is a property of a
+// tokenizer, it differs per model and per script, and a number derived from one is indistinguishable
+// from a measured one once it is written into evidence. `unavailable` plus a reason is worth more
+// than a plausible number, because a reader can act on it.
+//
+// ARRIVAL TIMES ARE OBSERVED, NEVER RECONSTRUCTED. `atMilliseconds` on an event is the moment the
+// caller SAW the bytes. It is never computed from the runtime's own reported durations: those say
+// how long the runtime spent, not when anything reached the client, and the two differ by queueing,
+// transport and scheduling — precisely the delay a person waiting for an answer experiences.
 
 import { Measurement, measured, unavailable } from '../core/candidate';
 
@@ -27,9 +36,13 @@ export type StreamChannel = 'visible' | 'thinking';
 
 export interface StreamEvent {
   channel: StreamChannel;
-  /** Tokens carried by this event, as the runtime counts them. */
-  tokens: number;
-  /** Milliseconds since the request was sent. */
+  /**
+   * Tokens carried by this event, when the runtime counts per event. ABSENT when it does not —
+   * Ollama's stream carries text deltas and reports a single combined completion count only at the
+   * end, so a per-channel figure is genuinely unavailable rather than merely unread.
+   */
+  tokens?: number;
+  /** Milliseconds from the moment the request was sent to the moment this event was OBSERVED. */
   atMilliseconds: number;
 }
 
@@ -54,14 +67,19 @@ export interface AttemptTelemetry {
   throughputTokensPerSecondMilli: Measurement<number>;
   visibleTokenCount: Measurement<number>;
   thinkingTokenCount: Measurement<number>;
+  /** Every completion token the runtime counted, across both channels. Its own figure, unsplit. */
+  completionTokenCount: Measurement<number>;
   promptTokenCount: Measurement<number>;
   doneReason: Measurement<string>;
-  /** True when the stream produced thinking tokens but no visible ones — the budget-exhaustion shape. */
+  /** True when the stream carried thinking output and no visible output — the budget-exhaustion shape. */
   thinkingOnly: boolean;
+  /** True when token arrival was actually observed, so first-token times are measurements. */
   streamed: boolean;
 }
 
 const NO_STREAM = 'the adapter did not stream, so no token arrival time was observed';
+const NO_SPLIT = 'the runtime reported one combined completion token count and no per-channel split, and this engine does not estimate a token count from text length';
+const NO_COUNT = 'the runtime reported no completion token count, and this engine does not estimate one from text length';
 
 /**
  * Fold a stream of token events plus whatever the runtime reported into one attempt's telemetry.
@@ -73,11 +91,31 @@ export function summariseAttempt(events: StreamEvent[], runtime: RuntimeReported
   const streamed = events.length > 0;
   const visible = events.filter((event) => event.channel === 'visible');
   const thinking = events.filter((event) => event.channel === 'thinking');
-  const visibleTokens = visible.reduce((sum, event) => sum + event.tokens, 0);
-  const thinkingTokens = thinking.reduce((sum, event) => sum + event.tokens, 0);
 
-  const firstVisible = visible.find((event) => event.tokens > 0);
-  const firstThinking = thinking.find((event) => event.tokens > 0);
+  const firstVisible = visible[0];
+  const firstThinking = thinking[0];
+
+  /**
+   * One channel's token count, from the best evidence available and never from an estimate.
+   *
+   *  · the events themselves carry counts    -> their sum, which is what the runtime counted
+   *  · this channel produced nothing at all  -> zero, which is an observation and not a guess
+   *  · this channel was the ONLY one active  -> the runtime's combined completion count belongs
+   *                                             entirely to it, so it is that channel's count
+   *  · both channels were active             -> unavailable: the runtime published one number for
+   *                                             two channels and splitting it would be invention
+   */
+  const channelTokens = (own: StreamEvent[], other: StreamEvent[]): Measurement<number> => {
+    if (!streamed) return unavailable(NO_STREAM);
+    if (own.length > 0 && own.every((event) => event.tokens !== undefined)) {
+      return measured(own.reduce((sum, event) => sum + (event.tokens ?? 0), 0));
+    }
+    if (own.length === 0) return measured(0);
+    if (other.length === 0) {
+      return runtime.evalTokenCount === undefined ? unavailable(NO_COUNT) : measured(runtime.evalTokenCount);
+    }
+    return unavailable(runtime.evalTokenCount === undefined ? NO_COUNT : NO_SPLIT);
+  };
 
   const nanosecondsToMilliseconds = (nanoseconds: number | undefined, reason: string): Measurement<number> =>
     nanoseconds === undefined ? unavailable(reason) : measured(Math.round(nanoseconds / 1_000_000));
@@ -92,8 +130,9 @@ export function summariseAttempt(events: StreamEvent[], runtime: RuntimeReported
       ? unavailable('no client wall time was recorded for this attempt')
       : measured(Math.round(totalElapsedMilliseconds));
 
-  // Throughput is derived from runtime-reported inputs only, never from the client clock, and is
-  // unavailable rather than zero when either input is missing.
+  // Throughput is the runtime's OWN completion token count over the runtime's OWN generation
+  // duration — never the client clock, never an estimated count — and is unavailable rather than
+  // zero when either input is missing.
   let throughput: Measurement<number>;
   if (runtime.evalTokenCount === undefined) throughput = unavailable('the runtime reported no completion token count');
   else if (runtime.evalDurationNanoseconds === undefined || runtime.evalDurationNanoseconds <= 0) {
@@ -117,11 +156,15 @@ export function summariseAttempt(events: StreamEvent[], runtime: RuntimeReported
       ? unavailable('no client wall time was recorded for this attempt')
       : measured(Math.round(totalElapsedMilliseconds)),
     throughputTokensPerSecondMilli: throughput,
-    visibleTokenCount: streamed ? measured(visibleTokens) : unavailable(NO_STREAM),
-    thinkingTokenCount: streamed ? measured(thinkingTokens) : unavailable(NO_STREAM),
+    visibleTokenCount: channelTokens(visible, thinking),
+    thinkingTokenCount: channelTokens(thinking, visible),
+    completionTokenCount: runtime.evalTokenCount === undefined ? unavailable('the runtime reported no completion token count') : measured(runtime.evalTokenCount),
     promptTokenCount: runtime.promptTokenCount === undefined ? unavailable('the runtime reported no prompt token count') : measured(runtime.promptTokenCount),
     doneReason: runtime.doneReason === undefined ? unavailable('the runtime gave no reason for stopping') : measured(runtime.doneReason),
-    thinkingOnly: thinkingTokens > 0 && visibleTokens === 0,
+    // Decided from what the channels CARRIED, not from a token count that may be unavailable: a
+    // stream that produced reasoning and no answer is the budget-exhaustion shape whether or not
+    // the runtime was willing to say how many tokens that was.
+    thinkingOnly: thinking.length > 0 && visible.length === 0,
     streamed,
   };
 }
@@ -136,6 +179,6 @@ export function summariseAttempt(events: StreamEvent[], runtime: RuntimeReported
 export function explainEmptyAnswer(telemetry: AttemptTelemetry, maxOutputTokens: number): string | undefined {
   if (!telemetry.thinkingOnly) return undefined;
   const thinking = 'measured' in telemetry.thinkingTokenCount ? telemetry.thinkingTokenCount.measured : undefined;
-  if (thinking === undefined) return 'the model produced thinking tokens and no visible answer';
+  if (thinking === undefined) return 'the model produced reasoning and no visible answer, and the runtime did not report how many tokens that took';
   return `the model spent ${thinking} of its ${maxOutputTokens}-token budget thinking and never began its visible answer; this is a budget setting, not a capability failure`;
 }

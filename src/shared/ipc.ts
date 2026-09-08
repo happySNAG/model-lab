@@ -277,6 +277,43 @@ export interface CampaignRow {
   running: boolean;
   directory: string;
   problem?: string;
+  /**
+   * The process that holds the campaign's cross-process lock, when one does. This is how the screen
+   * can say "a terminal is running this" rather than showing a campaign as idle while it advances.
+   */
+  owner?: CampaignOwnerRow;
+}
+
+export interface CampaignOwnerRow {
+  processType: 'desktop' | 'terminal';
+  command: string;
+  pid: number;
+  hostname: string;
+  acquiredAt: string;
+  state: 'live' | 'selfHeld' | 'stale' | 'unresponsive' | 'foreignHost';
+  message: string;
+}
+
+/**
+ * The installed terminal command, as the Campaigns screen sees it.
+ *
+ * Installing is a user-controlled action that writes ONE file into a directory the user already
+ * owns. Nothing here edits PATH, a shell profile or a privileged directory, and the uninstall
+ * removes exactly the file the install wrote.
+ */
+export interface TerminalCommandRow {
+  command: string;
+  supported: boolean;
+  launcherPath?: string;
+  launcherReason?: string;
+  installDirectory: string;
+  installPath: string;
+  installed: boolean;
+  installedIsOurs: boolean;
+  installedPointsHere: boolean;
+  directoryOnPath: boolean;
+  pathHint: string;
+  message: string;
 }
 
 export interface CampaignAttemptRow {
@@ -388,6 +425,10 @@ export interface ModelLabAPI {
   finalizeCampaign(name: string): Promise<CampaignDetail>;
   campaignRoot(): Promise<string>;
   onCampaignProgress(listener: (event: CampaignProgressEvent) => void): () => void;
+  /** The installed terminal command: what it is, and the two actions that put it there or take it away. */
+  terminalCommand(): Promise<TerminalCommandRow>;
+  installTerminalCommand(): Promise<TerminalCommandRow>;
+  uninstallTerminalCommand(): Promise<TerminalCommandRow>;
   /** The host platform, so copy can say "this Mac" / "this PC" truthfully. Fixed for the process lifetime. */
   readonly platform: 'darwin' | 'win32' | 'linux' | string;
 }
@@ -436,6 +477,9 @@ export const IPC = {
   finalizeCampaign: 'lab:campaign:finalize',
   campaignRoot: 'lab:campaign:root',
   eventCampaign: 'lab:event:campaign',
+  terminalCommand: 'lab:terminal:status',
+  installTerminalCommand: 'lab:terminal:install',
+  uninstallTerminalCommand: 'lab:terminal:uninstall',
 } as const;
 
 /**

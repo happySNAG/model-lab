@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CancellationToken } from '../core/adapter';
-import { OllamaInstalledModel, OllamaTransport, ThinkingMode } from '../core/ollama';
+import { OllamaChatReport, OllamaInstalledModel, OllamaTransport, ThinkingMode, supportsStreaming } from '../core/ollama';
 import { LiveExecutionAuthorization, OllamaHTTPTransport } from '../core/ollama-http';
 import { makeCandidate, measured, unavailable } from '../core/candidate';
 import { BenchmarkCase } from '../core/benchmark';
@@ -113,6 +113,12 @@ export interface LiveHostOptions {
   diskPath?: string;
   /** Enable the live residency controller. Off by default; the synthetic campaign never enables it. */
   enableResidency?: boolean;
+  /**
+   * Observe the answer as it streams, so first-token latency is measured rather than reconstructed.
+   * On by default. Turning it off does not restore a derived first-token time — it records the
+   * value as unavailable with a reason, which is what not measuring something looks like.
+   */
+  stream?: boolean;
   transport?: OllamaTransport;
   now?: () => Date;
 }
@@ -215,36 +221,39 @@ export class LiveHost implements CampaignHost {
     const assembledContext = benchmarkCase.inputs.syntheticContext;
     if (assembledContext !== undefined) messages.push({ role: 'user', content: assembledContext });
 
-    const startedAt = Date.now();
-    try {
-      const report = await this.transport.chat({
-        model: request.slot.modelID,
-        messages,
-        temperatureMilli: benchmarkCase.generationSettings.temperatureMilli,
-        topPMilli: benchmarkCase.generationSettings.topPMilli,
-        maxOutputTokens: benchmarkCase.generationSettings.maxOutputTokens,
-        seed: benchmarkCase.generationSettings.seed,
-        stopSequences: benchmarkCase.generationSettings.stopSequences,
-        requireJSONFormat: benchmarkCase.responseFormat === 'json',
-        thinkingMode: this.options.thinkingMode ?? 'disabled',
-        timeoutMilliseconds: benchmarkCase.executionBudgetMilliseconds,
-      }, new CancellationToken());
-      const totalElapsedMilliseconds = Date.now() - startedAt;
+    const chatRequest = {
+      model: request.slot.modelID,
+      messages,
+      temperatureMilli: benchmarkCase.generationSettings.temperatureMilli,
+      topPMilli: benchmarkCase.generationSettings.topPMilli,
+      maxOutputTokens: benchmarkCase.generationSettings.maxOutputTokens,
+      seed: benchmarkCase.generationSettings.seed,
+      stopSequences: benchmarkCase.generationSettings.stopSequences,
+      requireJSONFormat: benchmarkCase.responseFormat === 'json',
+      thinkingMode: this.options.thinkingMode ?? 'disabled',
+      timeoutMilliseconds: benchmarkCase.executionBudgetMilliseconds,
+    };
 
-      // The non-streaming chat endpoint reports counts and durations but no arrival times. Rather
-      // than invent a first-token time, the two channels are reported as single events at the
-      // points the runtime's own durations place them — and where it reports nothing, the
-      // telemetry records unavailable WITH A REASON.
-      const streamEvents: StreamEvent[] = [];
-      const promptMilliseconds = (report.promptEvalDurationNanoseconds ?? 0) / 1_000_000;
-      const loadMilliseconds = (report.loadDurationNanoseconds ?? 0) / 1_000_000;
-      const thinkingTokens = report.thinkingTrace ? Math.max(1, Math.round(report.thinkingTrace.length / 4)) : 0;
-      if (thinkingTokens > 0) streamEvents.push({ channel: 'thinking', tokens: thinkingTokens, atMilliseconds: Math.round(loadMilliseconds + promptMilliseconds) });
-      const visibleTokens = Math.max(0, (report.evalCount ?? 0) - thinkingTokens);
-      if (visibleTokens > 0 && report.evalDurationNanoseconds !== undefined) {
-        const perToken = report.evalDurationNanoseconds / 1_000_000 / Math.max(1, report.evalCount ?? 1);
-        streamEvents.push({ channel: 'visible', tokens: visibleTokens, atMilliseconds: Math.round(loadMilliseconds + promptMilliseconds + thinkingTokens * perToken) });
+    // Every arrival time this attempt reports is written HERE, from the client's clock, at the
+    // moment bytes landed. Nothing in this method computes a timestamp from a duration the runtime
+    // reported afterwards — an attempt that was not watched records no first-token time at all.
+    const startedAt = Date.now();
+    const streamEvents: StreamEvent[] = [];
+    const cancellation = new CancellationToken();
+    try {
+      let report: OllamaChatReport;
+      if (this.options.stream !== false && supportsStreaming(this.transport)) {
+        report = await this.transport.chatStream(chatRequest, cancellation, (chunk, atMilliseconds) => {
+          // No token count rides along: the stream carries text, and the runtime publishes a single
+          // combined completion count only in its final chunk. Attaching an estimate here is
+          // exactly the invention this pass removed.
+          if (chunk.thinkingDelta.length > 0) streamEvents.push({ channel: 'thinking', atMilliseconds });
+          if (chunk.contentDelta.length > 0) streamEvents.push({ channel: 'visible', atMilliseconds });
+        });
+      } else {
+        report = await this.transport.chat(chatRequest, cancellation);
       }
+      const totalElapsedMilliseconds = Date.now() - startedAt;
 
       return {
         answerText: report.content,
@@ -262,12 +271,15 @@ export class LiveHost implements CampaignHost {
         totalElapsedMilliseconds,
       };
     } catch (error) {
-      return this.failed('ollama.chatFailed', error instanceof Error ? error.message : String(error), Date.now() - startedAt);
+      // The events already collected are kept. Those bytes genuinely arrived when they say they
+      // did, and a stream that broke after a first token is a materially different failure from
+      // one that never produced anything.
+      return this.failed('ollama.chatFailed', error instanceof Error ? error.message : String(error), Date.now() - startedAt, streamEvents);
     }
   }
 
-  private failed(code: string, detail: string, elapsed?: number): AttemptOutcome {
-    return { answerText: '', streamEvents: [], runtime: {}, totalElapsedMilliseconds: elapsed, failure: { code, detail } };
+  private failed(code: string, detail: string, elapsed?: number, streamEvents: StreamEvent[] = []): AttemptOutcome {
+    return { answerText: '', streamEvents, runtime: {}, totalElapsedMilliseconds: elapsed, failure: { code, detail } };
   }
 
   /**

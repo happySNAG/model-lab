@@ -17,12 +17,13 @@ import { EventEmitter } from 'node:events';
 import { app } from 'electron';
 import {
   Campaign, CampaignConfiguration, CampaignStatus, Ledger, LiveHost, allRankableSuiteIDs, buildEngineCatalogue,
-  campaignPaths, discoverLocalModels, guardPolicyForEndpoint, modelStoreBaseline,
+  campaignPaths, discoverLocalModels, guardPolicyForEndpoint, inspectCampaignLock, modelStoreBaseline,
 } from '../engine/index';
 import type { FinalReport } from '../engine/campaign';
 import type { VerificationReport } from '../engine/manifest';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
-import type { CampaignRow, CampaignDetail, CampaignCreateRequest } from '../shared/ipc';
+import type { CampaignRow, CampaignDetail, CampaignCreateRequest, TerminalCommandRow } from '../shared/ipc';
+import { installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
 export class CampaignServiceError extends Error {
   constructor(message: string) {
@@ -81,10 +82,16 @@ export class CampaignService extends EventEmitter {
         const reconciliation = ledger.reconcile();
         const meta = ledger.meta();
         const abort = ledger.standingAbort();
+        // Read from the lock file, not from this process's memory: a campaign the terminal is
+        // running has no object here, and showing it as idle while it advances is the exact
+        // confusion the lock exists to remove.
+        const lock = inspectCampaignLock(directory);
         rows.push({
           name,
           label: typeof meta.label === 'string' ? meta.label : name,
-          state: reconciliation.complete ? 'complete' : abort ? 'aborted' : reconciliation.terminal === 0 ? 'created' : 'paused',
+          state: reconciliation.complete ? 'complete'
+            : lock.held && (lock.state === 'live' || lock.state === 'selfHeld') ? 'running'
+              : abort ? 'aborted' : reconciliation.terminal === 0 ? 'created' : 'paused',
           slotCount: reconciliation.slotCount,
           terminalCount: reconciliation.terminal,
           blockedCount: reconciliation.blocked,
@@ -93,6 +100,11 @@ export class CampaignService extends EventEmitter {
           createdAt: typeof meta.createdAt === 'string' ? meta.createdAt : '',
           running: this.active?.name === name,
           directory,
+          owner: lock.held && lock.record ? {
+            processType: lock.record.processType, command: lock.record.command, pid: lock.record.pid,
+            hostname: lock.record.hostname, acquiredAt: lock.record.acquiredAt,
+            state: lock.state ?? 'live', message: lock.message,
+          } : undefined,
         });
       } catch (error) {
         // A campaign directory that cannot be read is reported, never skipped silently: a
@@ -203,6 +215,9 @@ export class CampaignService extends EventEmitter {
     try {
       return await campaign.run({
         shouldPause: () => pausing,
+        // The in-process guard above stops two windows of THIS application; the campaign lock is
+        // what stops this application and a terminal, which no amount of in-process state can see.
+        owner: { processType: 'desktop', command: `${PRODUCT.name} ${PRODUCT.version} · Campaigns screen` },
         onProgress: (status, trace) => this.emit('campaignProgress', { status, trace }),
       });
     } finally {
@@ -226,5 +241,21 @@ export class CampaignService extends EventEmitter {
 
   productName(): string {
     return PRODUCT.name;
+  }
+
+  // ------------------------------------------------------------------ the installed terminal command
+
+  terminalCommand(): TerminalCommandRow {
+    return terminalCommandStatus();
+  }
+
+  /** Writes one file into a directory the user owns. Never PATH, never a profile, never elevated. */
+  installTerminalCommand(): TerminalCommandRow {
+    return installTerminalCommand();
+  }
+
+  /** Removes exactly the file `installTerminalCommand` wrote, identified by its marker. */
+  uninstallTerminalCommand(): TerminalCommandRow {
+    return uninstallTerminalCommand();
   }
 }

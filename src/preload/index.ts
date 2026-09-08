@@ -49,6 +49,9 @@ const api: ModelLabAPI = {
   verifyCampaign: (name) => ipcRenderer.invoke(IPC.verifyCampaign, name),
   finalizeCampaign: (name) => ipcRenderer.invoke(IPC.finalizeCampaign, name),
   campaignRoot: () => ipcRenderer.invoke(IPC.campaignRoot),
+  terminalCommand: () => ipcRenderer.invoke(IPC.terminalCommand),
+  installTerminalCommand: () => ipcRenderer.invoke(IPC.installTerminalCommand),
+  uninstallTerminalCommand: () => ipcRenderer.invoke(IPC.uninstallTerminalCommand),
   onCampaignProgress: (listener) => subscribe<CampaignProgressEvent>(IPC.eventCampaign, listener),
   platform: process.platform,
 };

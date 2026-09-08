@@ -226,6 +226,9 @@ async function bootstrap(): Promise<void> {
     return campaigns.detail(name);
   });
   ipcMain.handle(IPC.campaignRoot, () => campaigns.root());
+  ipcMain.handle(IPC.terminalCommand, () => campaigns.terminalCommand());
+  ipcMain.handle(IPC.installTerminalCommand, () => campaigns.installTerminalCommand());
+  ipcMain.handle(IPC.uninstallTerminalCommand, () => campaigns.uninstallTerminalCommand());
 }
 
 const gotLock = app.requestSingleInstanceLock();

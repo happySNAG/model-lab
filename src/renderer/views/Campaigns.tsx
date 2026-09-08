@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Shell } from '../App';
-import type { CampaignDetail, CampaignRow, CampaignVerification, ModelRow } from '../../shared/ipc';
+import type { CampaignDetail, CampaignRow, CampaignVerification, ModelRow, TerminalCommandRow } from '../../shared/ipc';
 import { Card, Empty, Modal, Pill, when } from '../components';
 
 // A campaign is a long benchmark with a frozen manifest and a durable ledger. It can be driven from
@@ -99,8 +99,14 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                   {row.problem && <div className="note bad small">{row.problem}</div>}
                 </td>
                 <td>
-                  <Pill tone={stateTone(row.state)} pulse={row.state === 'running'}>{row.state}</Pill>
+                  <Pill tone={stateTone(row.state)} pulse={row.state === 'running' || row.owner?.state === 'live'}>{row.state}</Pill>
                   {row.running && <span className="muted small"> in this window</span>}
+                  {!row.running && row.owner?.state === 'live' && (
+                    <div className="muted small">running in a {row.owner.processType} · pid {row.owner.pid}</div>
+                  )}
+                  {row.owner && row.owner.state !== 'live' && row.owner.state !== 'selfHeld' && (
+                    <div className="note warn small">left locked by {row.owner.processType} pid {row.owner.pid} ({row.owner.state})</div>
+                  )}
                   {!row.balances && row.state !== 'created' && <div className="muted small">ledger does not balance</div>}
                 </td>
                 <td className="num">{row.terminalCount}/{row.slotCount}{row.blockedCount > 0 ? ` · ${row.blockedCount} blocked` : ''}</td>
@@ -112,6 +118,8 @@ export function CampaignsView({ shell }: { shell: Shell }) {
         )}
         {root && <p className="muted small">Campaigns live in <code>{root}</code>. The terminal command writes here too, so a run started there appears above while it is running.</p>}
       </Card>
+
+      <TerminalCommand onError={setError} />
 
       {selected && detail && (
         <Modal title={detail.status.label} wide onClose={() => { setSelected(undefined); setDetail(undefined); }}
@@ -226,6 +234,79 @@ export function CampaignsView({ shell }: { shell: Shell }) {
 
       {creating && <CreateCampaign onClose={() => setCreating(false)} onCreated={(rows_) => { setRows(rows_); setCreating(false); }} onError={setError} />}
     </div>
+  );
+}
+
+/**
+ * The installed terminal command.
+ *
+ * Installing is a user-controlled action and is described before it happens, exactly: one file,
+ * one directory the person already owns, no PATH change, no shell profile, nothing privileged and
+ * nothing at login. The uninstall removes that one file and refuses anything it did not write.
+ */
+function TerminalCommand({ onError }: { onError: (message: string) => void }) {
+  const [status, setStatus] = useState<TerminalCommandRow>();
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setStatus(await api.terminalCommand()); }
+    catch (e) { onError(e instanceof Error ? e.message : String(e)); }
+  }, [onError]);
+  useEffect(() => { void load(); }, [load]);
+
+  const act = async (work: () => Promise<TerminalCommandRow>) => {
+    setBusy(true);
+    try { setStatus(await work()); }
+    catch (e) { onError(e instanceof Error ? e.message : String(e)); void load(); }
+    finally { setBusy(false); }
+  };
+
+  if (!status) return null;
+
+  return (
+    <Card title="The terminal command">
+      {!status.supported ? (
+        <>
+          <p className="muted">
+            This is a development checkout, so the command runs from the repository:{' '}
+            <code>npm run {status.command} -- help</code>.
+          </p>
+          <p className="muted small">An installed copy of the application carries the command with it and needs no checkout.</p>
+        </>
+      ) : (
+        <>
+          <p>
+            <code>{status.command}</code> drives the same campaigns as this screen, through the same engine, from a terminal.
+            {status.installed && status.installedIsOurs
+              ? <> It is installed at <code>{status.installPath}</code>.</>
+              : <> Installing it writes one file, <code>{status.installPath}</code>, and changes nothing else — no PATH, no shell profile, no system directory, nothing at login.</>}
+          </p>
+          {status.installed && status.installedIsOurs && !status.installedPointsHere && (
+            <div className="note warn">The installed command points at a different copy of the application. Install again to point it here.</div>
+          )}
+          {status.installed && !status.installedIsOurs && (
+            <div className="note bad">A file already exists at <code>{status.installPath}</code> that this application did not write. It will not be replaced or removed.</div>
+          )}
+          {status.installed && status.installedIsOurs && !status.directoryOnPath && (
+            <div className="note warn">
+              <p><code>{status.installDirectory}</code> is not on your PATH, so the name alone will not resolve yet.</p>
+              <pre className="mono small">{status.pathHint}</pre>
+              <p className="small">Until you add it, run it by its full path: <code>{status.installPath}</code></p>
+            </div>
+          )}
+          <p className="row">
+            <button className="btn primary" disabled={busy} onClick={() => void act(() => api.installTerminalCommand())}>
+              {status.installed && status.installedIsOurs ? 'Reinstall command' : 'Install command'}
+            </button>
+            <button className="btn" disabled={busy || !status.installed || !status.installedIsOurs}
+                    onClick={() => void act(() => api.uninstallTerminalCommand())}>
+              Remove command
+            </button>
+          </p>
+          <p className="muted small">{status.message.split('\n')[0]}</p>
+        </>
+      )}
+    </Card>
   );
 }
 

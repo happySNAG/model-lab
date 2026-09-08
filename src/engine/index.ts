@@ -7,6 +7,7 @@
 
 export * from './canonical';
 export * from './ledger';
+export * from './lock';
 export * from './manifest';
 export * from './guards';
 export * from './residency';

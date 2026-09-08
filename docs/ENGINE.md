@@ -120,15 +120,38 @@ so plainly, rather than being quietly counted as verified.
 
 Five measurements are recorded per attempt and never conflated: cold load, warm response, time to
 first **visible** token, total client latency, and throughput. Thinking-capable models spend budget
-before their answer begins, so the thinking and visible channels are counted separately — which is
-how an answer that looks mysteriously empty gets the explanation it deserves:
+before their answer begins, so the two channels are kept apart — which is how an answer that looks
+mysteriously empty gets the explanation it deserves:
 
 > the model spent 900 of its 1024-token budget thinking and never began its visible answer; this is
 > a budget setting, not a capability failure
 
+**Arrival times are observed, never reconstructed.** The engine streams `/api/chat` and reads its own
+clock as each line lands. It does not compute a first-token time from `load_duration +
+prompt_eval_duration`: those say how long the runtime spent, not when anything reached the client,
+and the difference is queueing, transport and scheduling — precisely the delay a person waiting for
+an answer experiences. An attempt that was not watched records **no** first-token time rather than a
+plausible one.
+
 **An unmeasured value is never silently replaced by a guess.** Where a runtime does not expose
-something, the value is recorded as unavailable *with a reason*, and a missing token count never
-becomes a throughput of zero.
+something, the value is recorded as unavailable *with a reason*, a missing token count never becomes
+a throughput of zero, and **no token count is ever estimated from text length**. A
+characters-per-token ratio is a property of a tokenizer; it differs per model and per script, and a
+number derived from one is indistinguishable from a measured one once it is in the evidence.
+
+That last rule decides how the token counts are reported, because Ollama publishes one combined
+completion count in its final chunk and no per-channel split:
+
+| What the stream carried | `visibleTokenCount` | `thinkingTokenCount` |
+|---|---|---|
+| visible output only | the runtime's completion count | `0` — observed, not assumed |
+| reasoning only (budget exhausted) | `0` | the runtime's completion count |
+| both channels | **unavailable, with the reason** | **unavailable, with the reason** |
+| nothing was watched | unavailable — the adapter did not stream | same |
+
+`completionTokenCount` always carries the runtime's own combined figure, and throughput is derived
+from that and the runtime's own generation duration — never from the client clock, never from an
+estimate.
 
 ---
 
@@ -192,9 +215,38 @@ there is a real sandbox to put it in.
 
 ## The terminal command
 
+The terminal interface ships **inside the installed application**. It needs no checkout, no Node
+installation, no `npm install` and no `node_modules`: the application already contains the engine
+build and a runtime for it, and the launcher in its resources directory hands one to the other.
+
 ```
+# From an installed application — the supported way
+cernum <command>                     # once installed for your account (see below)
+
+# From a development checkout
 npm run cernum -- <command>
 ```
+
+### Installing it for your account
+
+`cernum install-command` (or **Install command** on the Campaigns screen) writes **exactly one file**:
+
+| Platform | Where |
+|---|---|
+| macOS, Linux | `~/.local/bin/cernum` |
+| Windows | `%LOCALAPPDATA%\Model Lab\bin\cernum.cmd` |
+
+That is the whole of it. It does **not** edit `PATH`, a shell profile, the registry, `/usr/local`, or
+anything requiring elevation, and it adds nothing that runs at login. If the directory is not on your
+`PATH` the command says so and prints the exact line to add; whether to add it stays your decision,
+and until you do, the file works by its full path.
+
+`cernum uninstall-command` removes exactly that file. It is identified by a marker written inside it,
+so a file the application did not write is reported and **left alone** rather than deleted.
+
+`cernum where` prints where campaigns live, which launcher is in use, and whether the command is
+installed and on `PATH`.
+
 
 | Command | What it does |
 |---|---|
@@ -207,6 +259,10 @@ npm run cernum -- <command>
 | `verify <name>` | recompute every binding and report what moved |
 | `finalize <name>` | reconcile, rank, interpret, build the blinded packet |
 | `retest <name> <new>` | derive a manifest for this machine from another one |
+| `lock <name>` | who holds this campaign, and whether they are still alive |
+| `unlock <name>` | release a crashed owner's lock; `--force` for a live one |
+| `where` | where campaigns live, and whether this command is installed |
+| `install-command` / `uninstall-command` | put the command on your account, or take it off |
 
 Useful flags: `--suites a,b`, `--repeats n`, `--max-attempts n` (how a smoke run is kept small),
 `--endpoint <url>`, `--root <dir>`, `--synthetic` (drive the deterministic host — no request reaches
@@ -214,11 +270,40 @@ any server), `--live-residency`.
 
 Campaigns are written where the desktop application reads them
 (`~/Library/Application Support/Model Lab/campaigns` on macOS), so a run started in the terminal
-appears on the Campaigns screen while it runs, and one started there can be resumed here. Only one
-runner touches a ledger at a time.
+appears on the Campaigns screen while it runs, and one started there can be resumed here.
 
-**Today the terminal command runs from a repository checkout** (`npm install`, then `npm run cernum`).
-The packaged application does not yet install a `cernum` binary on your `PATH`.
+---
+
+## One runner at a time
+
+The shared campaign directory is the point — and it is also how two runners end up pointed at one
+ledger. The ledger's own defence (exactly one terminal result per slot, ever) is a last line rather
+than a first one: it refuses the duplicate *after* both processes have paid for the inference, and it
+cannot stop two runners interleaving guard verdicts, residency unloads and checkpoint rewrites. So
+ownership is taken in the filesystem, before the first request, where both processes can see it.
+
+`<campaign>/campaign.lock` records the owner's process id, process type (`desktop` or `terminal`),
+the exact command, the hostname, the campaign id, when it was acquired and when it last reported.
+Acquisition is `open(…, 'wx')` — one atomic create-exclusive syscall — so there is no read-then-write
+window for two starters to race in.
+
+A second starter is refused by name:
+
+> `contested` is already running in the desktop process 4821 on this-machine.local (Model Lab ·
+> Campaigns screen), which last reported 3s ago. Two runners against one ledger would interleave
+> guard verdicts and residency unloads, so the second is refused. Pause the first one and try again.
+
+**A live lock is never broken automatically.** Liveness comes from three facts — the hostname, whether
+the recorded process still exists, and how old its heartbeat is — and exactly one combination is
+recovered without a person: *this host, and the process is gone*. That is a crash, the lock is
+reclaimed, and the crashed owner is kept under `<campaign>/locks/` as evidence rather than tidied
+away. A process that still exists but has stopped reporting could be a hung runner or an unrelated
+process that inherited the number, and a lock written by another machine cannot be judged from here;
+both are refused with the command that resolves them (`cernum unlock <name> --force`), because
+breaking a lock should be something a person decided, not something a program concluded.
+
+Pause, completion, abort and refusal all release the lock. Finalizing a campaign a live runner is
+still writing to is refused too: a final report read mid-run is a snapshot presented as a conclusion.
 
 ---
 
@@ -233,9 +318,11 @@ The packaged application does not yet install a `cernum` binary on your `PATH`.
     meta.json             campaign identity
     results.jsonl         append-only terminal results, fsynced one at a time  ← the truth
     checkpoint.json       progress cache, rewritten after every attempt        ← not the truth
-    events.jsonl          guards, unloads, pauses, resumes
+    events.jsonl          guards, unloads, pauses, resumes, lock acquire/refuse/recover/release
     abort.json            present only while an abort stands
     aborts/               superseded aborts, kept for the report
+  campaign.lock           present only while a process owns this campaign
+  locks/                  reclaimed and released locks, kept as crash evidence
   rankings.json           measurement
   retention.json          interpretation, labelled as such
   final-report.json       both, plus the reconciliation
