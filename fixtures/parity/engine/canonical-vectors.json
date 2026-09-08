@@ -1,0 +1,156 @@
+{
+  "producedBy": "json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False) + hashlib.sha256 + hmac.new(..., sha256)",
+  "pythonVersion": "3.14.5",
+  "vectors": [
+    {
+      "name": "empty object",
+      "value": {},
+      "canonicalJSON": "{}",
+      "digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "empty array",
+      "value": [],
+      "canonicalJSON": "[]",
+      "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "name": "key order",
+      "value": {
+        "b": 1,
+        "a": 2,
+        "A": 3,
+        "_": 4,
+        "0": 5
+      },
+      "canonicalJSON": "{\"0\":5,\"A\":3,\"_\":4,\"a\":2,\"b\":1}",
+      "digest": "1204b31c6e3c6737377c04038e67ff1db9844a06973a45abc8916b683f03f7e9"
+    },
+    {
+      "name": "nested",
+      "value": {
+        "z": [
+          1,
+          {
+            "y": null,
+            "x": true
+          }
+        ],
+        "a": {
+          "b": {
+            "c": []
+          }
+        }
+      },
+      "canonicalJSON": "{\"a\":{\"b\":{\"c\":[]}},\"z\":[1,{\"x\":true,\"y\":null}]}",
+      "digest": "40d960ed60224c4860378391a65008255822038d02484fff9863bf20d26adf84"
+    },
+    {
+      "name": "solidus is not escaped",
+      "value": {
+        "path": "a/b/c",
+        "url": "https://example.invalid/x"
+      },
+      "canonicalJSON": "{\"path\":\"a/b/c\",\"url\":\"https://example.invalid/x\"}",
+      "digest": "26c13a18c8f163b04b694d8b999155c9fa2928e80438c1eb93078c44ef1923e3"
+    },
+    {
+      "name": "quotes and backslashes",
+      "value": "he said \"no\" \\ then left",
+      "canonicalJSON": "\"he said \\\"no\\\" \\\\ then left\"",
+      "digest": "fb813446bf640b6789d17e4a32a7150e2af20aa3130801e223ee27beae52f2ce"
+    },
+    {
+      "name": "control characters",
+      "value": "tab\there nl\n cr\r bs\b ff\f unit\u001f",
+      "canonicalJSON": "\"tab\\there nl\\n cr\\r bs\\b ff\\f unit\\u001f\"",
+      "digest": "d3ef12baf31346ac45f05867a37825a94c93c2c3be8a4e3378c4874b3a9fd016"
+    },
+    {
+      "name": "non-ascii is literal",
+      "value": {
+        "model": "gemma3:4b",
+        "note": "café — naïve — 日本語"
+      },
+      "canonicalJSON": "{\"model\":\"gemma3:4b\",\"note\":\"café — naïve — 日本語\"}",
+      "digest": "5d612d924cf5412c37160ecb2bed85911921dbeb7293b448b19e5729f6563306"
+    },
+    {
+      "name": "negative and zero",
+      "value": [
+        0,
+        -1,
+        2147483647,
+        -2147483648
+      ],
+      "canonicalJSON": "[0,-1,2147483647,-2147483648]",
+      "digest": "3290f5f03c9e120d67c8efd90c006bbe0464fffbc8abf0b015d8d3b2632cdaa6"
+    },
+    {
+      "name": "booleans and null",
+      "value": {
+        "t": true,
+        "f": false,
+        "n": null
+      },
+      "canonicalJSON": "{\"f\":false,\"n\":null,\"t\":true}",
+      "digest": "22e00dc2f7b01420f940fbdbfbdf34fa0667cc6500186495023ba37722cbd05e"
+    },
+    {
+      "name": "slot key shape",
+      "value": "gemma3:4b|model-lab-foundation|1|foundation.echo-instruction",
+      "canonicalJSON": "\"gemma3:4b|model-lab-foundation|1|foundation.echo-instruction\"",
+      "digest": "aab0934512c408f33ca3387e0579b10eaa10e04ac7b7769dd6866bf734458565"
+    },
+    {
+      "name": "unicode key sort",
+      "value": {
+        "é": 1,
+        "e": 2,
+        "Z": 3,
+        "z": 4
+      },
+      "canonicalJSON": "{\"Z\":3,\"e\":2,\"z\":4,\"é\":1}",
+      "digest": "57e27e87ab6c486ae38ebc978a15dda7a8818edf723925f65431704d64173afd"
+    }
+  ],
+  "hmacVectors": [
+    {
+      "secret": "s3cret",
+      "message": "gemma3:4b|foundation|1|echo",
+      "hex": "beb76f1b7d689aa2b2758b472becc637cf35681c7b3693da9bd74cdf9d4550ac"
+    },
+    {
+      "secret": "",
+      "message": "",
+      "hex": "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"
+    },
+    {
+      "secret": "café",
+      "message": "日本語",
+      "hex": "fe24a14e9a993ed60d141c8fcba66c909842bc765fae47b16b7b37c8b625b93c"
+    }
+  ],
+  "textDigests": [
+    {
+      "text": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "text": "a",
+      "sha256": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+    },
+    {
+      "text": "gemma3:4b",
+      "sha256": "6dac22b9d5405230080a1beb682eca4d62f8d33cb6bc5f770cc2f8651d551c13"
+    },
+    {
+      "text": "café — naïve",
+      "sha256": "c47484e0ec4a2094685f33a04b606f4b84a3d32bc04c8395d26af101313258d2"
+    },
+    {
+      "text": "line\nbreak",
+      "sha256": "697affca60d5d0dc96f00aac4b2d833e3adc0708a4efd8b657acc4229f4449ef"
+    }
+  ]
+}

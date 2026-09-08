@@ -1,0 +1,325 @@
+// Benchmark engine · freeze the exact thing that will be executed, then keep proving it has not
+// moved. A port of the proven `execution_manifest_v2.py`.
+//
+// WHAT A FROZEN MANIFEST IS FOR. A benchmark result is a claim about a specific set of prompts,
+// scored by a specific set of rules, on specific hardware, against specific models. Every one of
+// those can drift between the day a run is authorised and the day it finishes, and none of the
+// drifts announce themselves. The manifest is what makes a result still readable a fortnight later.
+//
+// WHAT IS BOUND — everything a later reader would otherwise have to take on trust:
+//
+//   prompts      SHA-256 of every prompt string and its context, plus one digest over all of them.
+//                A single changed byte is visible.
+//   catalog      the catalogue digest, which already binds scoring mode, budgets and fixtures
+//   scored core  the cross-provider fingerprint: (caseID, caseDigest, comparabilityKey,
+//                scoringMode, maxOutputTokens, promptSHA256) for every case
+//   evaluators   digests of every evaluator that can decide a verdict
+//   candidates   identity AND ORDER — order matters, because thermal state is not reset
+//   guards       the safety floors in force
+//   hardware     the machine the numbers were produced on
+//
+// VERIFICATION IS A COMPARISON, NOT A RE-COMPUTATION OF THE SAME THING. `verify` recomputes each
+// binding from the live inputs and reports every field that differs. It never repairs a drift:
+// a manifest that silently updates itself is a manifest that proves nothing.
+
+import { CanonicalValue, canonicalJSON, digestObject, sha256Text } from './canonical';
+
+export const MANIFEST_FORMAT_VERSION = 2;
+
+export class ManifestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ManifestError';
+  }
+}
+
+/** One prompt exactly as it will be sent, before any adapter touches it. */
+export interface PromptRecord {
+  caseID: string;
+  /** The full request text, in the order the model will receive it. */
+  text: string;
+  /** Supplied context, kept separate so a context change is distinguishable from a prompt change. */
+  suppliedContext?: string;
+}
+
+export interface ScoredCoreEntry {
+  caseID: string;
+  caseDigest: string;
+  comparabilityKey: string;
+  scoringMode: string;
+  maxOutputTokens: number;
+  promptSHA256: string;
+}
+
+export interface HardwareIdentity {
+  platform: string;
+  architecture: string;
+  model: string;
+  cpuCoreCount: number;
+  physicalMemoryBytes: number;
+  osVersion: string;
+}
+
+export interface ManifestCandidate {
+  name: string;
+  modelID: string;
+  /** The runtime's own digest for the weights, when it reports one. Empty means "the runtime did not say". */
+  runtimeDigest: string;
+  parameterSize: string;
+  quantization: string;
+}
+
+export interface FrozenManifest {
+  manifestFormatVersion: number;
+  manifestID: string;
+  frozenAt: string;
+  label: string;
+  catalogDigest: string;
+  caseCount: number;
+  repeatsPerCase: number;
+  promptDigests: { caseID: string; promptSHA256: string; suppliedContextSHA256: string | null }[];
+  promptsDigest: string;
+  scoredCore: ScoredCoreEntry[];
+  scoredCoreDigest: string;
+  evaluatorDigests: { evaluatorID: string; digest: string }[];
+  evaluatorsDigest: string;
+  candidates: ManifestCandidate[];
+  candidatesDigest: string;
+  guards: CanonicalValue;
+  guardsDigest: string;
+  hardware: HardwareIdentity;
+  hardwareDigest: string;
+  runtimeVersion: string;
+  /** Set only on a manifest derived for different hardware; names the manifest it descends from. */
+  retestOf?: { manifestID: string; hardwareDigest: string; derivedAt: string; reason: string };
+  manifestDigest: string;
+}
+
+export interface ManifestInputs {
+  label: string;
+  catalogDigest: string;
+  caseCount: number;
+  repeatsPerCase: number;
+  prompts: PromptRecord[];
+  scoredCore: Omit<ScoredCoreEntry, 'promptSHA256'>[];
+  evaluators: { evaluatorID: string; source: string }[];
+  candidates: ManifestCandidate[];
+  guards: CanonicalValue;
+  hardware: HardwareIdentity;
+  runtimeVersion: string;
+  frozenAt: string;
+}
+
+function promptDigestsOf(prompts: PromptRecord[]): { caseID: string; promptSHA256: string; suppliedContextSHA256: string | null }[] {
+  return [...prompts]
+    .sort((a, b) => (a.caseID < b.caseID ? -1 : a.caseID > b.caseID ? 1 : 0))
+    .map((prompt) => ({
+      caseID: prompt.caseID,
+      promptSHA256: sha256Text(prompt.text),
+      suppliedContextSHA256: prompt.suppliedContext === undefined ? null : sha256Text(prompt.suppliedContext),
+    }));
+}
+
+/** Freeze. Every binding is computed here, once, and never recomputed into the same record again. */
+export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
+  if (inputs.prompts.length === 0) throw new ManifestError('a manifest over zero prompts binds nothing; refusing to freeze it');
+  if (inputs.candidates.length === 0) throw new ManifestError('a manifest with no candidates cannot be executed; refusing to freeze it');
+
+  const promptDigests = promptDigestsOf(inputs.prompts);
+  const promptsDigest = digestObject(promptDigests as unknown as CanonicalValue);
+  const promptByCase = new Map(promptDigests.map((p) => [p.caseID, p.promptSHA256]));
+
+  const scoredCore: ScoredCoreEntry[] = [...inputs.scoredCore]
+    .sort((a, b) => (a.caseID < b.caseID ? -1 : a.caseID > b.caseID ? 1 : 0))
+    .map((entry) => {
+      const promptSHA256 = promptByCase.get(entry.caseID);
+      if (promptSHA256 === undefined) {
+        throw new ManifestError(`case ${entry.caseID} is in the scored core but has no prompt; a scored case whose prompt is unbound is exactly the drift this manifest exists to catch`);
+      }
+      return { ...entry, promptSHA256 };
+    });
+  const scoredCoreDigest = digestObject(scoredCore as unknown as CanonicalValue);
+
+  const evaluatorDigests = [...inputs.evaluators]
+    .sort((a, b) => (a.evaluatorID < b.evaluatorID ? -1 : a.evaluatorID > b.evaluatorID ? 1 : 0))
+    .map((evaluator) => ({ evaluatorID: evaluator.evaluatorID, digest: sha256Text(evaluator.source) }));
+  const evaluatorsDigest = digestObject(evaluatorDigests as unknown as CanonicalValue);
+
+  // Candidate ORDER is bound, not just membership: thermal state is not reset between candidates,
+  // so running them in a different order is a different experiment.
+  const candidatesDigest = digestObject(inputs.candidates as unknown as CanonicalValue);
+  const guardsDigest = digestObject(inputs.guards);
+  const hardwareDigest = digestObject(inputs.hardware as unknown as CanonicalValue);
+
+  const body = {
+    manifestFormatVersion: MANIFEST_FORMAT_VERSION,
+    label: inputs.label,
+    catalogDigest: inputs.catalogDigest,
+    caseCount: inputs.caseCount,
+    repeatsPerCase: inputs.repeatsPerCase,
+    promptsDigest,
+    scoredCoreDigest,
+    evaluatorsDigest,
+    candidatesDigest,
+    guardsDigest,
+    hardwareDigest,
+    runtimeVersion: inputs.runtimeVersion,
+  };
+  const manifestDigest = digestObject(body);
+
+  return {
+    ...body,
+    manifestID: `manifest:${manifestDigest.slice(0, 16)}`,
+    frozenAt: inputs.frozenAt,
+    promptDigests,
+    scoredCore,
+    evaluatorDigests,
+    candidates: inputs.candidates,
+    guards: inputs.guards,
+    hardware: inputs.hardware,
+    manifestDigest,
+  };
+}
+
+export interface Drift {
+  field: string;
+  frozen: string;
+  observed: string;
+  /** Plain language, because the person reading a drift report is usually not the person who froze it. */
+  meaning: string;
+}
+
+export interface VerificationReport {
+  manifestID: string;
+  verifiedAt: string;
+  intact: boolean;
+  drifts: Drift[];
+  /** True when the ONLY drift is hardware — the case a retest manifest exists for. */
+  hardwareOnly: boolean;
+}
+
+export interface VerificationInputs {
+  catalogDigest?: string;
+  prompts?: PromptRecord[];
+  scoredCore?: Omit<ScoredCoreEntry, 'promptSHA256'>[];
+  evaluators?: { evaluatorID: string; source: string }[];
+  candidates?: ManifestCandidate[];
+  guards?: CanonicalValue;
+  hardware?: HardwareIdentity;
+  runtimeVersion?: string;
+}
+
+const MEANINGS: Record<string, string> = {
+  catalogDigest: 'the benchmark catalogue changed: scoring modes, budgets or fixtures are not the ones that were authorised',
+  promptsDigest: 'at least one prompt or supplied context changed; the models are no longer being asked the same question',
+  scoredCoreDigest: 'the scored core changed: a case, its digest, its comparability key, its scoring mode or its output budget moved',
+  evaluatorsDigest: 'an evaluator changed; the same answer would now be judged by different rules',
+  candidatesDigest: 'the candidate set or its ORDER changed; order is bound because thermal state is not reset between candidates',
+  guardsDigest: 'the safety floors changed; the run would proceed under different limits than the ones authorised',
+  hardwareDigest: 'the machine changed; latency and throughput are not comparable across hardware, and a retest manifest is required',
+  runtimeVersion: 'the inference runtime version changed; its own behaviour is part of the measurement',
+};
+
+/**
+ * Recompute every binding from the live inputs and report what moved. A binding whose input is not
+ * supplied is not checked and is not claimed to be intact — an unchecked field is simply absent
+ * from the report rather than silently passing.
+ */
+export function verifyManifest(manifest: FrozenManifest, live: VerificationInputs, verifiedAt: string): VerificationReport {
+  const drifts: Drift[] = [];
+  const compare = (field: string, frozen: string, observed: string | undefined): void => {
+    if (observed === undefined || frozen === observed) return;
+    drifts.push({ field, frozen, observed, meaning: MEANINGS[field] ?? `${field} changed` });
+  };
+
+  compare('catalogDigest', manifest.catalogDigest, live.catalogDigest);
+  if (live.prompts) compare('promptsDigest', manifest.promptsDigest, digestObject(promptDigestsOf(live.prompts) as unknown as CanonicalValue));
+  if (live.scoredCore && live.prompts) {
+    const promptByCase = new Map(promptDigestsOf(live.prompts).map((p) => [p.caseID, p.promptSHA256]));
+    const recomputed = [...live.scoredCore]
+      .sort((a, b) => (a.caseID < b.caseID ? -1 : a.caseID > b.caseID ? 1 : 0))
+      .map((entry) => ({ ...entry, promptSHA256: promptByCase.get(entry.caseID) ?? '' }));
+    compare('scoredCoreDigest', manifest.scoredCoreDigest, digestObject(recomputed as unknown as CanonicalValue));
+  }
+  if (live.evaluators) {
+    const recomputed = [...live.evaluators]
+      .sort((a, b) => (a.evaluatorID < b.evaluatorID ? -1 : a.evaluatorID > b.evaluatorID ? 1 : 0))
+      .map((evaluator) => ({ evaluatorID: evaluator.evaluatorID, digest: sha256Text(evaluator.source) }));
+    compare('evaluatorsDigest', manifest.evaluatorsDigest, digestObject(recomputed as unknown as CanonicalValue));
+  }
+  if (live.candidates) compare('candidatesDigest', manifest.candidatesDigest, digestObject(live.candidates as unknown as CanonicalValue));
+  if (live.guards !== undefined) compare('guardsDigest', manifest.guardsDigest, digestObject(live.guards));
+  if (live.hardware) compare('hardwareDigest', manifest.hardwareDigest, digestObject(live.hardware as unknown as CanonicalValue));
+  compare('runtimeVersion', manifest.runtimeVersion, live.runtimeVersion);
+
+  return {
+    manifestID: manifest.manifestID,
+    verifiedAt,
+    intact: drifts.length === 0,
+    drifts,
+    hardwareOnly: drifts.length > 0 && drifts.every((drift) => drift.field === 'hardwareDigest'),
+  };
+}
+
+/**
+ * Derive a retest manifest for new hardware.
+ *
+ * The benchmark itself — prompts, scored core, evaluators, candidates, guards — is carried across
+ * byte-identically, because the whole point of a retest is that only the machine changed. The new
+ * manifest gets its own identity and a `retestOf` back-reference, so a later reader can see that
+ * the two results measure the same benchmark on two machines and are therefore comparable on
+ * quality but NOT on latency.
+ */
+export function deriveRetestManifest(original: FrozenManifest, hardware: HardwareIdentity, runtimeVersion: string,
+                                     derivedAt: string, reason: string): FrozenManifest {
+  const hardwareDigest = digestObject(hardware as unknown as CanonicalValue);
+  if (hardwareDigest === original.hardwareDigest && runtimeVersion === original.runtimeVersion) {
+    throw new ManifestError('the hardware and runtime are identical to the original; a retest manifest would be a duplicate, so re-run against the original manifest instead');
+  }
+  const retestOf = { manifestID: original.manifestID, hardwareDigest: original.hardwareDigest, derivedAt, reason };
+  const body = {
+    manifestFormatVersion: MANIFEST_FORMAT_VERSION,
+    label: original.label,
+    catalogDigest: original.catalogDigest,
+    caseCount: original.caseCount,
+    repeatsPerCase: original.repeatsPerCase,
+    promptsDigest: original.promptsDigest,
+    scoredCoreDigest: original.scoredCoreDigest,
+    evaluatorsDigest: original.evaluatorsDigest,
+    candidatesDigest: original.candidatesDigest,
+    guardsDigest: original.guardsDigest,
+    hardwareDigest,
+    runtimeVersion,
+  };
+  const manifestDigest = digestObject({ ...body, retestOf } as unknown as CanonicalValue);
+  return {
+    ...body,
+    manifestID: `manifest:${manifestDigest.slice(0, 16)}`,
+    frozenAt: derivedAt,
+    promptDigests: original.promptDigests,
+    scoredCore: original.scoredCore,
+    evaluatorDigests: original.evaluatorDigests,
+    candidates: original.candidates,
+    guards: original.guards,
+    hardware,
+    retestOf,
+    manifestDigest,
+  };
+}
+
+/** The one-line seal a person can read out loud and compare by eye. */
+export function manifestSeal(manifest: FrozenManifest): string {
+  return [
+    `manifest ${manifest.manifestID}`,
+    `catalog ${manifest.catalogDigest.slice(0, 12)}`,
+    `prompts ${manifest.promptsDigest.slice(0, 12)}`,
+    `core ${manifest.scoredCoreDigest.slice(0, 12)}`,
+    `candidates ${manifest.candidatesDigest.slice(0, 12)}`,
+    `hardware ${manifest.hardwareDigest.slice(0, 12)}`,
+  ].join(' · ');
+}
+
+/** The canonical bytes a manifest file holds. Written once; re-reading it must reproduce the digest. */
+export function manifestBytes(manifest: FrozenManifest): string {
+  return canonicalJSON(manifest as unknown as CanonicalValue);
+}

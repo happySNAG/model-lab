@@ -9,7 +9,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['test/unit/**/*.test.ts', 'test/parity/**/*.test.ts'],
+    include: ['test/unit/**/*.test.ts', 'test/parity/**/*.test.ts', 'test/engine/**/*.test.ts'],
     environment: 'node',
     testTimeout: 30_000,
   },

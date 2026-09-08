@@ -100,7 +100,14 @@ describe('machine summary', () => {
     expect('measured' in environment.physicalMemoryBytes).toBe(true);
     if (process.platform === 'darwin') {
       expect('measured' in environment.osVersion && environment.osVersion.measured.startsWith('macOS')).toBe(true);
-      expect(environment.hardware && 'measured' in environment.hardware.appleSilicon).toBe(true);
+      // `hw.optional.arm64` does not exist on an Intel Mac, so the capture correctly reports the
+      // field as unavailable WITH A REASON there. Demanding `measured` on every darwin host asserted
+      // Apple Silicon rather than macOS, and failed on an Intel Mac against correct code. What this
+      // test is actually about — its own title — is that the field is never silently absent.
+      const appleSilicon = environment.hardware?.appleSilicon;
+      expect(appleSilicon).toBeDefined();
+      expect('measured' in appleSilicon! || appleSilicon!.unavailableReason.length > 0).toBe(true);
+      if (process.arch === 'arm64') expect('measured' in appleSilicon! && appleSilicon!.measured).toBe(true);
     }
   }, 30_000);
 });

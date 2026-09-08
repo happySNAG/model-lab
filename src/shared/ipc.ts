@@ -253,6 +253,95 @@ export interface Diagnostics {
 
 export interface PullProgress { model: string; status: string; completedBytes?: number; totalBytes?: number; done: boolean; error?: string }
 
+
+// MARK: - Benchmark engine (campaigns)
+//
+// A campaign is the engine's unit of work: a frozen manifest plus a durable ledger, drivable from
+// the desktop application or the `cernum` terminal command. These types are the projection the
+// renderer sees; the engine's own richer records stay in the main process.
+
+export type CampaignRowState = 'created' | 'running' | 'paused' | 'aborted' | 'complete' | 'unreadable';
+
+export interface CampaignRow {
+  name: string;
+  label: string;
+  state: CampaignRowState;
+  slotCount: number;
+  terminalCount: number;
+  blockedCount: number;
+  /** False when the ledger does not account for every slot exactly once. */
+  balances: boolean;
+  manifestID: string;
+  createdAt: string;
+  /** True only while THIS process is the runner; a terminal-driven campaign is observed, not owned. */
+  running: boolean;
+  directory: string;
+  problem?: string;
+}
+
+export interface CampaignAttemptRow {
+  slotKey: string;
+  status: string;
+  detail: string;
+  latencyMilliseconds?: number;
+  identityState: string;
+  suppliedContextState: string;
+}
+
+export interface CampaignRankingRow {
+  rank: number;
+  candidate: string;
+  disqualified: boolean;
+  /** Passes per thousand scored outcomes. Absent means no rate at all — never a zero. */
+  passRateMilli?: number;
+  scoredCount: number;
+  roles: string[];
+}
+
+export interface CampaignDetail {
+  status: {
+    campaignID: string; label: string; state: string; manifestID: string; manifestSeal: string;
+    slotCount: number; terminalCount: number; remaining: number; blockedCount: number;
+    byStatus: Record<string, number>; candidatesComplete: string[];
+    currentCandidate?: string; currentCaseID?: string;
+    standingAbort?: { reason: string; stage: string; blockedSlotCount: number };
+    root: string;
+  };
+  manifest: { manifestID: string; seal: string; frozenAt: string; promptCount: number; candidateCount: number; retestOf?: string };
+  recentAttempts: CampaignAttemptRow[];
+  events: { kind: string; at: string }[];
+  anomalies: { kind: string; why: string }[];
+  report?: {
+    provisional: boolean;
+    provisionalBecause: string[];
+    rankings: CampaignRankingRow[];
+    retentionHeading: string;
+    retention: { candidate: string; outcome: string; statement: string }[];
+    awaitingHumanReview: number;
+    packetPath?: string;
+    packetClean?: boolean;
+  };
+  /** The exact terminal command that shows the same campaign. */
+  terminalHint: string;
+}
+
+export interface CampaignCreateRequest {
+  name: string;
+  label: string;
+  modelNames: string[];
+  suiteIDs: string[];
+  repeatsPerCase: number;
+  runtimeVersion: string;
+}
+
+export interface CampaignDrift { field: string; frozen: string; observed: string; meaning: string }
+export interface CampaignVerification { manifestID: string; verifiedAt: string; intact: boolean; drifts: CampaignDrift[]; hardwareOnly: boolean }
+
+export interface CampaignProgressEvent {
+  status: CampaignDetail['status'];
+  trace?: { slotKey: string; status: string; identity: string; suppliedContext: string; detail: string };
+}
+
 export interface ModelLabAPI {
   getBuildInfo(): Promise<BuildInfo>;
   getSettings(): Promise<Settings>;
@@ -287,12 +376,24 @@ export interface ModelLabAPI {
   onOllamaStatus(listener: (status: OllamaStatus) => void): () => void;
   /** Navigation requests from the application menu (macOS menu bar / Windows accelerators). */
   onNavigate(listener: (screen: ScreenID) => void): () => void;
+
+  // Benchmark engine. The same campaigns the `cernum` terminal command drives.
+  listCampaigns(): Promise<CampaignRow[]>;
+  campaignDetail(name: string): Promise<CampaignDetail>;
+  campaignSuites(): Promise<{ id: string; title: string; caseCount: number }[]>;
+  createCampaign(request: CampaignCreateRequest): Promise<CampaignRow[]>;
+  startCampaign(name: string): Promise<CampaignDetail['status']>;
+  pauseCampaign(): Promise<void>;
+  verifyCampaign(name: string): Promise<CampaignVerification>;
+  finalizeCampaign(name: string): Promise<CampaignDetail>;
+  campaignRoot(): Promise<string>;
+  onCampaignProgress(listener: (event: CampaignProgressEvent) => void): () => void;
   /** The host platform, so copy can say "this Mac" / "this PC" truthfully. Fixed for the process lifetime. */
   readonly platform: 'darwin' | 'win32' | 'linux' | string;
 }
 
-export type ScreenID = 'home' | 'models' | 'benchmark' | 'live' | 'results' | 'history' | 'settings';
-export const SCREEN_ORDER: ScreenID[] = ['home', 'models', 'benchmark', 'live', 'results', 'history', 'settings'];
+export type ScreenID = 'home' | 'models' | 'benchmark' | 'live' | 'results' | 'campaigns' | 'history' | 'settings';
+export const SCREEN_ORDER: ScreenID[] = ['home', 'models', 'benchmark', 'live', 'results', 'campaigns', 'history', 'settings'];
 
 export const IPC = {
   buildInfo: 'lab:buildInfo',
@@ -325,6 +426,16 @@ export const IPC = {
   eventPull: 'lab:event:pull',
   eventOllama: 'lab:event:ollama',
   eventNavigate: 'lab:event:navigate',
+  listCampaigns: 'lab:campaign:list',
+  campaignDetail: 'lab:campaign:detail',
+  campaignSuites: 'lab:campaign:suites',
+  createCampaign: 'lab:campaign:create',
+  startCampaign: 'lab:campaign:start',
+  pauseCampaign: 'lab:campaign:pause',
+  verifyCampaign: 'lab:campaign:verify',
+  finalizeCampaign: 'lab:campaign:finalize',
+  campaignRoot: 'lab:campaign:root',
+  eventCampaign: 'lab:event:campaign',
 } as const;
 
 /**

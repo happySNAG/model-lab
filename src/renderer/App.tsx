@@ -7,6 +7,7 @@ import { ModelsView } from './views/Models';
 import { BenchmarkView } from './views/Benchmark';
 import { LiveRunView } from './views/LiveRun';
 import { ResultsView } from './views/Results';
+import { CampaignsView } from './views/Campaigns';
 import { HistoryView } from './views/History';
 import { SettingsView } from './views/Settings';
 
@@ -23,6 +24,7 @@ const NAV: { id: Screen; label: string; icon: React.ReactNode }[] = [
   { id: 'benchmark', label: 'Benchmark', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M9 3h6" /><path d="M10 3v6.5L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9.5V3" /></svg> },
   { id: 'live', label: 'Live run', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg> },
   { id: 'results', label: 'Results', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 20V9" /><path d="M10 20V4" /><path d="M16 20v-7" /><path d="M22 20H2" /></svg> },
+  { id: 'campaigns', label: 'Campaigns', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /><path d="M8 13h8" /><path d="M8 16.5h5" /></svg> },
   { id: 'history', label: 'History', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 12a8 8 0 1 0 2.5-5.8" /><path d="M4 4v4.5h4.5" /><path d="M12 8v4.5l3 1.5" /></svg> },
   { id: 'settings', label: 'Settings', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg> },
 ];
@@ -92,6 +94,7 @@ export function App() {
         {screen === 'benchmark' && <BenchmarkView shell={shell} />}
         {screen === 'live' && <LiveRunView shell={shell} />}
         {screen === 'results' && <ResultsView shell={shell} />}
+        {screen === 'campaigns' && <CampaignsView shell={shell} />}
         {screen === 'history' && <HistoryView shell={shell} />}
         {screen === 'settings' && <SettingsView shell={shell} />}
       </main>

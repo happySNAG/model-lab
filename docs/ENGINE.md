@@ -1,0 +1,262 @@
+# The benchmark engine
+
+A **benchmark** in this application is a single sitting: pick some models, pick some suites, watch it
+run, read the results. That is the Benchmark screen, and for most comparisons it is the right tool.
+
+A **campaign** is the same measurement made durable. It freezes exactly what will be run before
+anything runs, records each attempt to disk the moment it lands, survives an interruption, and can be
+resumed hours or days later without losing or repeating a single attempt. Campaigns exist because a
+comparison worth trusting is usually too long to finish in one sitting, and because a result you
+cannot audit a fortnight later is not really a result.
+
+Campaigns are drivable from two places — the **Campaigns** screen and the **`cernum`** terminal
+command — and both go through one engine (`src/engine`), so they cannot disagree about what a
+campaign is.
+
+---
+
+## Why a frozen manifest
+
+A benchmark result is a claim about a specific set of prompts, scored by a specific set of rules, on
+specific hardware, against specific models. Every one of those can drift between the day a run is
+started and the day it finishes, and **none of the drifts announce themselves**. A model gets
+re-pulled at a different quantization; a case is edited; an evaluator is improved; the machine is
+replaced. The numbers still look like numbers.
+
+Creating a campaign freezes:
+
+| Bound | What a change to it would mean |
+|---|---|
+| every prompt and its supplied context | the models are no longer being asked the same question |
+| the catalogue digest | scoring modes, budgets or fixtures are not the ones that were authorised |
+| the scored core | a case, its digest, its comparability key, its scoring mode or its output budget moved |
+| every evaluator | the same answer would now be judged by different rules |
+| the candidates **and their order** | order is bound because thermal state is not reset between models |
+| the safety floors | the run would proceed under different limits than the ones authorised |
+| the hardware and runtime version | latency and throughput are not comparable across either |
+
+Every resume re-verifies all of it and **refuses to continue** if anything moved. Verification never
+repairs a drift: a manifest that silently updates itself proves nothing.
+
+### When the machine changes
+
+Hardware drift is reported separately, because it is the one drift that is expected rather than
+alarming. `cernum retest <name> <new-name>` derives a manifest for the new machine that carries the
+benchmark across byte-identically and back-references the original. Two results under a retest pair
+are comparable on **quality** and explicitly not on **latency**.
+
+---
+
+## Why a ledger rather than a log
+
+A long local campaign will be interrupted — a lid close, a kernel panic, a full disk, Ctrl-C. The
+question is never "will it stop" but "what is true afterwards".
+
+- The **plan** is written once, atomically, before any inference. It never changes, so the
+  denominator cannot move under a rate.
+- A terminal result is appended to `results.jsonl` and **fsynced before the runner moves on**.
+- A slot that already has a terminal result is **never** attempted again, on any resume.
+- `checkpoint.json` is rewritten after every attempt. It is a fast index, **never the source of
+  truth** — `results.jsonl` is.
+
+Using the log as truth and the checkpoint as a cache means a disagreement between them is
+*detectable*. Opening a ledger rebuilds it from the log and **reports** the drift rather than
+silently correcting it, truncates a torn final line so that attempt is re-run rather than guessed at,
+and refuses outright to guess when a corrupt line is not the last one.
+
+Reconciliation is the one arithmetic that has to hold: `terminal + blocked + unaccounted = planned`,
+with no slot in two of those at once. If it does not hold, every rate derived from the ledger is
+marked **provisional** — an unreconciled ledger is not a result.
+
+---
+
+## What stops a campaign
+
+These are **abort conditions, not warnings**, and each returns a measurement alongside its verdict so
+a report can say `free 12.41 GiB, floor 15.00 GiB` rather than `disk guard failed`.
+
+| Guard | Why it stops rather than warns |
+|---|---|
+| free disk space | a full disk corrupts the ledger it is trying to write |
+| swap used | swap means the next model's latency measures the disk, not the model |
+| free memory | the same |
+| the benchmark lane | work reaching a server other than the authorised one is not the measurement |
+| the model store | a model added, removed or re-pulled mid-campaign changes what is being measured |
+| **residency release** | see below |
+
+**Residency** is the subtle one. Two models resident at once means swap, and swap means the next
+candidate's latency measures the disk. Worse, it is *invisible in the result* — every attempt still
+returns text. A residual model does not corrupt a score, it corrupts the **comparison**, which is the
+only thing a benchmark produces. So at every model transition the engine issues an unload, waits, and
+then **reads the resident set back**. An unload that reports success and leaves a model resident is
+precisely the failure this exists to catch, so its own success message is not evidence.
+
+When a guard trips, the remaining slots are **blocked**: they were never attempted and carry no
+result. Resolve what stopped it, resume, and they run normally. The abort record is kept, never
+deleted.
+
+---
+
+## Two verifications that are not scoring
+
+A failure in either of these is a **measurement fault**, not a model failure. Conflating them is how
+a benchmark quietly reports the harness's own bug as the candidate's.
+
+**Supplied context.** Cases that supply material to read carry that material as its own message, so
+it can be read back out of the assembled request and compared to what the manifest froze. The engine
+distinguishes `intact`, `absent`, `truncated` and `mutated`, because the causes and the fixes differ:
+a truncated context is a budget problem, a mutated one is a transport problem, and an absent one
+means the model was asked a retrieval question without the material — so any answer measures guessing.
+
+**Model identity.** What the runtime reports for the loaded model is compared to what the manifest
+pinned. A **mismatch** stops the campaign. A field the runtime declines to report is recorded as
+*unreported*, never as a match — "the runtime did not tell us" and "the runtime told us it is the
+same" are different facts. An identity that cannot be confirmed is carried as `unverifiable` and said
+so plainly, rather than being quietly counted as verified.
+
+---
+
+## Telemetry, and what "unavailable" means
+
+Five measurements are recorded per attempt and never conflated: cold load, warm response, time to
+first **visible** token, total client latency, and throughput. Thinking-capable models spend budget
+before their answer begins, so the thinking and visible channels are counted separately — which is
+how an answer that looks mysteriously empty gets the explanation it deserves:
+
+> the model spent 900 of its 1024-token budget thinking and never began its visible answer; this is
+> a budget setting, not a capability failure
+
+**An unmeasured value is never silently replaced by a guess.** Where a runtime does not expose
+something, the value is recorded as unavailable *with a reason*, and a missing token count never
+becomes a throughput of zero.
+
+---
+
+## Scoring, ranking, and the line between measurement and opinion
+
+Counting rules are fixed before the first request, because a finalizer written after the numbers
+arrive is a finalizer shaped by the numbers:
+
+1. **Reconciliation first.** An unbalanced ledger makes every rate below it provisional.
+2. **Only `pass` counts as a pass.** `partial` is reported beside it and never merged into it.
+3. **Rubric answers awaiting human review are excluded from every rate and ranking** until the
+   adjudication returns. No model judges a candidate.
+4. **A governance failure disqualifies.** It is a different outcome, not a low score, and no pass
+   rate offsets it.
+5. **Missing evidence is not a zero.** A dimension with no applicable results has no rate at all.
+
+**Capability roles** ("conversational companion", "structured worker", "trusted with private
+material", …) and **retention recommendations** are *interpretation*, and they say so in their own
+fields and headings. A recommendation to keep or drop a model is a judgement about the work at hand,
+not a fact the benchmark established — so each carries the evidence it rests on, and a different
+owner with different work could reasonably disagree. **No model is ever deleted by this engine.**
+
+---
+
+## Blinded adjudication
+
+Rubric cases need a person. That only means something if the packet the person reads cannot tell them
+which model wrote which answer. Three leaks are closed:
+
+1. **The obvious one** — a field naming the model. Every answer is keyed by an opaque token derived
+   with HMAC-SHA-256 from a secret and the slot. The tokens are not invertible and not even linkable
+   across cases.
+2. **Ordering** — answers are shuffled per case with a seeded PRNG, so the first answer on every page
+   is not always the same model. The seed lives in the key: reproducible afterwards, unpredictable
+   from the packet.
+3. **Self-disclosure** — a model that writes "As Qwen, I would say…". Identity terms are redacted,
+   including the fragments a model actually names itself by (`qwen3.8:27b` also leaks as `qwen3.8`,
+   `qwen3` and `qwen`), while ordinary English that happens to appear in a model name is left alone.
+
+The finished packet is then **audited** for every one of those terms, because a redactor that is
+never checked eventually misses one. The **key is written to a different directory from the packet**;
+blinding that keeps the key beside the packet is a label rather than a property.
+
+---
+
+## Isolated execution — and what it does not claim
+
+Every attempt that touches the filesystem gets a fresh temporary workspace. Fixtures are copied in as
+data, so the originals are never anywhere the attempt can reach. Path resolution resolves absolute
+paths, `..` traversal **and symlinks** before checking, and refuses anything outside the workspace.
+The environment is an allow-list of a handful of names that only describe the machine — no `HOME`, no
+credential-shaped variable, no vendor prefixes. The workspace is deleted afterwards whether the
+attempt succeeded or not.
+
+**What it does not do**, stated so nobody relies on it: it is not an OS sandbox, and it does not stop
+a child process from opening a socket. The engine never spawns one on a candidate's behalf. Executing
+untrusted candidate *code* — as opposed to scoring candidate *text* — stays out of this product until
+there is a real sandbox to put it in.
+
+---
+
+## The terminal command
+
+```
+npm run cernum -- <command>
+```
+
+| Command | What it does |
+|---|---|
+| `models` | list the models installed locally — read-only; never pulls, creates or deletes |
+| `suites` | list the benchmark suites the engine can plan |
+| `create <name> --models a,b` | freeze a manifest and write the plan |
+| `run <name>` | run it; **Ctrl-C pauses cleanly** at the next attempt boundary |
+| `resume <name>` | re-verify the manifest and carry on where it stopped |
+| `status [<name>]` | one campaign, or every campaign |
+| `verify <name>` | recompute every binding and report what moved |
+| `finalize <name>` | reconcile, rank, interpret, build the blinded packet |
+| `retest <name> <new>` | derive a manifest for this machine from another one |
+
+Useful flags: `--suites a,b`, `--repeats n`, `--max-attempts n` (how a smoke run is kept small),
+`--endpoint <url>`, `--root <dir>`, `--synthetic` (drive the deterministic host — no request reaches
+any server), `--live-residency`.
+
+Campaigns are written where the desktop application reads them
+(`~/Library/Application Support/Model Lab/campaigns` on macOS), so a run started in the terminal
+appears on the Campaigns screen while it runs, and one started there can be resumed here. Only one
+runner touches a ledger at a time.
+
+**Today the terminal command runs from a repository checkout** (`npm install`, then `npm run cernum`).
+The packaged application does not yet install a `cernum` binary on your `PATH`.
+
+---
+
+## Where a campaign lives
+
+```
+<campaign>/
+  configuration.json      what it was created with
+  manifest.json           the frozen manifest — the thing everything is checked against
+  ledger/
+    plan.json             every planned attempt, written once, never rewritten
+    meta.json             campaign identity
+    results.jsonl         append-only terminal results, fsynced one at a time  ← the truth
+    checkpoint.json       progress cache, rewritten after every attempt        ← not the truth
+    events.jsonl          guards, unloads, pauses, resumes
+    abort.json            present only while an abort stands
+    aborts/               superseded aborts, kept for the report
+  rankings.json           measurement
+  retention.json          interpretation, labelled as such
+  final-report.json       both, plus the reconciliation
+  review/                 the blinded packet — safe to share
+  review-key/             the key that reverses it — not safe to share
+```
+
+---
+
+## Parity with the harness this descends from
+
+The engine is a TypeScript port of a Python harness that has already produced real campaign evidence.
+Where the two must agree, they are pinned to each other by fixtures generated *from the Python*, never
+written by hand:
+
+- `fixtures/parity/engine/canonical-vectors.json` — the canonical JSON encoding and its SHA-256/HMAC
+  digests, byte for byte. (Note that this deliberately differs from `src/core/digest.ts`, which seals
+  the core's own records under a Swift-compatible form that escapes `/`. Two canonical forms that
+  differ by one byte produce two different digests, so the engine has its own.)
+- `fixtures/parity/engine/ledger-plan-vectors.json` — the plan the harness's own planner produces:
+  slot keys, slot order, the plan digest, and the exact set of terminal statuses.
+
+Adding a terminal status, or changing the encoding, fails the parity tests rather than silently
+widening what the engine will accept.

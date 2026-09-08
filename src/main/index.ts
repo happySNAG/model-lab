@@ -6,13 +6,15 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { IPC, BenchmarkConfiguration, BuildInfo, Diagnostics, ScreenID, Settings } from '../shared/ipc';
+import { IPC, BenchmarkConfiguration, BuildInfo, CampaignCreateRequest, Diagnostics, ScreenID, Settings } from '../shared/ipc';
 import { LabService } from './lab-service';
+import { CampaignService } from './campaign-service';
 import { SettingsStore, evidenceRootFor } from './settings';
 import { detectOllama, ModelPuller, openDownloadPage, startOllama, OLLAMA_DOWNLOAD_URL } from './ollama-runtime';
 import { menuTemplate } from './menu';
 import { bundleDigest } from '../core/store';
 import { inspectableJSON } from '../core/digest';
+import { randomBytes } from 'node:crypto';
 
 declare const __BUILD_COMMIT__: string;
 declare const __BUILD_TIME__: string;
@@ -124,6 +126,14 @@ function attachService(next: LabService): void {
   service.on('log', (line: string) => log(line));
 }
 
+/**
+ * The benchmark-engine service. It shares no state with `LabService`; it reads campaigns from disk
+ * every time it is asked, which is what lets a campaign the `cernum` terminal command is running
+ * right now be observed here without this process owning it.
+ */
+const campaigns = new CampaignService(() => settingsStore.get().ollamaEndpoint);
+campaigns.on('campaignProgress', (event) => send(IPC.eventCampaign, event));
+
 function installMenu(): void {
   const template = menuTemplate({ platform: process.platform, isDev, productName: PRODUCT_NAME }, {
     navigate: (screen) => { void navigate(screen); },
@@ -201,6 +211,21 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle(IPC.openPath, async (_e, target: string) => { await shell.openPath(target); });
   ipcMain.handle(IPC.revealPath, (_e, target: string) => { if (target === logPath() && !fs.existsSync(target)) log('log file created'); shell.showItemInFolder(target); });
   ipcMain.handle(IPC.copyDiagnostics, async () => { clipboard.writeText(inspectableJSON(await diagnostics())); });
+
+  ipcMain.handle(IPC.listCampaigns, () => campaigns.list());
+  ipcMain.handle(IPC.campaignDetail, (_e, name: string) => campaigns.detail(name));
+  ipcMain.handle(IPC.campaignSuites, () => campaigns.availableSuites());
+  ipcMain.handle(IPC.createCampaign, (_e, request: CampaignCreateRequest) => campaigns.create(request));
+  ipcMain.handle(IPC.startCampaign, (_e, name: string) => campaigns.start(name));
+  ipcMain.handle(IPC.pauseCampaign, () => { campaigns.pause(); });
+  ipcMain.handle(IPC.verifyCampaign, (_e, name: string) => campaigns.verify(name));
+  ipcMain.handle(IPC.finalizeCampaign, (_e, name: string) => {
+    // The blinding secret is generated per finalize and never written beside the packet. Losing it
+    // means a new packet must be built, which is the correct failure: an unblindable packet is safe.
+    campaigns.finalize(name, randomBytes(24).toString('hex'));
+    return campaigns.detail(name);
+  });
+  ipcMain.handle(IPC.campaignRoot, () => campaigns.root());
 }
 
 const gotLock = app.requestSingleInstanceLock();

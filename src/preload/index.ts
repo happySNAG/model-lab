@@ -1,7 +1,7 @@
 // Model Lab · preload bridge. Exposes a typed, narrow API to the renderer; nothing else crosses.
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, ModelLabAPI, SessionProgress, PullProgress, OllamaStatus, ScreenID } from '../shared/ipc';
+import { IPC, ModelLabAPI, SessionProgress, PullProgress, OllamaStatus, ScreenID, CampaignProgressEvent } from '../shared/ipc';
 
 function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
   const handler = (_event: unknown, payload: T) => listener(payload);
@@ -40,6 +40,16 @@ const api: ModelLabAPI = {
   onPullProgress: (listener) => subscribe<PullProgress>(IPC.eventPull, listener),
   onOllamaStatus: (listener) => subscribe<OllamaStatus>(IPC.eventOllama, listener),
   onNavigate: (listener) => subscribe<ScreenID>(IPC.eventNavigate, listener),
+  listCampaigns: () => ipcRenderer.invoke(IPC.listCampaigns),
+  campaignDetail: (name) => ipcRenderer.invoke(IPC.campaignDetail, name),
+  campaignSuites: () => ipcRenderer.invoke(IPC.campaignSuites),
+  createCampaign: (request) => ipcRenderer.invoke(IPC.createCampaign, request),
+  startCampaign: (name) => ipcRenderer.invoke(IPC.startCampaign, name),
+  pauseCampaign: () => ipcRenderer.invoke(IPC.pauseCampaign),
+  verifyCampaign: (name) => ipcRenderer.invoke(IPC.verifyCampaign, name),
+  finalizeCampaign: (name) => ipcRenderer.invoke(IPC.finalizeCampaign, name),
+  campaignRoot: () => ipcRenderer.invoke(IPC.campaignRoot),
+  onCampaignProgress: (listener) => subscribe<CampaignProgressEvent>(IPC.eventCampaign, listener),
   platform: process.platform,
 };
 

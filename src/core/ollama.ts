@@ -74,6 +74,13 @@ export interface OllamaChatRequest {
   requireJSONFormat: boolean;
   thinkingMode: ThinkingMode;
   timeoutMilliseconds: number;
+  /**
+   * Seconds the runtime should keep the weights resident after this request. Omitted entirely when
+   * undefined, so an ordinary benchmark request is byte-identical to what it always was. Zero is the
+   * runtime's own way of saying "release them now", which is how the benchmark engine asks a model
+   * to step aside before the next candidate loads.
+   */
+  keepAliveSeconds?: number;
 }
 
 export interface OllamaChatReport {
@@ -126,6 +133,7 @@ export function chatRequestBody(request: OllamaChatRequest): string {
   if (request.requireJSONFormat) payload.format = 'json';
   const think = thinkingWireValue(request.thinkingMode);
   if (think !== undefined) payload.think = think;
+  if (request.keepAliveSeconds !== undefined) payload.keep_alive = request.keepAliveSeconds;
   return JSON.stringify(sortKeys(payload));
 }
 
