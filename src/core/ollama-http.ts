@@ -97,6 +97,9 @@ export class OllamaHTTPTransport implements OllamaStreamingTransport {
         quantizationLevel: typeof details.quantization_level === 'string' ? details.quantization_level : undefined,
         parameterSize: typeof details.parameter_size === 'string' ? details.parameter_size : undefined,
         family: typeof details.family === 'string' ? details.family : undefined,
+        // Absent stays absent. An empty list would mean "it can do nothing", which is a claim the
+        // runtime did not make.
+        capabilities: capabilitiesOf(r.capabilities),
       };
     });
   }
@@ -109,12 +112,14 @@ export class OllamaHTTPTransport implements OllamaStreamingTransport {
     let quantization = row.quantizationLevel;
     let parameterSize = row.parameterSize;
     let family = row.family;
+    let capabilities = row.capabilities;
     try {
       const shown = await this.postJSON('api/show', JSON.stringify({ model: name, name }), 10_000);
       const details = (shown.details && typeof shown.details === 'object' ? shown.details : {}) as Record<string, unknown>;
       quantization = quantization ?? (typeof details.quantization_level === 'string' ? details.quantization_level : undefined);
       parameterSize = parameterSize ?? (typeof details.parameter_size === 'string' ? details.parameter_size : undefined);
       family = family ?? (typeof details.family === 'string' ? details.family : undefined);
+      capabilities = capabilitiesOf(shown.capabilities) ?? capabilities;
       const info = (shown.model_info && typeof shown.model_info === 'object' ? shown.model_info : {}) as Record<string, unknown>;
       for (const key of Object.keys(info)) {
         if (key.endsWith('.context_length') && typeof info[key] === 'number') { contextLength = info[key] as number; break; }
@@ -125,7 +130,7 @@ export class OllamaHTTPTransport implements OllamaStreamingTransport {
     }
     return {
       name: row.name === name + ':latest' ? row.name : name,
-      digest: row.digest, quantizationLevel: quantization, parameterSize, family, contextLengthTokens: contextLength,
+      digest: row.digest, quantizationLevel: quantization, parameterSize, family, contextLengthTokens: contextLength, capabilities,
     };
   }
 
@@ -302,6 +307,13 @@ export class OllamaHTTPTransport implements OllamaStreamingTransport {
       unsubscribe?.();
     }
   }
+}
+
+/** A capability list, or undefined when the runtime published none. Never an empty list. */
+function capabilitiesOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = value.filter((entry): entry is string => typeof entry === 'string');
+  return names.length > 0 ? names : undefined;
 }
 
 export function describeNetworkError(error: unknown): string {

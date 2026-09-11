@@ -36,6 +36,8 @@ export interface OllamaModelReport {
   parameterSize?: string;
   family?: string;
   contextLengthTokens?: number;
+  /** What the runtime says this model can do. Undefined means it did not say. */
+  capabilities?: string[];
 }
 
 export interface OllamaRunningModelReport { name: string; sizeBytes?: number; sizeVRAMBytes?: number }
@@ -49,6 +51,8 @@ export interface OllamaInstalledModel {
   quantizationLevel?: string;
   parameterSize?: string;
   family?: string;
+  /** What the runtime says this model can do. Undefined means it did not say. */
+  capabilities?: string[];
 }
 
 export interface OllamaChatMessage { role: string; content: string }

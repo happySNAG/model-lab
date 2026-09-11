@@ -16,13 +16,17 @@ import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { app } from 'electron';
 import {
-  Campaign, CampaignConfiguration, CampaignStatus, Ledger, LiveHost, allRankableSuiteIDs, buildEngineCatalogue,
-  campaignPaths, discoverLocalModels, guardPolicyForEndpoint, inspectCampaignLock, modelStoreBaseline,
+  Campaign, CampaignConfiguration, CampaignStatus, DEFAULT_EXECUTION_POLICY, ExecutionPolicy, Ledger, LiveHost,
+  NONCANONICAL_REASONS, allRankableSuiteIDs, buildEngineCatalogue, campaignPaths, describeExecutionPolicy,
+  discoverLocalModels, guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink, modelStoreBaseline,
+  residencyDisclosure,
 } from '../engine/index';
 import type { FinalReport } from '../engine/campaign';
 import type { VerificationReport } from '../engine/manifest';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
-import type { CampaignRow, CampaignDetail, CampaignCreateRequest, TerminalCommandRow } from '../shared/ipc';
+import type {
+  CampaignRow, CampaignDetail, CampaignCreateRequest, CampaignExecutionRow, CampaignStartDisclosure, TerminalCommandRow,
+} from '../shared/ipc';
 import { installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
 export class CampaignServiceError extends Error {
@@ -55,12 +59,73 @@ export class CampaignService extends EventEmitter {
     return JSON.parse(fs.readFileSync(file, 'utf8')) as CampaignConfiguration;
   }
 
+  private executionOf(configuration: CampaignConfiguration): ExecutionPolicy {
+    return configuration.execution ?? DEFAULT_EXECUTION_POLICY;
+  }
+
+  /**
+   * Open a campaign with a host configured the way the campaign was FROZEN.
+   *
+   * `enableResidency` is the fix for the release-blocking defect: this service used to build its
+   * host without it, so `LiveResidency` was disabled and the end-of-candidate release threw
+   * `LiveResidencyDisabled` out of `run()` — every desktop-started live campaign ended in an error
+   * rather than a result. Cernum is an active benchmark controller: for a canonical campaign it is
+   * authorised to manage residency on the selected benchmark endpoint, and that authority is
+   * disclosed at Start rather than assumed silently. For an observe-only campaign it stays off, and
+   * the campaign is labelled noncanonical everywhere it appears.
+   */
   private open(name: string): Campaign {
     const configuration = this.configuration(name);
+    const execution = this.executionOf(configuration);
     return Campaign.open(this.directory(name), configuration, new LiveHost({
       endpoint: this.endpoint(),
       catalogue: buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase),
+      ...hostOptionsFor(execution),
     }));
+  }
+
+  private executionRow(execution: ExecutionPolicy): CampaignExecutionRow {
+    const canonical = execution.residency === 'managed';
+    return {
+      residency: execution.residency,
+      thinkingMode: execution.thinkingMode,
+      canonical,
+      summary: describeExecutionPolicy(execution),
+      noncanonicalBecause: canonical ? [] : NONCANONICAL_REASONS,
+    };
+  }
+
+  /**
+   * What to tell a person before this campaign starts. Read once, at Start.
+   *
+   * Authored in the engine and merely relayed here, so the terminal and the interface cannot drift
+   * into two different accounts of the same authority.
+   */
+  disclosure(name: string): CampaignStartDisclosure {
+    const configuration = this.configuration(name);
+    const execution = this.executionOf(configuration);
+    const endpoint = this.endpoint();
+    const candidates = configuration.candidates.map((candidate) => candidate.name);
+    return {
+      name,
+      endpoint,
+      candidates,
+      canonical: execution.residency === 'managed',
+      lines: execution.residency === 'managed' ? residencyDisclosure(endpoint, candidates) : NONCANONICAL_REASONS,
+    };
+  }
+
+  leasedEndpoints(): { endpoint: string; campaignName: string; processType: string; pid: number; state: string; message: string }[] {
+    return leasedEndpoints(this.root())
+      .filter((lease) => lease.record?.endpoint)
+      .map((lease) => ({
+        endpoint: lease.record!.endpoint!,
+        campaignName: lease.record!.campaignName,
+        processType: lease.record!.processType,
+        pid: lease.record!.pid,
+        state: lease.state ?? 'live',
+        message: lease.message,
+      }));
   }
 
   /**
@@ -100,6 +165,8 @@ export class CampaignService extends EventEmitter {
           createdAt: typeof meta.createdAt === 'string' ? meta.createdAt : '',
           running: this.active?.name === name,
           directory,
+          execution: this.executionRow(this.executionOf(
+            JSON.parse(fs.readFileSync(path.join(directory, 'configuration.json'), 'utf8')) as CampaignConfiguration)),
           owner: lock.held && lock.record ? {
             processType: lock.record.processType, command: lock.record.command, pid: lock.record.pid,
             hostname: lock.record.hostname, acquiredAt: lock.record.acquiredAt,
@@ -126,6 +193,7 @@ export class CampaignService extends EventEmitter {
     const report = fs.existsSync(paths.report) ? JSON.parse(fs.readFileSync(paths.report, 'utf8')) as FinalReport : undefined;
     return {
       status: status as CampaignStatus,
+      execution: this.executionRow(campaign.execution),
       manifest: {
         manifestID: campaign.manifest.manifestID,
         seal: status.manifestSeal,
@@ -147,6 +215,8 @@ export class CampaignService extends EventEmitter {
       events: campaign.ledger.events().slice(-40).map((event) => ({ kind: String(event.kind), at: String(event.at) })),
       anomalies: campaign.ledger.anomalies.map((anomaly) => ({ kind: anomaly.kind, why: anomaly.why ?? '' })),
       report: report ? {
+        canonical: report.canonical ?? true,
+        noncanonicalBecause: report.noncanonicalBecause ?? [],
         provisional: report.rankings.provisional,
         provisionalBecause: report.rankings.provisionalBecause,
         rankings: report.rankings.rankings.map((ranking) => ({
@@ -179,9 +249,21 @@ export class CampaignService extends EventEmitter {
     if (Campaign.exists(directory)) throw new CampaignServiceError(`a campaign already exists at ${directory}`);
     const endpoint = this.endpoint();
     const installed = await discoverLocalModels(endpoint);
+    const execution: ExecutionPolicy = {
+      residency: request.observeOnly === true ? 'observeOnly' : 'managed',
+      thinkingMode: request.thinkingMode ?? 'disabled',
+    };
     const candidates = request.modelNames.map((wanted) => {
       const found = installed.find((model) => model.name === wanted || model.name === `${wanted}:latest`);
       if (!found) throw new CampaignServiceError(`model '${wanted}' is not installed at ${endpoint}`);
+      // Refused at create, before anything is frozen. Substituting thinking-off would record
+      // answers to a different experiment under a manifest that says otherwise.
+      if (execution.thinkingMode === 'enabled' && modelCanThink(found) === false) {
+        throw new CampaignServiceError(
+          `Thinking was requested, but ${endpoint} reports that ${found.name} cannot think `
+          + `(it reports: ${(found.capabilities ?? []).join(', ') || 'nothing'}). Nothing was created. `
+          + 'Choose a thinking-capable model, or turn thinking off for this campaign.');
+      }
       return { name: found.name, modelID: found.name, runtimeDigest: found.runtimeDigest, parameterSize: found.parameterSize, quantization: found.quantization };
     });
     const configuration: CampaignConfiguration = {
@@ -194,6 +276,7 @@ export class CampaignService extends EventEmitter {
         cpuCoreCount: os.cpus().length, physicalMemoryBytes: os.totalmem(), osVersion: `${os.type()} ${os.release()}`,
       },
       runtimeVersion: request.runtimeVersion || 'ollama-unreported',
+      execution,
       storeBaseline: modelStoreBaseline(installed),
       guardPolicy: guardPolicyForEndpoint(endpoint),
       residencyDelayMilliseconds: 5_000,
@@ -201,7 +284,9 @@ export class CampaignService extends EventEmitter {
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, 'configuration.json'), JSON.stringify(configuration, null, 2) + '\n', 'utf8');
     Campaign.create(directory, configuration, new LiveHost({
-      endpoint, catalogue: buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase),
+      endpoint,
+      catalogue: buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase),
+      ...hostOptionsFor(execution),
     }));
     return this.list();
   }
@@ -218,6 +303,9 @@ export class CampaignService extends EventEmitter {
         // The in-process guard above stops two windows of THIS application; the campaign lock is
         // what stops this application and a terminal, which no amount of in-process state can see.
         owner: { processType: 'desktop', command: `${PRODUCT.name} ${PRODUCT.version} · Campaigns screen` },
+        // The runtime lease lives beside the campaigns, so a campaign the terminal is running
+        // against this endpoint refuses this one before a single request is sent.
+        campaignRootDirectory: this.root(),
         onProgress: (status, trace) => this.emit('campaignProgress', { status, trace }),
       });
     } finally {

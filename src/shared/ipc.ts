@@ -282,6 +282,8 @@ export interface CampaignRow {
    * can say "a terminal is running this" rather than showing a campaign as idle while it advances.
    */
   owner?: CampaignOwnerRow;
+  /** The frozen execution policy. Present so the list can mark an observe-only campaign at a glance. */
+  execution?: CampaignExecutionRow;
 }
 
 export interface CampaignOwnerRow {
@@ -344,11 +346,14 @@ export interface CampaignDetail {
     standingAbort?: { reason: string; stage: string; blockedSlotCount: number };
     root: string;
   };
+  execution: CampaignExecutionRow;
   manifest: { manifestID: string; seal: string; frozenAt: string; promptCount: number; candidateCount: number; retestOf?: string };
   recentAttempts: CampaignAttemptRow[];
   events: { kind: string; at: string }[];
   anomalies: { kind: string; why: string }[];
   report?: {
+    canonical: boolean;
+    noncanonicalBecause: string[];
     provisional: boolean;
     provisionalBecause: string[];
     rankings: CampaignRankingRow[];
@@ -369,6 +374,39 @@ export interface CampaignCreateRequest {
   suiteIDs: string[];
   repeatsPerCase: number;
   runtimeVersion: string;
+  /**
+   * True to run WITHOUT managing residency. The result is labelled noncanonical and is not
+   * comparable with a canonical run. Defaults to false: a campaign is canonical unless asked otherwise.
+   */
+  observeOnly?: boolean;
+  /** Frozen into the manifest. A model the runtime says cannot think is refused, never substituted. */
+  thinkingMode?: 'disabled' | 'enabled' | 'runtimeDefault';
+}
+
+/** The frozen execution policy of a campaign, as the renderer sees it. */
+export interface CampaignExecutionRow {
+  residency: 'managed' | 'observeOnly';
+  thinkingMode: 'disabled' | 'enabled' | 'runtimeDefault';
+  canonical: boolean;
+  /** One line, already written: "canonical · residency managed on the benchmark endpoint · thinking off". */
+  summary: string;
+  /** Empty when canonical; the reasons it cannot be compared otherwise. */
+  noncanonicalBecause: string[];
+}
+
+/**
+ * What a person is told before a canonical campaign starts.
+ *
+ * Shown once, at Start — never per attempt. An authority you must re-grant between attempts is one
+ * nobody reads by the third time.
+ */
+export interface CampaignStartDisclosure {
+  name: string;
+  endpoint: string;
+  candidates: string[];
+  canonical: boolean;
+  /** The sentences to show. Authored in the engine so both surfaces say the same thing. */
+  lines: string[];
 }
 
 export interface CampaignDrift { field: string; frozen: string; observed: string; meaning: string }
@@ -425,6 +463,10 @@ export interface ModelLabAPI {
   finalizeCampaign(name: string): Promise<CampaignDetail>;
   campaignRoot(): Promise<string>;
   onCampaignProgress(listener: (event: CampaignProgressEvent) => void): () => void;
+  /** What to tell a person before starting this campaign. Read before Start, shown once. */
+  campaignDisclosure(name: string): Promise<CampaignStartDisclosure>;
+  /** Which benchmark endpoints are currently leased, and by which campaign. */
+  leasedEndpoints(): Promise<{ endpoint: string; campaignName: string; processType: string; pid: number; state: string; message: string }[]>;
   /** The installed terminal command: what it is, and the two actions that put it there or take it away. */
   terminalCommand(): Promise<TerminalCommandRow>;
   installTerminalCommand(): Promise<TerminalCommandRow>;
@@ -476,6 +518,8 @@ export const IPC = {
   verifyCampaign: 'lab:campaign:verify',
   finalizeCampaign: 'lab:campaign:finalize',
   campaignRoot: 'lab:campaign:root',
+  campaignDisclosure: 'lab:campaign:disclosure',
+  leasedEndpoints: 'lab:campaign:endpoints',
   eventCampaign: 'lab:event:campaign',
   terminalCommand: 'lab:terminal:status',
   installTerminalCommand: 'lab:terminal:install',

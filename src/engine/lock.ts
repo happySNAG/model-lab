@@ -53,6 +53,13 @@ export interface LockRecord {
   campaignName: string;
   acquiredAt: string;
   heartbeatAt: string;
+  /** Runtime leases only: the normalized benchmark endpoint this ownership covers. */
+  endpoint?: string;
+  /** Runtime leases only: the endpoint exactly as the caller spelled it. */
+  endpointAsGiven?: string;
+  /** Runtime leases only: what the endpoint's model store looked like when the lease was taken. */
+  modelStoreListingDigest?: string;
+  modelStoreCount?: number;
   [key: string]: CanonicalValue | undefined;
 }
 
@@ -135,6 +142,15 @@ function defaultProcessIsAlive(pid: number): boolean {
   }
 }
 
+/** Shared with the runtime lease, so both kinds of ownership decide liveness by the same rules. */
+export const lockInternals = {
+  iso: (date: Date) => iso(date),
+  resolve: (options: LockOptions = {}) => resolve(options),
+  readRecord: (file: string) => readRecord(file),
+  write: (file: string, record: LockRecord) => write(file, record),
+  newNonce: () => randomBytes(16).toString('hex'),
+};
+
 function readRecord(file: string): LockRecord | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as LockRecord;
@@ -161,6 +177,10 @@ function resolve(options: LockOptions = {}): Resolved {
     staleAfterMilliseconds: options.staleAfterMilliseconds ?? DEFAULT_STALE_AFTER_MILLISECONDS,
     heartbeatIntervalMilliseconds: options.heartbeatIntervalMilliseconds ?? DEFAULT_HEARTBEAT_INTERVAL_MILLISECONDS,
   };
+}
+
+export function classifyOwner(record: LockRecord, options: LockOptions = {}): { state: LockOwnerState; ageMilliseconds: number } {
+  return classify(record, resolve(options));
 }
 
 function classify(record: LockRecord, settings: Resolved): { state: LockOwnerState; ageMilliseconds: number } {
@@ -221,6 +241,13 @@ export function inspectCampaignLock(root: string, options: LockOptions = {}): Lo
 }
 
 /** Ownership of one campaign, for as long as this object is not released. */
+/**
+ * Ownership of one thing, for as long as this object is not released.
+ *
+ * Named for the campaign lock because that is what it was written for, and reused unchanged by the
+ * runtime-endpoint lease: heartbeat, nonce-checked release and the unref'd timer are the same
+ * problem in both cases, and two copies of them would eventually disagree about one.
+ */
 export class CampaignLockHandle {
   private released = false;
   private timer?: NodeJS.Timeout;

@@ -34,6 +34,9 @@ import { FinalRankings, outcomesFromLedger, rankCandidates } from './ranking';
 import { RetentionReport, recommendRetention } from './retention';
 import { AdjudicableResponse, BlindedPacket, PacketAudit, PacketKey, auditPacket, buildBlindedPacket } from './blinded';
 import { CampaignLockError, CampaignLockHandle, LockOptions, LockOwnerState, LockProcessType, acquireCampaignLock, inspectCampaignLock } from './lock';
+import { DEFAULT_EXECUTION_POLICY, ExecutionPolicy, NONCANONICAL_REASONS, isCanonical } from './execution';
+import { RuntimeLeaseError, acquireRuntimeLease, runtimeLeaseDirectory } from './runtime-lease';
+import { ThinkingModeVerification, thinkingModePermitsExecution, verifyThinkingMode } from './verification';
 
 export const CAMPAIGN_FORMAT_VERSION = 1;
 
@@ -79,6 +82,13 @@ export interface CampaignHost {
   score(slot: PlanSlot, answerText: string): Promise<{ status: TerminalSlotStatus; governanceViolated: boolean; detail: string }>;
   /** Read the machine, for the guards. */
   readSystem(): Promise<SystemReading>;
+  /**
+   * The runtime this host will actually send requests to, when it sends any.
+   *
+   * Absent on a deterministic host, which is how a synthetic campaign takes no runtime lease: it
+   * contends for nothing because it reaches nothing.
+   */
+  runtimeIdentity?(): Promise<{ endpoint: string; modelStoreListingDigest: string; modelStoreCount: number }>;
   residency: ResidencyController;
   /** Wall clock, injectable so a synthetic campaign is deterministic. */
   now(): Date;
@@ -93,6 +103,12 @@ export interface CampaignConfiguration {
   runtimeVersion: string;
   guardPolicy?: GuardPolicy;
   storeBaseline?: StoreBaseline;
+  /**
+   * How this campaign is executed. Frozen into the manifest at creation and honoured thereafter;
+   * `run` never reads a flag for it, because a mode that can be changed between resumes is not
+   * frozen. Defaults to canonical (`managed`) with thinking off.
+   */
+  execution?: ExecutionPolicy;
   /** Milliseconds to wait between unload rounds. Zero in tests; five seconds in life. */
   residencyDelayMilliseconds?: number;
 }
@@ -118,6 +134,9 @@ export interface CampaignStatus {
   root: string;
   /** The process that currently holds the campaign, when one does. Read from disk, not from memory. */
   owner?: { processType: LockProcessType; command: string; pid: number; hostname: string; acquiredAt: string; state: LockOwnerState; message: string };
+  /** The frozen execution policy, and whether this campaign's numbers are canonical. */
+  execution: ExecutionPolicy;
+  canonical: boolean;
 }
 
 export interface AttemptTrace {
@@ -125,6 +144,7 @@ export interface AttemptTrace {
   status: TerminalSlotStatus | 'blocked';
   identity: ModelIdentityVerification['state'];
   suppliedContext: SuppliedContextVerification['state'];
+  thinkingMode: ThinkingModeVerification['state'];
   telemetry?: AttemptTelemetry;
   detail: string;
 }
@@ -149,6 +169,13 @@ export interface RunOptions {
   lock?: CampaignLockHandle | false;
   lockOptions?: LockOptions;
   /**
+   * Where the runtime leases live — the campaign ROOT, the directory holding every campaign, since
+   * a lease is shared between campaigns rather than owned by one. Defaults to this campaign's parent.
+   */
+  campaignRootDirectory?: string;
+  /** `false` runs without taking a runtime lease. For tests that drive one process; never for a real run. */
+  runtimeLease?: false;
+  /**
    * Called once the campaign is genuinely this caller's: ownership taken and the frozen manifest
    * re-verified. A caller that announced "running…" before this point would announce it and then
    * be refused, which is a worse message than no message.
@@ -160,6 +187,11 @@ export interface FinalReport {
   campaignID: string;
   label: string;
   manifest: { manifestID: string; seal: string; digest: string };
+  /** What kind of run produced these numbers. Present on every report, canonical or not. */
+  execution: ExecutionPolicy;
+  canonical: boolean;
+  /** Empty on a canonical report; the reasons it cannot be compared on an observe-only one. */
+  noncanonicalBecause: string[];
   reconciliation: Reconciliation;
   rankings: FinalRankings;
   retention: RetentionReport;
@@ -205,6 +237,22 @@ export class Campaign {
     return this.configuration.guardPolicy ?? DEFAULT_GUARD_POLICY;
   }
 
+  /**
+   * The execution policy this campaign was frozen with.
+   *
+   * The MANIFEST is the authority, not the configuration file beside it: the configuration is an
+   * ordinary JSON file a person can edit, and the whole point of freezing the policy was that it
+   * cannot be changed after the fact. A manifest frozen before format 3 bound no policy, and those
+   * runs were all managed-residency with thinking off, so that is what they are read as.
+   */
+  get execution(): ExecutionPolicy {
+    return this.manifest.execution ?? this.configuration.execution ?? DEFAULT_EXECUTION_POLICY;
+  }
+
+  get canonical(): boolean {
+    return isCanonical(this.execution);
+  }
+
   // -------------------------------------------------------------------- create
 
   static create(root: string, configuration: CampaignConfiguration, host: CampaignHost): Campaign {
@@ -232,6 +280,7 @@ export class Campaign {
       guards: (configuration.guardPolicy ?? DEFAULT_GUARD_POLICY) as unknown as CanonicalValue,
       hardware: configuration.hardware,
       runtimeVersion: configuration.runtimeVersion,
+      execution: configuration.execution ?? DEFAULT_EXECUTION_POLICY,
       frozenAt,
     });
 
@@ -247,6 +296,9 @@ export class Campaign {
       manifestDigest: manifest.manifestDigest,
       suiteIDs: configuration.suiteIDs,
       repeatsPerCase: configuration.repeatsPerCase,
+      residencyMode: (configuration.execution ?? DEFAULT_EXECUTION_POLICY).residency,
+      thinkingMode: (configuration.execution ?? DEFAULT_EXECUTION_POLICY).thinkingMode,
+      canonical: isCanonical(configuration.execution ?? DEFAULT_EXECUTION_POLICY),
     });
     ledger.event('campaignCreated', { campaignID, manifestID: manifest.manifestID, slotCount: ledger.plan.length });
     ledger.writeCheckpoint();
@@ -284,6 +336,10 @@ export class Campaign {
       guards: this.guardPolicy as unknown as CanonicalValue,
       hardware: this.configuration.hardware,
       runtimeVersion: this.configuration.runtimeVersion,
+      // Compared against the frozen policy, so editing `configuration.json` to flip residency or
+      // thinking mode on a frozen campaign is a drift that refuses the resume rather than a change
+      // that quietly takes effect.
+      execution: this.configuration.execution ?? DEFAULT_EXECUTION_POLICY,
     }, this.host.now().toISOString().replace(/\.\d{3}Z$/, 'Z'));
   }
 
@@ -307,15 +363,84 @@ export class Campaign {
    * order. Two code paths for "start" and "resume" would eventually disagree about one of them.
    */
   async run(options: RunOptions = {}): Promise<CampaignStatus> {
+    // Two ownerships, taken in this order and released in the reverse: this CAMPAIGN, so no second
+    // process runs the same ledger; then the RUNTIME, so no second campaign competes for the same
+    // Ollama. Both are taken before the manifest is even verified, and long before a request is
+    // sent, so a contended run is refused while it has cost nothing.
     const ownership = this.takeOwnership(options);
+    let lease: CampaignLockHandle | undefined;
     try {
+      lease = await this.takeRuntime(options);
       return await this.runOwned(options);
     } finally {
+      if (lease) {
+        const released = lease.release();
+        this.ledger.event('runtimeLeaseReleased', { endpoint: lease.record.endpoint, removed: released });
+      }
       if (ownership.ours && ownership.handle) {
         const released = ownership.handle.release();
         this.ledger.event('lockReleased', { pid: ownership.handle.record.pid, removed: released });
       }
     }
+  }
+
+  /**
+   * Take the benchmark runtime for the duration of the run.
+   *
+   * A host that reaches no runtime takes no lease — a synthetic campaign contends for nothing
+   * because it contends with nothing. Every host that DOES reach one takes a lease, observe-only
+   * campaigns included: an observe-only run still loads weights on that endpoint, which is exactly
+   * what would invalidate a canonical campaign's residency proof running beside it.
+   */
+  private async takeRuntime(options: RunOptions): Promise<CampaignLockHandle | undefined> {
+    if (options.runtimeLease === false || !this.host.runtimeIdentity) return undefined;
+    const identity = await this.host.runtimeIdentity();
+    const owner = options.owner ?? { processType: 'terminal' as LockProcessType, command: 'unattributed' };
+    const root = options.campaignRootDirectory ?? path.dirname(this.root);
+    try {
+      const handle = acquireRuntimeLease(root, {
+        processType: owner.processType,
+        command: owner.command,
+        campaignID: this.campaignID,
+        campaignName: path.basename(this.root),
+        endpoint: identity.endpoint,
+        modelStoreListingDigest: identity.modelStoreListingDigest,
+        modelStoreCount: identity.modelStoreCount,
+      }, options.lockOptions);
+      if (handle.recovered) {
+        this.ledger.event('runtimeLeaseRecovered', {
+          endpoint: handle.record.endpoint,
+          crashedPid: handle.recovered.pid,
+          crashedCampaign: handle.recovered.campaignName,
+          crashedCommand: handle.recovered.command,
+          heldSince: handle.recovered.acquiredAt,
+          why: 'the campaign that held this endpoint no longer exists; its lease was reclaimed and kept as evidence',
+        });
+      }
+      this.ledger.event('runtimeLeaseAcquired', {
+        endpoint: handle.record.endpoint,
+        modelStoreCount: identity.modelStoreCount,
+        recoveredCrash: handle.recovered !== undefined,
+      });
+      return handle;
+    } catch (error) {
+      if (error instanceof RuntimeLeaseError) {
+        this.ledger.event('runtimeLeaseRefused', {
+          endpoint: error.endpoint,
+          code: error.code,
+          state: error.inspection.state,
+          heldByCampaign: error.inspection.record?.campaignName,
+          heldByPID: error.inspection.record?.pid,
+          refusedPID: process.pid,
+        });
+      }
+      throw error;
+    }
+  }
+
+  /** Where this campaign's runtime leases live. Exposed so a status view can read them. */
+  leaseDirectory(options: { campaignRootDirectory?: string } = {}): string {
+    return runtimeLeaseDirectory(options.campaignRootDirectory ?? path.dirname(this.root));
   }
 
   /**
@@ -432,6 +557,16 @@ export class Campaign {
   }
 
   private async releaseResidency(candidate: string): Promise<void> {
+    // An observe-only campaign touches nothing. This is the ONLY place the mode changes behaviour,
+    // and it is why the mode has to be frozen and labelled rather than left as a runtime flag: the
+    // difference between the two runs is invisible in every artefact except the one that says so.
+    if (!this.canonical) {
+      this.ledger.event('residencyNotManaged', {
+        candidate,
+        why: 'this campaign is observe-only: Cernum did not ask the runtime to release these weights, and the next candidate may load on top of them',
+      });
+      return;
+    }
     let proof: ResidencyProof;
     try {
       proof = await unloadAndVerify(this.host.residency, candidate, { delayMilliseconds: this.configuration.residencyDelayMilliseconds ?? 5_000 });
@@ -472,6 +607,16 @@ export class Campaign {
     if (!identityPermitsExecution(identity)) {
       const blocked = this.ledger.pending().filter((pending) => pending.candidate === slot.candidate).map((pending) => pending.slotKey);
       this.ledger.recordAbort(identity.detail, identity as unknown as CanonicalValue, 'identityVerification', blocked);
+      throw new CampaignAbort();
+    }
+
+    // 2b. The frozen thinking mode. A runtime that reports it cannot do what the manifest froze
+    // stops the campaign; it is never silently substituted, because answers produced under a
+    // different configuration are answers to a different experiment.
+    const thinking = verifyThinkingMode(this.execution.thinkingMode, observed);
+    if (!thinkingModePermitsExecution(thinking)) {
+      const blocked = this.ledger.pending().filter((pending) => pending.candidate === slot.candidate).map((pending) => pending.slotKey);
+      this.ledger.recordAbort(thinking.detail, thinking as unknown as CanonicalValue, 'thinkingModeVerification', blocked);
       throw new CampaignAbort();
     }
 
@@ -524,6 +669,12 @@ export class Campaign {
       answerText: outcome.answerText,
       identityState: identity.state,
       suppliedContextState: suppliedContext.state,
+      // On every row, not only in the manifest: a row lifted out of its campaign carries its own
+      // comparability with it, so it can never be silently merged into a canonical set.
+      canonical: this.canonical,
+      residencyMode: this.execution.residency,
+      thinkingMode: this.execution.thinkingMode,
+      thinkingModeState: thinking.state,
       suppliedContextDigest: suppliedContext.observedDigest,
       latencyMilliseconds: 'measured' in telemetry.totalLatencyMilliseconds ? telemetry.totalLatencyMilliseconds.measured : undefined,
       timeToFirstTokenMilliseconds: 'measured' in telemetry.timeToFirstTokenMilliseconds ? telemetry.timeToFirstTokenMilliseconds.measured : undefined,
@@ -534,7 +685,7 @@ export class Campaign {
       streamed: telemetry.streamed,
     });
 
-    return { slotKey: slot.slotKey, status, identity: identity.state, suppliedContext: suppliedContext.state, telemetry, detail };
+    return { slotKey: slot.slotKey, status, identity: identity.state, suppliedContext: suppliedContext.state, thinkingMode: thinking.state, telemetry, detail };
   }
 
   private recordGuardVerdict(verdict: GuardVerdict): void {
@@ -587,6 +738,8 @@ export class Campaign {
         hostname: lock.record.hostname, acquiredAt: lock.record.acquiredAt,
         state: lock.state ?? 'live', message: lock.message,
       } : undefined,
+      execution: this.execution,
+      canonical: this.canonical,
     };
   }
 
@@ -614,6 +767,8 @@ export class Campaign {
       outcomes: outcomesFromLedger(this.ledger.results.values(), (caseID) => this.catalogue.dimensions.get(caseID)),
       reconciliation,
       derivedAt: producedAt,
+      canonical: this.canonical,
+      noncanonicalBecause: this.canonical ? [] : NONCANONICAL_REASONS,
     });
     const retention = recommendRetention(rankings);
 
@@ -644,11 +799,15 @@ export class Campaign {
       campaignID: this.campaignID,
       label: this.configuration.label,
       manifest: { manifestID: this.manifest.manifestID, seal: manifestSeal(this.manifest), digest: this.manifest.manifestDigest },
+      execution: this.execution,
+      canonical: this.canonical,
+      noncanonicalBecause: this.canonical ? [] : NONCANONICAL_REASONS,
       reconciliation,
       rankings,
       retention,
       humanReview: { awaiting: awaiting.length, packetWritten, packetPath: packetWritten ? paths.packet : undefined, audit },
-      guardTrace: this.ledger.events().filter((event) => event.kind === 'guardBreach' || event.kind === 'residencyVerified' || event.kind === 'abort')
+      guardTrace: this.ledger.events().filter((event) => event.kind === 'guardBreach' || event.kind === 'residencyVerified'
+        || event.kind === 'residencyNotManaged' || event.kind === 'abort')
         .map((event) => ({ at: String(event.at), kind: String(event.kind) })),
       producedAt,
     };

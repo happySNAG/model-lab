@@ -23,8 +23,18 @@
 // a manifest that silently updates itself is a manifest that proves nothing.
 
 import { CanonicalValue, canonicalJSON, digestObject, sha256Text } from './canonical';
+import { ExecutionPolicy, isCanonical } from './execution';
 
-export const MANIFEST_FORMAT_VERSION = 2;
+/**
+ * 3 adds the execution policy — residency mode and thinking mode — to the bound body.
+ *
+ * It is a format bump rather than an additive field because the digest changed: an observe-only
+ * campaign and a canonical one over identical prompts now produce DIFFERENT manifest identities.
+ * That is the point. Two results that are not comparable should not be able to present themselves
+ * under the same seal, and making that a property of the digest is stronger than making it a label
+ * somebody has to remember to read.
+ */
+export const MANIFEST_FORMAT_VERSION = 3;
 
 export class ManifestError extends Error {
   constructor(message: string) {
@@ -90,6 +100,14 @@ export interface FrozenManifest {
   hardware: HardwareIdentity;
   hardwareDigest: string;
   runtimeVersion: string;
+  /**
+   * How this campaign will be executed. Frozen, bound into `manifestDigest`, and never inferred or
+   * adjusted afterwards. Absent on a manifest frozen before format 3.
+   */
+  execution?: ExecutionPolicy;
+  executionDigest?: string;
+  /** False for an observe-only campaign. Stored explicitly so a reader never has to derive it. */
+  canonical?: boolean;
   /** Set only on a manifest derived for different hardware; names the manifest it descends from. */
   retestOf?: { manifestID: string; hardwareDigest: string; derivedAt: string; reason: string };
   manifestDigest: string;
@@ -107,6 +125,7 @@ export interface ManifestInputs {
   guards: CanonicalValue;
   hardware: HardwareIdentity;
   runtimeVersion: string;
+  execution: ExecutionPolicy;
   frozenAt: string;
 }
 
@@ -150,6 +169,7 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
   const candidatesDigest = digestObject(inputs.candidates as unknown as CanonicalValue);
   const guardsDigest = digestObject(inputs.guards);
   const hardwareDigest = digestObject(inputs.hardware as unknown as CanonicalValue);
+  const executionDigest = digestObject(inputs.execution as unknown as CanonicalValue);
 
   const body = {
     manifestFormatVersion: MANIFEST_FORMAT_VERSION,
@@ -163,6 +183,7 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
     candidatesDigest,
     guardsDigest,
     hardwareDigest,
+    executionDigest,
     runtimeVersion: inputs.runtimeVersion,
   };
   const manifestDigest = digestObject(body);
@@ -177,6 +198,8 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
     candidates: inputs.candidates,
     guards: inputs.guards,
     hardware: inputs.hardware,
+    execution: inputs.execution,
+    canonical: isCanonical(inputs.execution),
     manifestDigest,
   };
 }
@@ -207,6 +230,7 @@ export interface VerificationInputs {
   guards?: CanonicalValue;
   hardware?: HardwareIdentity;
   runtimeVersion?: string;
+  execution?: ExecutionPolicy;
 }
 
 const MEANINGS: Record<string, string> = {
@@ -217,6 +241,7 @@ const MEANINGS: Record<string, string> = {
   candidatesDigest: 'the candidate set or its ORDER changed; order is bound because thermal state is not reset between candidates',
   guardsDigest: 'the safety floors changed; the run would proceed under different limits than the ones authorised',
   hardwareDigest: 'the machine changed; latency and throughput are not comparable across hardware, and a retest manifest is required',
+  executionDigest: 'the execution policy changed: residency management or thinking mode is not the one that was frozen, and neither may be changed after the freeze',
   runtimeVersion: 'the inference runtime version changed; its own behaviour is part of the measurement',
 };
 
@@ -250,6 +275,11 @@ export function verifyManifest(manifest: FrozenManifest, live: VerificationInput
   if (live.candidates) compare('candidatesDigest', manifest.candidatesDigest, digestObject(live.candidates as unknown as CanonicalValue));
   if (live.guards !== undefined) compare('guardsDigest', manifest.guardsDigest, digestObject(live.guards));
   if (live.hardware) compare('hardwareDigest', manifest.hardwareDigest, digestObject(live.hardware as unknown as CanonicalValue));
+  // A manifest frozen before format 3 bound no execution policy. Its absence is not a drift — there
+  // is nothing frozen to have moved — so it is not compared rather than being reported as one.
+  if (live.execution !== undefined && manifest.executionDigest !== undefined) {
+    compare('executionDigest', manifest.executionDigest, digestObject(live.execution as unknown as CanonicalValue));
+  }
   compare('runtimeVersion', manifest.runtimeVersion, live.runtimeVersion);
 
   return {
@@ -289,6 +319,7 @@ export function deriveRetestManifest(original: FrozenManifest, hardware: Hardwar
     candidatesDigest: original.candidatesDigest,
     guardsDigest: original.guardsDigest,
     hardwareDigest,
+    executionDigest: original.executionDigest,
     runtimeVersion,
   };
   const manifestDigest = digestObject({ ...body, retestOf } as unknown as CanonicalValue);
@@ -302,6 +333,8 @@ export function deriveRetestManifest(original: FrozenManifest, hardware: Hardwar
     candidates: original.candidates,
     guards: original.guards,
     hardware,
+    execution: original.execution,
+    canonical: original.canonical,
     retestOf,
     manifestDigest,
   };
@@ -316,6 +349,9 @@ export function manifestSeal(manifest: FrozenManifest): string {
     `core ${manifest.scoredCoreDigest.slice(0, 12)}`,
     `candidates ${manifest.candidatesDigest.slice(0, 12)}`,
     `hardware ${manifest.hardwareDigest.slice(0, 12)}`,
+    // Appended only when it is NOT canonical, so a canonical seal reads exactly as it always has and
+    // the only seals that carry an extra clause are the ones a reader must not mistake for one.
+    ...(manifest.canonical === false ? ['OBSERVE-ONLY'] : []),
   ].join(' · ');
 }
 

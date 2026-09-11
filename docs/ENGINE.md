@@ -15,6 +15,72 @@ campaign is.
 
 ---
 
+## Canonical, or observe-only
+
+Cernum is an **active** benchmark controller. For a canonical campaign it manages model residency on
+the one benchmark endpoint it was pointed at: before each candidate after the first, it asks that
+endpoint to release the previous candidate's weights and **proves the release happened** before
+continuing. That is what makes two candidates comparable. Without it the second model's latency
+measures the disk rather than the model, and nothing in the evidence would say so.
+
+That authority is **disclosed before the run starts, once** — on the Campaigns screen when you press
+Start, and printed by `cernum create` — and never asked again between attempts. It is bounded:
+
+- it applies to the **one endpoint the campaign froze**, and to nothing else on the machine;
+- the only action taken is a request carrying `keep_alive: 0` for a model Cernum is itself
+  benchmarking;
+- no model is pulled, created or deleted, and no process is signalled.
+
+A **residency release that fails is an abort**, never a warning. A campaign that cannot prove the
+weights left stops and blocks its remaining slots, because a warning attached to a number nobody can
+distinguish from a good one is worse than no number.
+
+### Observe-only
+
+If you would rather a benchmark tool touched nothing on your machine, say so by name:
+`cernum create … --observe-only`, or clear the canonical checkbox in the New campaign dialog. Cernum
+then leaves residency alone entirely.
+
+What it cannot be is quietly mixed in with canonical results. An observe-only run is labelled
+**noncanonical and noncomparable** in the manifest, in every ledger row, in the rankings, in the
+counting rules, in the retention interpretation, in both interfaces and in the final report — and,
+because the execution policy is bound into the manifest digest, **an observe-only campaign is not
+even the same manifest as its canonical twin**. Two results that cannot be compared cannot present
+themselves under one seal, so joining them is not something a reader has to remember not to do.
+
+| | canonical | observe-only |
+|---|---|---|
+| residency between candidates | managed and proved | untouched |
+| quality outcomes | comparable | comparable |
+| latency, throughput, time-to-first-token | comparable | **not comparable**, within the run or outside it |
+| manifest seal | the usual six digests | the same, plus `· OBSERVE-ONLY` |
+
+**The mode is frozen at creation and cannot change afterwards.** `cernum run --observe-only` on a
+canonical campaign is refused rather than obeyed, and editing `configuration.json` produces a
+manifest drift that refuses the resume. A campaign that was canonical for its first half and
+observe-only for its second is neither.
+
+---
+
+## Thinking mode
+
+Thinking mode is frozen with the campaign, chosen explicitly, and shown wherever the campaign is:
+
+```
+cernum create my-run --models qwen3:4b --thinking on
+```
+
+or the **Ask the models to think first** checkbox in the New campaign dialog.
+
+If the runtime reports that a chosen model **cannot** think, the campaign is refused at create —
+and, if a runtime changes its mind later, the run stops at preflight. It is never silently
+substituted, because answers produced with thinking off under a manifest that says it was on are
+real answers to a different experiment. A runtime that reports **no** capability list at all is
+`unverifiable`, not `unsupported`: "it did not tell us" and "it told us it cannot" are different
+facts, and only the second is grounds to refuse.
+
+---
+
 ## Why a frozen manifest
 
 A benchmark result is a claim about a specific set of prompts, scored by a specific set of rules, on
@@ -34,6 +100,7 @@ Creating a campaign freezes:
 | the candidates **and their order** | order is bound because thermal state is not reset between models |
 | the safety floors | the run would proceed under different limits than the ones authorised |
 | the hardware and runtime version | latency and throughput are not comparable across either |
+| the execution policy — residency mode and thinking mode | the run would not be the experiment that was authorised, and a canonical result and an observe-only one are not comparable |
 
 Every resume re-verifies all of it and **refuses to continue** if anything moved. Verification never
 repairs a drift: a manifest that silently updates itself proves nothing.
@@ -261,12 +328,19 @@ installed and on `PATH`.
 | `retest <name> <new>` | derive a manifest for this machine from another one |
 | `lock <name>` | who holds this campaign, and whether they are still alive |
 | `unlock <name>` | release a crashed owner's lock; `--force` for a live one |
+| `endpoints` | which benchmark endpoints are leased, and by which campaign |
+| `unlock --endpoint <url>` | release a crashed campaign's hold on an endpoint |
 | `where` | where campaigns live, and whether this command is installed |
 | `install-command` / `uninstall-command` | put the command on your account, or take it off |
 
 Useful flags: `--suites a,b`, `--repeats n`, `--max-attempts n` (how a smoke run is kept small),
 `--endpoint <url>`, `--root <dir>`, `--synthetic` (drive the deterministic host — no request reaches
-any server), `--live-residency`.
+any server).
+
+Execution mode is chosen at **create** and frozen: `--observe-only` (do not manage residency;
+noncanonical) and `--thinking on|off` (default off). `--live-residency` is still accepted and
+ignored — residency management is the default now, so there is nothing to remember to switch on and
+nothing to forget.
 
 Campaigns are written where the desktop application reads them
 (`~/Library/Application Support/Model Lab/campaigns` on macOS), so a run started in the terminal
@@ -305,6 +379,38 @@ breaking a lock should be something a person decided, not something a program co
 Pause, completion, abort and refusal all release the lock. Finalizing a campaign a live runner is
 still writing to is refused too: a final report read mid-run is a snapshot presented as a conclusion.
 
+### One campaign per runtime, too
+
+The campaign lock stops two processes running the same campaign. It says nothing about two
+**different** campaigns pointed at the same Ollama — and that is not a theoretical gap. Two campaigns
+sharing one runtime take turns evicting each other's weights, so every latency either of them records
+is partly a measurement of the other campaign, and each one's residency proof stops being true the
+moment the other loads a model. Both would finish clean, and both would be wrong.
+
+So a live campaign also takes a **runtime-endpoint lease**, before any request is sent:
+
+- keyed to the **normalized endpoint** — `localhost`, `127.0.0.1` and `::1`, with or without a
+  trailing slash, are one server and take one lease;
+- recording the PID, process type, campaign id, endpoint, hostname, acquisition time, heartbeat, and
+  what the model store looked like when it was taken;
+- refusing a second campaign on an owned endpoint **before a single inference request**;
+- with the same live / stale / unresponsive / foreign-host rules as the campaign lock, and the same
+  promise: a live lease is never broken automatically;
+- released on pause, completion and abort, and reclaimed — with the crashed owner kept as evidence —
+  after a verified crash.
+
+The model-store identity is **recorded rather than keyed on**, deliberately. Keying on it would let
+two campaigns that happened to see different store listings both believe they owned the same server,
+which is the exact failure the lease prevents.
+
+Campaigns on **genuinely separate endpoints run side by side** with no contention, which is why this
+is a lease on the runtime rather than a global one-campaign-at-a-time flag. Observe-only campaigns
+take a lease too: they still load weights on that endpoint, which is precisely what would invalidate
+a canonical campaign's residency proof running beside them.
+
+`cernum endpoints` shows what is leased. `cernum unlock --endpoint <url>` releases a crashed
+campaign's hold on one.
+
 ---
 
 ## Where a campaign lives
@@ -323,6 +429,10 @@ still writing to is refused too: a final report read mid-run is a snapshot prese
     aborts/               superseded aborts, kept for the report
   campaign.lock           present only while a process owns this campaign
   locks/                  reclaimed and released locks, kept as crash evidence
+
+<campaign root>/
+  .runtime-leases/        one file per benchmark endpoint, shared between campaigns
+    recovered/            reclaimed and released leases, kept as crash evidence
   rankings.json           measurement
   retention.json          interpretation, labelled as such
   final-report.json       both, plus the reconciliation

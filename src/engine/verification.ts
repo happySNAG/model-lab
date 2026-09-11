@@ -111,6 +111,11 @@ export interface ObservedModelIdentity {
   runtimeDigest?: string;
   parameterSize?: string;
   quantization?: string;
+  /**
+   * What the runtime says this model can do ('completion', 'tools', 'thinking', 'vision', …).
+   * Undefined means the runtime did not say — which is different from saying "it cannot".
+   */
+  capabilities?: string[];
 }
 
 export interface ModelIdentityVerification {
@@ -170,4 +175,76 @@ export function verifyModelIdentity(pinned: PinnedModelIdentity, observed: Obser
 /** A mismatch poisons the attempt. An unverifiable identity does not — it is recorded and carried. */
 export function identityPermitsExecution(verification: ModelIdentityVerification): boolean {
   return verification.state !== 'mismatch';
+}
+
+// MARK: - Thinking-mode preflight
+
+export type ThinkingModeState =
+  /** The runtime reports the capability the frozen mode needs. */
+  | 'supported'
+  /** The runtime reports its capabilities and the needed one is not among them. */
+  | 'unsupported'
+  /** The runtime reports no capability list, so nothing here can be confirmed either way. */
+  | 'unverifiable'
+  /** The frozen mode needs no capability (thinking off, or left to the runtime). */
+  | 'notRequired';
+
+export interface ThinkingModeVerification {
+  state: ThinkingModeState;
+  frozenMode: string;
+  reportedCapabilities?: string[];
+  detail: string;
+}
+
+/**
+ * Check the runtime can actually do what the manifest froze — BEFORE the request, not after.
+ *
+ * The rule this enforces is "fail preflight rather than substitute". A campaign frozen with
+ * thinking enabled, run against a model that cannot think, must stop; it must never quietly send
+ * the request with thinking off and record the answers as though the frozen configuration had been
+ * honoured. Those answers would be real answers to a different experiment.
+ *
+ * A runtime that reports NO capability list is `unverifiable`, not `unsupported`. "It did not tell
+ * us" and "it told us it cannot" are different facts, and only the second is grounds to refuse —
+ * the same discipline `verifyModelIdentity` applies to the weights.
+ */
+export function verifyThinkingMode(frozenMode: string, observed: ObservedModelIdentity): ThinkingModeVerification {
+  if (frozenMode !== 'enabled') {
+    return {
+      state: 'notRequired',
+      frozenMode,
+      reportedCapabilities: observed.capabilities,
+      detail: frozenMode === 'disabled'
+        ? 'thinking is frozen off, which every model supports'
+        : 'thinking is frozen to the runtime default, which asks the runtime for nothing in particular',
+    };
+  }
+  if (observed.capabilities === undefined) {
+    return {
+      state: 'unverifiable',
+      frozenMode,
+      detail: 'thinking is frozen on, and the runtime reported no capability list for this model; nothing contradicts the request, but nothing confirms it either',
+    };
+  }
+  if (observed.capabilities.includes('thinking')) {
+    return {
+      state: 'supported',
+      frozenMode,
+      reportedCapabilities: observed.capabilities,
+      detail: 'the runtime reports this model can think, which is what the manifest froze',
+    };
+  }
+  return {
+    state: 'unsupported',
+    frozenMode,
+    reportedCapabilities: observed.capabilities,
+    detail: `this campaign was frozen with thinking ON, and the runtime reports that ${observed.modelID ?? observed.name ?? 'this model'} `
+      + `cannot think (it reports: ${observed.capabilities.join(', ') || 'nothing'}). The frozen configuration cannot be honoured, and `
+      + 'running with thinking off instead would record answers to a different experiment under this manifest.',
+  };
+}
+
+/** Only a reported, positive absence stops a campaign. An unreported capability list does not. */
+export function thinkingModePermitsExecution(verification: ThinkingModeVerification): boolean {
+  return verification.state !== 'unsupported';
 }

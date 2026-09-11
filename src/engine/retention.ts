@@ -152,7 +152,14 @@ export function recommendRetention(rankings: FinalRankings, policy: RetentionPol
 
   return {
     heading: RETENTION_HEADING,
-    preamble: RETENTION_PREAMBLE,
+    // A noncanonical ranking is said so at the top of the interpretation too. A reader who skipped
+    // the rankings and came here for the verdict should not have to go back to find out that the
+    // measurements underneath it are not comparable.
+    preamble: rankings.canonical
+      ? RETENTION_PREAMBLE
+      : ['OBSERVE-ONLY: residency was not managed for this campaign, so the measurements these recommendations rest on are '
+         + 'not comparable with a canonical run. Read them as a note about this one run, and never as a basis for choosing '
+         + 'between models measured elsewhere.', ...RETENTION_PREAMBLE],
     policy,
     recommendations,
     derivedAt: rankings.derivedAt,

@@ -64,6 +64,13 @@ export interface CandidateRanking {
 }
 
 export interface FinalRankings {
+  /**
+   * False when residency was not managed. A noncanonical ranking is internally readable — the
+   * quality outcomes are what they are — but its rates and latencies must not be set beside a
+   * canonical run's, and it says so here rather than leaving a reader to notice.
+   */
+  canonical: boolean;
+  noncanonicalBecause: string[];
   provisional: boolean;
   provisionalBecause: string[];
   rankings: CandidateRanking[];
@@ -71,6 +78,10 @@ export interface FinalRankings {
   countingRules: string[];
   derivedAt: string;
 }
+
+export const NONCANONICAL_COUNTING_RULE =
+  'OBSERVE-ONLY: residency was not managed, so these latencies are not comparable with a canonical run, '
+  + 'nor between candidates within this one. Quality outcomes stand; timings do not.';
 
 export const COUNTING_RULES = [
   'Reconciliation first: if the ledger does not balance, every rate here is provisional.',
@@ -197,6 +208,10 @@ export interface RankingInputs {
   outcomes: RankableOutcome[];
   reconciliation?: Reconciliation;
   derivedAt: string;
+  /** Defaults to true. Pass false for an observe-only campaign. */
+  canonical?: boolean;
+  /** Why it is not canonical. Required in substance when `canonical` is false. */
+  noncanonicalBecause?: string[];
 }
 
 export function rankCandidates(inputs: RankingInputs): FinalRankings {
@@ -266,12 +281,17 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
     return a.candidate < b.candidate ? -1 : 1;
   });
 
+  const canonical = inputs.canonical !== false;
   return {
+    canonical,
+    noncanonicalBecause: canonical ? [] : (inputs.noncanonicalBecause ?? ['residency was not managed during this campaign']),
     provisional: provisionalBecause.length > 0,
     provisionalBecause,
     rankings: ordered.map((ranking, index) => ({ ...ranking, rank: index + 1 })),
     awaitingHumanReviewTotal: ordered.reduce((sum, ranking) => sum + ranking.awaitingHumanReviewCount, 0),
-    countingRules: COUNTING_RULES,
+    // The comparability rule is stated first on a noncanonical ranking, because it governs every
+    // rule under it: a rate computed correctly from incomparable measurements is still incomparable.
+    countingRules: canonical ? COUNTING_RULES : [NONCANONICAL_COUNTING_RULE, ...COUNTING_RULES],
     derivedAt: inputs.derivedAt,
   };
 }

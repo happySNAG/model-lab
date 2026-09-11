@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Shell } from '../App';
-import type { CampaignDetail, CampaignRow, CampaignVerification, ModelRow, TerminalCommandRow } from '../../shared/ipc';
+import type {
+  CampaignDetail, CampaignRow, CampaignStartDisclosure, CampaignVerification, ModelRow, TerminalCommandRow,
+} from '../../shared/ipc';
 import { Card, Empty, Modal, Pill, when } from '../components';
 
 // A campaign is a long benchmark with a frozen manifest and a durable ledger. It can be driven from
@@ -30,6 +32,9 @@ export function CampaignsView({ shell }: { shell: Shell }) {
   const [error, setError] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
+  // What the person is shown before a campaign starts. Set when Start is pressed, cleared when they
+  // decide. It is asked once per start, never per attempt.
+  const [disclosure, setDisclosure] = useState<CampaignStartDisclosure>();
 
   const refresh = useCallback(async () => {
     try {
@@ -96,6 +101,9 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                 <td>
                   <strong>{row.label}</strong>
                   <div className="muted small">{row.name}</div>
+                  {row.execution && !row.execution.canonical && (
+                    <div className="muted small"><Pill tone="warn">observe-only</Pill> noncanonical</div>
+                  )}
                   {row.problem && <div className="note bad small">{row.problem}</div>}
                 </td>
                 <td>
@@ -121,6 +129,7 @@ export function CampaignsView({ shell }: { shell: Shell }) {
 
       <TerminalCommand onError={setError} />
 
+
       {selected && detail && (
         <Modal title={detail.status.label} wide onClose={() => { setSelected(undefined); setDetail(undefined); }}
                actions={<>
@@ -129,12 +138,21 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                    ? <button className="btn" disabled={busy} onClick={() => void act(async () => setDetail(await api.finalizeCampaign(selected)))}>Finalize</button>
                    : rows?.find((row) => row.name === selected)?.running
                      ? <button className="btn" disabled={busy} onClick={() => void act(() => api.pauseCampaign())}>Pause</button>
-                     : <button className="btn primary" disabled={busy} onClick={() => void act(() => api.startCampaign(selected))}>
+                     : <button className="btn primary" disabled={busy}
+                               onClick={() => void act(async () => setDisclosure(await api.campaignDisclosure(selected)))}>
                          {detail.status.terminalCount > 0 ? 'Resume' : 'Start'}
                        </button>}
                  <button className="btn" onClick={() => { setSelected(undefined); setDetail(undefined); }}>Close</button>
                </>}>
           <p className="mono small">{detail.manifest.seal}</p>
+          <p className="muted small">{detail.execution.summary}</p>
+          {!detail.execution.canonical && (
+            <div className="note warn">
+              <strong>Observe-only — noncanonical.</strong> These results are not comparable with a campaign that
+              managed residency, and not comparable between candidates within this one.
+              <ul>{detail.execution.noncanonicalBecause.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+            </div>
+          )}
           <p className="muted small">
             Frozen {when(detail.manifest.frozenAt)} over {detail.manifest.promptCount} prompt(s) and {detail.manifest.candidateCount} model(s).
             {detail.manifest.retestOf && <> Derived from <span className="mono">{detail.manifest.retestOf}</span> for different hardware — quality is comparable with it, latency is not.</>}
@@ -156,6 +174,13 @@ export function CampaignsView({ shell }: { shell: Shell }) {
             <div className="note warn">
               <strong>The ledger noticed something.</strong>
               <ul>{detail.anomalies.map((anomaly, index) => <li key={index}>{anomaly.kind}{anomaly.why ? ` — ${anomaly.why}` : ''}</li>)}</ul>
+            </div>
+          )}
+
+          {detail.report && !detail.report.canonical && (
+            <div className="note warn">
+              <strong>These rankings are noncanonical.</strong> They were produced by an observe-only campaign and must
+              not be set beside canonical results.
             </div>
           )}
 
@@ -229,6 +254,23 @@ export function CampaignsView({ shell }: { shell: Shell }) {
           )}
 
           <p className="muted small">Same campaign in a terminal: <code>{detail.terminalHint}</code></p>
+        </Modal>
+      )}
+
+      {/* Rendered last so it sits above the detail modal it was opened from: a person
+          confirming this should not be able to reach the buttons underneath it. */}
+      {disclosure && selected && (
+        <Modal title={disclosure.canonical ? 'Before this campaign starts' : 'This campaign is observe-only'}
+               onClose={() => setDisclosure(undefined)}
+               actions={<>
+                 <button className="btn" onClick={() => setDisclosure(undefined)}>Cancel</button>
+                 <button className="btn primary" disabled={busy} data-testid="confirm-start"
+                         onClick={() => { const name = selected; setDisclosure(undefined); void act(() => api.startCampaign(name)); }}>
+                   {disclosure.canonical ? 'Understood — start' : 'Start observe-only'}
+                 </button>
+               </>}>
+          <p className="mono small">{disclosure.endpoint}</p>
+          <ul>{disclosure.lines.map((line, index) => <li key={index}>{line}</li>)}</ul>
         </Modal>
       )}
 
@@ -317,9 +359,13 @@ function CreateCampaign({ onClose, onCreated, onError }: { onClose: () => void; 
   const [chosenModels, setChosenModels] = useState<string[]>([]);
   const [chosenSuites, setChosenSuites] = useState<string[]>([]);
   const [repeats, setRepeats] = useState(1);
+  const [observeOnly, setObserveOnly] = useState(false);
+  const [thinking, setThinking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [endpoint, setEndpoint] = useState('');
 
   useEffect(() => {
+    void api.getSettings().then((settings) => setEndpoint(settings.ollamaEndpoint));
     void api.listModels().then((rows) => setModels(rows.filter((row) => row.kind === 'ollama')));
     void api.campaignSuites().then((rows) => { setSuites(rows); setChosenSuites(rows.map((row) => row.id)); });
   }, []);
@@ -336,6 +382,7 @@ function CreateCampaign({ onClose, onCreated, onError }: { onClose: () => void; 
       onCreated(await api.createCampaign({
         name: safeName, label: name.trim() || safeName, modelNames: chosenModels,
         suiteIDs: chosenSuites, repeatsPerCase: repeats, runtimeVersion: 'ollama-unreported',
+        observeOnly, thinkingMode: thinking ? 'enabled' : 'disabled',
       }));
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
@@ -381,6 +428,46 @@ function CreateCampaign({ onClose, onCreated, onError }: { onClose: () => void; 
         <span>Passes per case</span>
         <input type="number" min={1} max={10} value={repeats} onChange={(event) => setRepeats(Math.max(1, Number(event.target.value) || 1))} />
         <span className="muted small">More passes measure how consistent a model is, at proportional cost.</span>
+      </label>
+
+      <h3>How it runs</h3>
+      <p className="muted small">
+        Both choices are frozen into the manifest when you create the campaign, and neither can be changed afterwards.
+      </p>
+
+      <label className="check">
+        <input type="checkbox" checked={!observeOnly} onChange={() => setObserveOnly(!observeOnly)} data-testid="canonical-toggle" />
+        <span>
+          <strong>Canonical — let Cernum manage models on the benchmark endpoint</strong>
+          <div className="muted small">
+            Cernum will load and unload models on <code>{endpoint || 'the selected endpoint'}</code> while this campaign
+            runs: before each candidate after the first, it asks that endpoint to release the previous candidate's weights
+            and verifies the release before continuing. That is what makes the candidates comparable — without it, the
+            second model's latency measures the disk rather than the model. This applies to that one endpoint only; no
+            other runtime or process on this machine is touched, and no model is pulled, created or deleted. You are asked
+            once, when you start it, and not again between attempts.
+          </div>
+        </span>
+      </label>
+
+      {observeOnly && (
+        <div className="note warn">
+          <strong>Observe-only: these results will be noncanonical.</strong> Cernum will touch nothing on the endpoint,
+          so every candidate after the first may be measured against a machine already holding another model's weights.
+          Latency and throughput from this campaign will not be comparable with a canonical run, nor between candidates
+          within it, and it will be labelled that way everywhere it appears. Quality outcomes are unaffected.
+        </div>
+      )}
+
+      <label className="check">
+        <input type="checkbox" checked={thinking} onChange={() => setThinking(!thinking)} data-testid="thinking-toggle" />
+        <span>
+          <strong>Ask the models to think first</strong>
+          <div className="muted small">
+            Frozen with the campaign. A model the runtime says cannot think is refused here rather than quietly run with
+            thinking off — answers produced under a different configuration would be answers to a different experiment.
+          </div>
+        </span>
       </label>
 
       <p className={attempts > 0 ? 'note' : 'muted'}>{attempts > 0 ? `${attempts} attempt(s) will be planned.` : 'Choose at least one model and one suite.'}</p>

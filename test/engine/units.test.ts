@@ -34,6 +34,7 @@ const BASE_INPUTS: ManifestInputs = {
     { caseID: 'c2', caseDigest: 'd2', comparabilityKey: 'k2', scoringMode: 'json:p@1', maxOutputTokens: 256 },
   ],
   evaluators: [{ evaluatorID: 'e1', source: 'exact match v1' }],
+  execution: { residency: 'managed', thinkingMode: 'disabled' },
   candidates: [
     { name: 'alpha', modelID: 'alpha', runtimeDigest: 'sha-a', parameterSize: '4B', quantization: 'Q4' },
     { name: 'beta', modelID: 'beta', runtimeDigest: 'sha-b', parameterSize: '7B', quantization: 'Q4' },

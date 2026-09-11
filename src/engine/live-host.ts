@@ -132,6 +132,13 @@ export interface DiscoveredModel {
   quantization: string;
   family: string;
   sizeBytes?: number;
+  /** What the runtime says this model can do. Undefined means it did not say — not "nothing". */
+  capabilities?: string[];
+}
+
+/** True only when the runtime SAID this model can think. Unreported capabilities answer `undefined`. */
+export function modelCanThink(model: { capabilities?: string[] }): boolean | undefined {
+  return model.capabilities === undefined ? undefined : model.capabilities.includes('thinking');
 }
 
 /** Read-only discovery of what is already installed locally. Never pulls, never creates. */
@@ -148,6 +155,7 @@ export async function discoverLocalModels(endpoint: string, transport?: OllamaTr
     quantization: row.quantizationLevel ?? '',
     family: row.family ?? '',
     sizeBytes: row.sizeBytes,
+    capabilities: row.capabilities,
   })).sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
@@ -202,6 +210,7 @@ export class LiveHost implements CampaignHost {
         runtimeDigest: report.digest,
         parameterSize: report.parameterSize,
         quantization: report.quantizationLevel,
+        capabilities: report.capabilities,
       };
     } catch {
       // The runtime declining to answer is "unreported", never "matched". `verifyModelIdentity`
@@ -298,6 +307,19 @@ export class LiveHost implements CampaignHost {
         ?? (verdict.verdict.metrics.map((metric) => metric.detail).filter(Boolean).join('; ')
           || `${verdict.evaluatorID} returned ${verdict.verdict.status}`),
     };
+  }
+
+  /**
+   * Which runtime this host talks to, and what it currently holds.
+   *
+   * This is what the runtime lease is taken against. The endpoint is reported exactly as configured
+   * and normalized by the lease itself, so two callers who spelled the same server differently still
+   * contend for it.
+   */
+  async runtimeIdentity(): Promise<{ endpoint: string; modelStoreListingDigest: string; modelStoreCount: number }> {
+    const models = await discoverLocalModels(this.options.endpoint, this.transport).catch(() => [] as DiscoveredModel[]);
+    const baseline = modelStoreBaseline(models);
+    return { endpoint: this.options.endpoint, modelStoreListingDigest: baseline.listingDigest, modelStoreCount: baseline.count };
   }
 
   async readSystem(): Promise<SystemReading> {
