@@ -19,6 +19,22 @@ function stateTone(state: string): 'ok' | 'warn' | 'bad' | 'neutral' | 'accent' 
   return 'neutral';
 }
 
+/**
+ * The message a person should read, without the plumbing it arrived in.
+ *
+ * Electron wraps anything the main process throws as
+ * `Error invoking remote method 'lab:campaign:start': RuntimeLeaseError: <the actual sentence>`.
+ * The engine writes these refusals carefully — naming the campaign, the process and what to do — and
+ * burying that behind an IPC channel name wastes the part that helps.
+ */
+function readableError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const unwrapped = /^Error invoking remote method '[^']*':\s*([\s\S]+)$/.exec(raw);
+  const withoutChannel = unwrapped ? unwrapped[1] : raw;
+  const named = /^[A-Za-z]*Error:\s*([\s\S]+)$/.exec(withoutChannel);
+  return named ? named[1] : withoutChannel;
+}
+
 function ratePercent(milli?: number): string {
   return milli === undefined ? 'no rate' : `${(milli / 10).toFixed(1)}%`;
 }
@@ -40,7 +56,7 @@ export function CampaignsView({ shell }: { shell: Shell }) {
     try {
       setRows(await api.listCampaigns());
       setRoot(await api.campaignRoot());
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setError(readableError(e)); }
   }, []);
 
   // Refreshing the detail must NOT discard a verification the person just asked for: this view
@@ -48,7 +64,7 @@ export function CampaignsView({ shell }: { shell: Shell }) {
   // A verification belongs to the campaign it was run against, so the selection is what clears it.
   const loadDetail = useCallback(async (name: string) => {
     try { setDetail(await api.campaignDetail(name)); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    catch (e) { setError(readableError(e)); }
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
@@ -65,7 +81,7 @@ export function CampaignsView({ shell }: { shell: Shell }) {
 
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true); setError(undefined);
-    try { await work(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    try { await work(); } catch (e) { setError(readableError(e)); }
     finally { setBusy(false); void refresh(); if (selected) void loadDetail(selected); }
   };
 
@@ -292,14 +308,14 @@ function TerminalCommand({ onError }: { onError: (message: string) => void }) {
 
   const load = useCallback(async () => {
     try { setStatus(await api.terminalCommand()); }
-    catch (e) { onError(e instanceof Error ? e.message : String(e)); }
+    catch (e) { onError(readableError(e)); }
   }, [onError]);
   useEffect(() => { void load(); }, [load]);
 
   const act = async (work: () => Promise<TerminalCommandRow>) => {
     setBusy(true);
     try { setStatus(await work()); }
-    catch (e) { onError(e instanceof Error ? e.message : String(e)); void load(); }
+    catch (e) { onError(readableError(e)); void load(); }
     finally { setBusy(false); }
   };
 
@@ -384,7 +400,7 @@ function CreateCampaign({ onClose, onCreated, onError }: { onClose: () => void; 
         suiteIDs: chosenSuites, repeatsPerCase: repeats, runtimeVersion: 'ollama-unreported',
         observeOnly, thinkingMode: thinking ? 'enabled' : 'disabled',
       }));
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) { onError(readableError(error)); }
     finally { setBusy(false); }
   };
 

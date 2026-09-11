@@ -299,8 +299,13 @@ test('a second campaign against the same endpoint is refused before a single req
     await second.page.getByRole('button', { name: 'Start' }).click();
     await second.page.locator('[data-testid="confirm-start"]').click();
 
-    await expect(second.page.locator('.note.bad')).toContainText('already held by campaign', { timeout: 30_000 });
-    await expect(second.page.locator('.note.bad')).toContainText('other-campaign');
+    const refusal = second.page.locator('.note.bad');
+    await expect(refusal).toContainText('already held by campaign', { timeout: 30_000 });
+    await expect(refusal).toContainText('other-campaign');
+    await expect(refusal).toContainText('point this campaign at a different endpoint');
+    // The sentence, not the plumbing it arrived in.
+    await expect(refusal).not.toContainText('Error invoking remote method');
+    await expect(refusal).not.toContainText('RuntimeLeaseError');
     await second.app.close();
 
     // Refused BEFORE inference: the runtime saw nothing at all.
