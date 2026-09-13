@@ -9,28 +9,22 @@
 // pulls, downloads, creates or deletes anything: a benchmark that could install a model could
 // change the thing it is measuring.
 
-import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { CancellationToken } from '../core/adapter';
 import { OllamaChatReport, OllamaInstalledModel, OllamaTransport, ThinkingMode, supportsStreaming } from '../core/ollama';
 import { LiveExecutionAuthorization, OllamaHTTPTransport } from '../core/ollama-http';
-import { makeCandidate, measured, unavailable } from '../core/candidate';
-import { BenchmarkCase } from '../core/benchmark';
-import { EvaluationEngine } from '../core/engine';
-import { policyCatalog } from '../core/catalog';
-import { isViolation } from '../core/evaluation';
 import { AttemptOutcome, AttemptRequest, CampaignHost } from './campaign';
 import { EngineCatalogue } from './catalogue';
+import { CatalogueScorer } from './scoring';
 import { PlanSlot, PlannableCandidate, TerminalSlotStatus } from './ledger';
 import { GIB, SystemReading } from './guards';
 import { LiveResidency, ResidencyController } from './residency';
 import { ObservedModelIdentity } from './verification';
 import { StreamEvent } from './attempt-telemetry';
-import { digestObject, sha256Text } from './canonical';
+import { digestObject } from './canonical';
+import { freeDiskBytes, readListeners, swapUsedBytes } from './machine';
 
-const execFileAsync = promisify(execFile);
+export { readListeners };
 
 /**
  * The core refuses to build a live transport without an explicit acknowledgement value, so that
@@ -42,67 +36,6 @@ function liveAuthorization(): LiveExecutionAuthorization {
   const authorization = LiveExecutionAuthorization.explicit(true, true);
   if (!authorization) throw new Error('the core refused to authorise live execution');
   return authorization;
-}
-
-async function run(command: string, args: string[], timeout = 5_000): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFileAsync(command, args, { timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-    return stdout.trim();
-  } catch {
-    return undefined;
-  }
-}
-
-/** Ports with a listener, as the OS reports them. Read-only; nothing is opened or closed. */
-export async function readListeners(): Promise<Record<string, number>> {
-  const listeners: Record<string, number> = {};
-  if (process.platform === 'win32') {
-    const out = await run('netstat', ['-ano', '-p', 'TCP']);
-    for (const line of (out ?? '').split('\n')) {
-      const match = /:(\d+)\s+\S+\s+LISTENING\s+(\d+)/.exec(line);
-      if (match) listeners[match[1]] = Number(match[2]);
-    }
-    return listeners;
-  }
-  // `lsof -nP -iTCP -sTCP:LISTEN` is the portable-enough answer on macOS and Linux.
-  const out = await run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-F', 'pn'], 8_000);
-  let pid = 0;
-  for (const line of (out ?? '').split('\n')) {
-    if (line.startsWith('p')) pid = Number(line.slice(1));
-    else if (line.startsWith('n')) {
-      const match = /:(\d+)$/.exec(line);
-      if (match) listeners[match[1]] = pid;
-    }
-  }
-  return listeners;
-}
-
-async function freeDiskBytes(path: string): Promise<number> {
-  try {
-    const stats = fs.statfsSync(path);
-    return Number(stats.bavail) * Number(stats.bsize);
-  } catch {
-    return Number.MAX_SAFE_INTEGER;
-  }
-}
-
-async function swapUsedBytes(): Promise<number> {
-  if (process.platform === 'darwin') {
-    const out = await run('sysctl', ['-n', 'vm.swapusage']);
-    const match = /used\s*=\s*([\d.]+)M/.exec(out ?? '');
-    return match ? Math.round(Number(match[1]) * 1024 * 1024) : 0;
-  }
-  if (process.platform === 'linux') {
-    try {
-      const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
-      const total = /SwapTotal:\s+(\d+) kB/.exec(meminfo);
-      const free = /SwapFree:\s+(\d+) kB/.exec(meminfo);
-      if (total && free) return (Number(total[1]) - Number(free[1])) * 1024;
-    } catch { /* fall through */ }
-  }
-  // An unreadable swap figure is reported as zero rather than as a breach: a guard that fails
-  // because it could not measure would stop every campaign on a platform it does not know.
-  return 0;
 }
 
 export interface LiveHostOptions {
@@ -171,12 +104,14 @@ export class LiveHost implements CampaignHost {
   readonly residency: ResidencyController;
   readonly now: () => Date;
   private readonly transport: OllamaTransport;
-  private readonly evaluationEngine: EvaluationEngine;
+  private readonly scorer: CatalogueScorer;
 
   constructor(private readonly options: LiveHostOptions) {
     this.transport = options.transport ?? new OllamaHTTPTransport(options.endpoint, liveAuthorization());
     this.now = options.now ?? (() => new Date());
-    this.evaluationEngine = new EvaluationEngine(policyCatalog, this.now);
+    // The SHARED scorer, not a private one. A frontier-only campaign is scored by this same object,
+    // so a local answer and an API answer cannot be judged by two implementations that agree today.
+    this.scorer = new CatalogueScorer(options.catalogue, this.now);
     this.residency = new LiveResidency(
       async () => (await this.transport.runningModels()).map((model) => model.name),
       async (model) => { await this.unload(model); },
@@ -296,17 +231,7 @@ export class LiveHost implements CampaignHost {
    * scored by the desktop application reach the same verdict from the same rules.
    */
   async score(slot: PlanSlot, answerText: string): Promise<{ status: TerminalSlotStatus; governanceViolated: boolean; detail: string }> {
-    const benchmarkCase = this.options.catalogue.cases.get(slot.caseID);
-    if (!benchmarkCase) return { status: 'unsupported', governanceViolated: false, detail: `case ${slot.caseID} is not in the catalogue` };
-    const verdict = this.evaluationEngine.evaluate(syntheticAttemptFor(benchmarkCase, slot, answerText));
-    const governanceViolated = isViolation(verdict.verdict.governance);
-    return {
-      status: statusFor(verdict.verdict.status),
-      governanceViolated,
-      detail: verdict.verdict.disqualificationReason
-        ?? (verdict.verdict.metrics.map((metric) => metric.detail).filter(Boolean).join('; ')
-          || `${verdict.evaluatorID} returned ${verdict.verdict.status}`),
-    };
+    return this.scorer.score(slot, answerText);
   }
 
   /**
@@ -337,69 +262,5 @@ export class LiveHost implements CampaignHost {
   }
 }
 
-/** The core's evaluator wants an attempt record; this is the smallest honest one. */
-function syntheticAttemptFor(benchmarkCase: BenchmarkCase, slot: PlanSlot, answerText: string) {
-  return {
-    attemptID: `attempt:${sha256Text(slot.slotKey).slice(0, 16)}`,
-    runID: slot.slotKey,
-    ordinal: slot.slotIndex,
-    repetitionIndex: slot.pass - 1,
-    candidate: makeCandidate({
-      id: { raw: slot.candidate },
-      displayName: slot.candidate,
-      provider: 'ollama',
-      exactModelIdentity: slot.modelID,
-      artifactDigest: slot.caseDigest ? measured(slot.caseDigest) : unavailable('the runtime reported no artifact digest'),
-      executionClass: 'localHostProcess',
-      quantization: '',
-      declaredContextLimitTokens: unavailable('not needed to score an answer from its text'),
-      inputModalities: ['text'],
-      outputModalities: ['text'],
-      streaming: 'unknown',
-      structuredOutput: 'declared',
-      toolCalls: 'unknown',
-      runtimeConfiguration: { settings: [] },
-      reproducibility: 'bestEffort',
-      privacyClass: 'onDeviceOnly',
-      availability: { state: 'available' },
-    }),
-    candidateDigest: '',
-    suiteID: benchmarkCase.suiteID,
-    suiteVersion: benchmarkCase.suiteVersion,
-    caseID: benchmarkCase.id,
-    caseDigest: slot.caseDigest,
-    inputPackage: benchmarkCase.inputs,
-    inputPackageDigest: '',
-    scoringPolicyID: benchmarkCase.scoringPolicyID,
-    scoringPolicyVersion: benchmarkCase.scoringPolicyVersion,
-    environment: { capturedAt: '', machineIdentifier: { unavailableReason: 'not captured for scoring' }, hardwareModel: { unavailableReason: 'not captured for scoring' },
-      cpuCoreCount: { unavailableReason: 'not captured for scoring' }, physicalMemoryBytes: { unavailableReason: 'not captured for scoring' },
-      osVersion: { unavailableReason: 'not captured for scoring' }, inferenceRuntimeVersion: { unavailableReason: 'not captured for scoring' } },
-    observation: {
-      outputText: answerText,
-      structuredOutputRaw: benchmarkCase.responseFormat === 'json' ? answerText : undefined,
-      toolCallObservationsRaw: [],
-      terminalStatus: 'completed' as const,
-      providerReportedUsage: { unavailableReason: 'scored from text alone' },
-      timing: { totalElapsedMilliseconds: { unavailableReason: 'scored from text alone' }, firstTokenMilliseconds: { unavailableReason: 'scored from text alone' } },
-      warnings: [], errors: [],
-      identityVerification: { state: 'unverifiable' as const, reason: 'identity is verified by the engine, not the evaluator' },
-      runtimeConfigurationID: '', requestDigest: '',
-    },
-    terminalStatus: 'completed' as const,
-    comparabilityKey: slot.comparabilityKey,
-    startedAt: '', finishedAt: '',
-  };
-}
 
-function statusFor(status: string): TerminalSlotStatus {
-  switch (status) {
-    case 'pass': return 'pass';
-    case 'partial': return 'partial';
-    case 'fail': return 'fail';
-    case 'requiresHumanReview': return 'requiresHumanReview';
-    case 'notApplicable': return 'unsupported';
-    default: return 'fail';
-  }
-}
 

@@ -284,6 +284,14 @@ export interface CampaignRow {
   owner?: CampaignOwnerRow;
   /** The frozen execution policy. Present so the list can mark an observe-only campaign at a glance. */
   execution?: CampaignExecutionRow;
+  /** Who answers this campaign's candidates. Absent on a campaign that bound no providers. */
+  providers?: string[];
+  /** True when candidates were reached through more than one execution class. */
+  mixedExecution?: boolean;
+  /** True when at least one candidate is billed per token. */
+  hasMeteredBinding?: boolean;
+  /** 3 for a Pass 3 campaign; 4 for one that bound its providers. */
+  manifestFormatVersion?: number;
 }
 
 export interface CampaignOwnerRow {
@@ -363,8 +371,132 @@ export interface CampaignDetail {
     packetPath?: string;
     packetClean?: boolean;
   };
+  /** One row per candidate: who answers it, at what effort, on whose bill, and how sure we are. */
+  bindings: {
+    candidate: string; provider: string; providerLabel: string; executionClass: string; billingBasis: string;
+    requestedModelID: string; verifiedModelID: string; identityState: string; identityEvidence: string;
+    effort: string; thinkingMode: string; maxInputTokens: number; maxOutputTokens: number;
+    timeoutMilliseconds: number; maxRetries: number; summary: string;
+    pricing?: { source: string; capturedAt: string; inputMicroUSDPerMillionTokens: number; outputMicroUSDPerMillionTokens: number };
+  }[];
+  /** Empty unless candidates were reached through more than one execution class. */
+  mixedExecutionBecause: string[];
+  /** Tokens, speed and cost with provenance. Empty until the campaign has been finalized. */
+  frontierMetrics: FrontierMetricsRow[];
+  spending?: CampaignSpendingRow;
+  manifestFormatVersion: number;
   /** The exact terminal command that shows the same campaign. */
   terminalHint: string;
+}
+
+// MARK: - Providers
+//
+// Five providers, three execution classes, and the renderer is never allowed to forget which is
+// which: every row carries its execution class and billing basis, because "Claude answered" means
+// three different things about cost and latency depending on how it was reached.
+
+export type ProviderReachability = 'unknown' | 'ready' | 'notInstalled' | 'notAuthenticated' | 'noCredential' | 'unreachable';
+
+export interface FrontierModelRow {
+  provider: string;
+  modelID: string;
+  displayName: string;
+  /** `proven` is the only value a campaign may select. `unproven` is a plan; `refused` is a no. */
+  availability: 'proven' | 'unproven' | 'refused';
+  evidence: string;
+  /** The identifier the provider itself returned. Empty means it returned none. */
+  verifiedModelID: string;
+  desiredEfforts: string[];
+}
+
+export interface ProviderStatusRow {
+  provider: string;
+  label: string;
+  executionClass: 'localRuntime' | 'subscriptionCLI' | 'meteredAPI';
+  billingBasis: string;
+  reachability: ProviderReachability;
+  detail: string;
+  /**
+   * Whether producing this row contacted anything.
+   *
+   * Rendered, not merely carried: a person looking at a status screen is entitled to know whether
+   * opening it cost them a request, and the answer on this screen is always `offline`.
+   */
+  probe: 'offline' | 'invoked';
+  executablePath?: string;
+  version?: string;
+  credential?: { environmentVariable: string; keychainService: string; masked: string; present: boolean; remedy: string };
+  models: FrontierModelRow[];
+  checkedAt: string;
+}
+
+/** What one campaign is expected to cost, before it is created or run. */
+export interface CostPreviewRow {
+  estimable: boolean;
+  notEstimableBecause: string[];
+  perCandidate: { candidate: string; billingBasis: string; plannedAttempts: number; minimumMicroUSD: number; maximumMicroUSD: number; statement: string }[];
+  totalMinimumMicroUSD: number;
+  totalMaximumMicroUSD: number;
+  meteredCandidateCount: number;
+  subscriptionCandidateCount: number;
+  localCandidateCount: number;
+  oldestPricingCapturedAt: string | null;
+  /** The sentences a person reads before approving. Authored in the engine; quoted here verbatim. */
+  disclosure: string[];
+  /** Prompts leave this machine for these providers. Shown before the run, once. */
+  privacyDisclosure: string[];
+}
+
+/** A frontier candidate as the New-campaign dialog submits it. */
+export interface FrontierCandidateSelection {
+  provider: string;
+  modelID: string;
+  effort: 'none' | 'low' | 'medium' | 'high' | 'max';
+  thinkingMode?: 'disabled' | 'enabled' | 'runtimeDefault';
+  /** Required for a metered provider. Supplied by a person; Cernum never fetches a price. */
+  pricing?: {
+    source: string; capturedAt: string;
+    inputMicroUSDPerMillionTokens: number; outputMicroUSDPerMillionTokens: number;
+    reasoningMicroUSDPerMillionTokens?: number | null;
+  };
+}
+
+/** Tokens, speed and cost for one candidate, each figure carrying how it was obtained. */
+export interface FrontierMetricsRow {
+  candidate: string;
+  provider: string;
+  executionClass: string;
+  billingBasis: string;
+  attemptCount: number;
+  successfulTaskCount: number;
+  successfulTaskRateMilli?: number;
+  inputTokens?: number;
+  visibleOutputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
+  medianTokensPerSecondMilli?: number;
+  medianTimeToFirstVisibleTokenMilliseconds?: number;
+  costPerRunMicroUSD?: number;
+  costPerSuccessfulTaskMicroUSD?: number;
+  tokensPerCompletedPass?: number;
+  wastedTokens?: number;
+  retryCount: number;
+  timeoutCount: number;
+  providerReportedTotalTokens?: number;
+  estimatedTotalTokens?: number;
+  reportedMinusEstimatedTokens?: number;
+  /** measured · providerReported · estimated · unavailable. Rendered, never hidden. */
+  measurementQuality: string;
+  /** Why a figure is absent, when it is. Shown rather than replaced with a zero. */
+  absences: { field: string; reason: string }[];
+}
+
+export interface CampaignSpendingRow {
+  authorized: boolean;
+  hardCeilingMicroUSD?: number;
+  recordedMicroUSD: number;
+  meteredAttempts: number;
+  stoppedAtCeiling: boolean;
 }
 
 export interface CampaignCreateRequest {
@@ -381,6 +513,13 @@ export interface CampaignCreateRequest {
   observeOnly?: boolean;
   /** Frozen into the manifest. A model the runtime says cannot think is refused, never substituted. */
   thinkingMode?: 'disabled' | 'enabled' | 'runtimeDefault';
+  /**
+   * Models somebody else runs. Each one is frozen with its provider, effort and billing basis.
+   *
+   * A selection whose model discovery has not PROVEN this account can call is refused by the shared
+   * campaign builder — the same refusal the terminal gets, from the same function.
+   */
+  frontier?: FrontierCandidateSelection[];
 }
 
 /** The frozen execution policy of a campaign, as the renderer sees it. */
@@ -467,6 +606,21 @@ export interface ModelLabAPI {
   campaignDisclosure(name: string): Promise<CampaignStartDisclosure>;
   /** Which benchmark endpoints are currently leased, and by which campaign. */
   leasedEndpoints(): Promise<{ endpoint: string; campaignName: string; processType: string; pid: number; state: string; message: string }[]>;
+  /**
+   * Every provider's status WITHOUT contacting any of them.
+   *
+   * Safe to call on every render, and called on opening the Providers screen. It reaches nothing —
+   * which is the property the `probe: 'offline'` field on every row exists to state.
+   */
+  providerStatuses(): Promise<ProviderStatusRow[]>;
+  /** Ask one provider what it is and what this account may call. THIS INVOKES SOMETHING. */
+  discoverProvider(provider: string): Promise<ProviderStatusRow>;
+  /** What this selection would cost, before anything is created. */
+  previewCampaignCost(request: CampaignCreateRequest): Promise<CostPreviewRow>;
+  /** What a created campaign is estimated to cost, and whether it has been authorised. */
+  campaignCost(name: string): Promise<CostPreviewRow & { authorized: boolean; hardCeilingMicroUSD?: number }>;
+  /** Record explicit authorization for paid execution, with a hard ceiling, before any run. */
+  authorizeCampaign(name: string, ceilingMicroUSD: number): Promise<CampaignDetail>;
   /** The installed terminal command: what it is, and the two actions that put it there or take it away. */
   terminalCommand(): Promise<TerminalCommandRow>;
   installTerminalCommand(): Promise<TerminalCommandRow>;
@@ -475,8 +629,8 @@ export interface ModelLabAPI {
   readonly platform: 'darwin' | 'win32' | 'linux' | string;
 }
 
-export type ScreenID = 'home' | 'models' | 'benchmark' | 'live' | 'results' | 'campaigns' | 'history' | 'settings';
-export const SCREEN_ORDER: ScreenID[] = ['home', 'models', 'benchmark', 'live', 'results', 'campaigns', 'history', 'settings'];
+export type ScreenID = 'home' | 'models' | 'providers' | 'benchmark' | 'live' | 'results' | 'campaigns' | 'history' | 'settings';
+export const SCREEN_ORDER: ScreenID[] = ['home', 'models', 'providers', 'benchmark', 'live', 'results', 'campaigns', 'history', 'settings'];
 
 export const IPC = {
   buildInfo: 'lab:buildInfo',
@@ -520,6 +674,11 @@ export const IPC = {
   campaignRoot: 'lab:campaign:root',
   campaignDisclosure: 'lab:campaign:disclosure',
   leasedEndpoints: 'lab:campaign:endpoints',
+  providerStatuses: 'lab:provider:statuses',
+  discoverProvider: 'lab:provider:discover',
+  previewCampaignCost: 'lab:campaign:costPreview',
+  campaignCost: 'lab:campaign:cost',
+  authorizeCampaign: 'lab:campaign:authorize',
   eventCampaign: 'lab:event:campaign',
   terminalCommand: 'lab:terminal:status',
   installTerminalCommand: 'lab:terminal:install',

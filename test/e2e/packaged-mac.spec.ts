@@ -52,8 +52,23 @@ test('Model Lab.app launches from its bundle, names itself, and stores data unde
   const help = execFileSync(launcher, ['help'], { cwd: os.tmpdir(), encoding: 'utf8', timeout: 120_000 });
   expect(help).toContain('benchmark engine · cernum');
   expect(help).toContain('install-command');
+  expect(help).toContain('providers');
+  expect(help).toContain('authorize <name> --ceiling');
   const suites = execFileSync(launcher, ['suites'], { cwd: os.tmpdir(), encoding: 'utf8', timeout: 120_000 });
   expect(suites).toMatch(/suite\(s\), \d+ case\(s\)/);
+
+  // The provider commands travel with the bundle too, and they are OFFLINE: a packaged application
+  // asked about its providers performs a PATH lookup and a credential check, and says so. Running
+  // this from a directory that is not the repository is the point — there is no checkout here.
+  const providers = execFileSync(launcher, ['providers'], { cwd: os.tmpdir(), encoding: 'utf8', timeout: 120_000 });
+  expect(providers).toContain('Nothing below contacted anything');
+  expect(providers).toContain('Claude Subscription');
+  expect(providers).toContain('Anthropic API');
+  expect(providers).toContain('No provider discovery has been run');
+  const credentials = execFileSync(launcher, ['credentials'], { cwd: os.tmpdir(), encoding: 'utf8', timeout: 120_000 });
+  expect(credentials).toContain('never stores a key itself and never prints one');
+  expect(credentials).toContain('ANTHROPIC_API_KEY');
+  expect(credentials).toContain('never reads their stored sessions');
   // And it computes the same campaign directory the application will report below.
   const where = execFileSync(launcher, ['where'], { cwd: os.tmpdir(), encoding: 'utf8', timeout: 120_000 });
   expect(where).toContain(path.join(os.homedir(), 'Library/Application Support/Model Lab/campaigns'));

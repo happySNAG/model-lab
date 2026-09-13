@@ -24,6 +24,7 @@
 
 import { CanonicalValue, canonicalJSON, digestObject, sha256Text } from './canonical';
 import { ExecutionPolicy, isCanonical } from './execution';
+import { OperationalEnvelope, operationalEnvelopeDigest } from './provider';
 
 /**
  * 3 adds the execution policy — residency mode and thinking mode — to the bound body.
@@ -34,7 +35,35 @@ import { ExecutionPolicy, isCanonical } from './execution';
  * under the same seal, and making that a property of the digest is stronger than making it a label
  * somebody has to remember to read.
  */
-export const MANIFEST_FORMAT_VERSION = 3;
+export const MANIFEST_FORMAT_VERSION_LOCAL_ONLY = 3;
+
+/**
+ * 4 adds the OPERATIONAL ENVELOPE — who is asked, how they are reached, at what effort, under what
+ * budgets and timeouts, on whose bill — to the bound body.
+ *
+ * WHY A FORMAT BUMP AND NOT AN EXTRA FIELD. The same prompts, scored the same way, answered by the
+ * same named model, produce different results depending on whether that model was reached on this
+ * machine, through a subscription CLI, or through a metered API. Their latencies are not the same
+ * measurement, their costs are not the same currency, and their identities are established by
+ * different evidence. Binding the envelope into the digest is what makes a local run and an API run
+ * of "the same" model two manifests rather than one — for exactly the reason an observe-only run and
+ * a canonical one became two in format 3.
+ *
+ * WHY THE SCORED CORE STAYS SEPARATE. `scoredCoreDigest` still binds only the prompts, the scoring
+ * modes and the output budgets — the things that must be identical for two results to be comparable
+ * at all. The envelope binds the things that make them different. Keeping the two digests apart is
+ * what lets a reader say "the same benchmark, three ways" instead of choosing between pretending
+ * they are identical and refusing to put them on one page.
+ *
+ * WHAT HAPPENS TO FORMAT 3. Nothing. A format-3 manifest is read, verified, finalized and resumed
+ * exactly as it always was; its stored identity is untouched, and its verification never recomputes
+ * a binding it never froze. `freezeManifest` still produces a byte-identical format-3 manifest when
+ * no envelope is supplied, which is what keeps the recorded parity vectors valid.
+ */
+export const MANIFEST_FORMAT_VERSION_WITH_PROVIDERS = 4;
+
+/** The version a new campaign freezes at. Every new campaign carries an envelope, so: 4. */
+export const MANIFEST_FORMAT_VERSION = MANIFEST_FORMAT_VERSION_WITH_PROVIDERS;
 
 export class ManifestError extends Error {
   constructor(message: string) {
@@ -108,6 +137,14 @@ export interface FrozenManifest {
   executionDigest?: string;
   /** False for an observe-only campaign. Stored explicitly so a reader never has to derive it. */
   canonical?: boolean;
+  /**
+   * Who is asked, how, at what effort, under what budgets, on whose bill. Absent on format 3.
+   *
+   * Present on every format-4 manifest INCLUDING a local-only one, so "this ran on the local
+   * runtime" is an assertion somebody made rather than the absence of a claim.
+   */
+  operationalEnvelope?: OperationalEnvelope;
+  operationalEnvelopeDigest?: string;
   /** Set only on a manifest derived for different hardware; names the manifest it descends from. */
   retestOf?: { manifestID: string; hardwareDigest: string; derivedAt: string; reason: string };
   manifestDigest: string;
@@ -126,6 +163,14 @@ export interface ManifestInputs {
   hardware: HardwareIdentity;
   runtimeVersion: string;
   execution: ExecutionPolicy;
+  /**
+   * Supply it to freeze a format-4 manifest; omit it to freeze a byte-identical format-3 one.
+   *
+   * The omission path exists for the recorded parity vectors and for nothing else: every caller in
+   * this engine supplies an envelope, because a campaign that cannot say who answered it is the
+   * ambiguity format 4 was created to remove.
+   */
+  operationalEnvelope?: OperationalEnvelope;
   frozenAt: string;
 }
 
@@ -171,8 +216,30 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
   const hardwareDigest = digestObject(inputs.hardware as unknown as CanonicalValue);
   const executionDigest = digestObject(inputs.execution as unknown as CanonicalValue);
 
+  // The envelope decides the FORMAT, and the format decides what is in the bound body. A format-3
+  // freeze must remain byte-identical to what Pass 3 produced — not merely equivalent — because the
+  // recorded parity vectors and every campaign already on disk are compared against those bytes.
+  const envelope = inputs.operationalEnvelope;
+  const envelopeDigest = envelope === undefined ? undefined : operationalEnvelopeDigest(envelope);
+
+  if (envelope !== undefined) {
+    const names = new Set(inputs.candidates.map((candidate) => candidate.name));
+    for (const binding of envelope.bindings) {
+      if (!names.has(binding.candidate)) {
+        throw new ManifestError(`the operational envelope binds ${binding.candidate}, which is not a candidate of this `
+          + 'campaign; a binding for a model nobody will run describes a request that is never made');
+      }
+    }
+    for (const candidate of inputs.candidates) {
+      if (!envelope.bindings.some((binding) => binding.candidate === candidate.name)) {
+        throw new ManifestError(`${candidate.name} has no provider binding, so this manifest could not say who would be `
+          + 'asked, how they would be reached, or who would pay. Refusing to freeze it.');
+      }
+    }
+  }
+
   const body = {
-    manifestFormatVersion: MANIFEST_FORMAT_VERSION,
+    manifestFormatVersion: envelope === undefined ? MANIFEST_FORMAT_VERSION_LOCAL_ONLY : MANIFEST_FORMAT_VERSION_WITH_PROVIDERS,
     label: inputs.label,
     catalogDigest: inputs.catalogDigest,
     caseCount: inputs.caseCount,
@@ -184,6 +251,9 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
     guardsDigest,
     hardwareDigest,
     executionDigest,
+    // Present only on format 4. `canonicalJSON` drops an undefined key entirely, so a format-3 body
+    // hashes to exactly the bytes it always did.
+    operationalEnvelopeDigest: envelopeDigest,
     runtimeVersion: inputs.runtimeVersion,
   };
   const manifestDigest = digestObject(body);
@@ -200,6 +270,7 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
     hardware: inputs.hardware,
     execution: inputs.execution,
     canonical: isCanonical(inputs.execution),
+    operationalEnvelope: envelope,
     manifestDigest,
   };
 }
@@ -231,6 +302,7 @@ export interface VerificationInputs {
   hardware?: HardwareIdentity;
   runtimeVersion?: string;
   execution?: ExecutionPolicy;
+  operationalEnvelope?: OperationalEnvelope;
 }
 
 const MEANINGS: Record<string, string> = {
@@ -243,6 +315,7 @@ const MEANINGS: Record<string, string> = {
   hardwareDigest: 'the machine changed; latency and throughput are not comparable across hardware, and a retest manifest is required',
   executionDigest: 'the execution policy changed: residency management or thinking mode is not the one that was frozen, and neither may be changed after the freeze',
   runtimeVersion: 'the inference runtime version changed; its own behaviour is part of the measurement',
+  operationalEnvelopeDigest: 'the operational envelope changed: a provider, a model identifier, an effort level, a thinking mode, a sampling setting, a token budget, a timeout, a retry policy, a billing basis or a pricing snapshot is not the one that was frozen. None of these may change after the freeze — a campaign whose second half was answered by a different model, at a different effort, or on a different bill is not the campaign that was authorised',
 };
 
 /**
@@ -280,6 +353,13 @@ export function verifyManifest(manifest: FrozenManifest, live: VerificationInput
   if (live.execution !== undefined && manifest.executionDigest !== undefined) {
     compare('executionDigest', manifest.executionDigest, digestObject(live.execution as unknown as CanonicalValue));
   }
+  // A manifest frozen before format 4 bound no operational envelope. Its absence is not a drift —
+  // there is nothing frozen to have moved — so, exactly as for the format-3 execution policy, it is
+  // not compared rather than being reported as one. This is what keeps a format-3 campaign
+  // verifiable, finalizable and resumable with its stored identity untouched.
+  if (live.operationalEnvelope !== undefined && manifest.operationalEnvelopeDigest !== undefined) {
+    compare('operationalEnvelopeDigest', manifest.operationalEnvelopeDigest, operationalEnvelopeDigest(live.operationalEnvelope));
+  }
   compare('runtimeVersion', manifest.runtimeVersion, live.runtimeVersion);
 
   return {
@@ -308,7 +388,10 @@ export function deriveRetestManifest(original: FrozenManifest, hardware: Hardwar
   }
   const retestOf = { manifestID: original.manifestID, hardwareDigest: original.hardwareDigest, derivedAt, reason };
   const body = {
-    manifestFormatVersion: MANIFEST_FORMAT_VERSION,
+    // The ORIGINAL's format, not today's. A retest is the same benchmark on a different machine;
+    // re-freezing it at a newer format would change what the identity binds, which is the one thing
+    // a retest must not do.
+    manifestFormatVersion: original.manifestFormatVersion,
     label: original.label,
     catalogDigest: original.catalogDigest,
     caseCount: original.caseCount,
@@ -320,6 +403,7 @@ export function deriveRetestManifest(original: FrozenManifest, hardware: Hardwar
     guardsDigest: original.guardsDigest,
     hardwareDigest,
     executionDigest: original.executionDigest,
+    operationalEnvelopeDigest: original.operationalEnvelopeDigest,
     runtimeVersion,
   };
   const manifestDigest = digestObject({ ...body, retestOf } as unknown as CanonicalValue);
@@ -335,6 +419,7 @@ export function deriveRetestManifest(original: FrozenManifest, hardware: Hardwar
     hardware,
     execution: original.execution,
     canonical: original.canonical,
+    operationalEnvelope: original.operationalEnvelope,
     retestOf,
     manifestDigest,
   };
@@ -352,6 +437,12 @@ export function manifestSeal(manifest: FrozenManifest): string {
     // Appended only when it is NOT canonical, so a canonical seal reads exactly as it always has and
     // the only seals that carry an extra clause are the ones a reader must not mistake for one.
     ...(manifest.canonical === false ? ['OBSERVE-ONLY'] : []),
+    // Likewise: a local-only campaign's seal reads exactly as a format-3 seal did, and the only
+    // seals that mention providers are the ones whose numbers a reader must not take as local.
+    ...(manifest.operationalEnvelope && manifest.operationalEnvelope.executionClasses.some((entry) => entry !== 'localRuntime')
+      ? [`providers ${manifest.operationalEnvelope.providers.join('+')}`, `envelope ${(manifest.operationalEnvelopeDigest ?? '').slice(0, 12)}`]
+      : []),
+    ...(manifest.operationalEnvelope?.mixed === true ? ['MIXED-EXECUTION — speed and cost not comparable across candidates'] : []),
   ].join(' · ');
 }
 

@@ -16,11 +16,18 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import {
-  Campaign, CampaignConfiguration, CampaignError, CampaignLockError, CampaignStatus, DEFAULT_EXECUTION_POLICY, ExecutionPolicy,
-  Ledger, LiveHost, NONCANONICAL_REASONS, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SyntheticHost,
-  ThinkingMode, allRankableSuiteIDs, breakCampaignLock, breakRuntimeLease, buildEngineCatalogue, campaignPaths,
-  describeExecutionPolicy, discoverLocalModels, guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink,
-  modelStoreBaseline, normalizeEndpoint, residencyDisclosure, steppingClock, syntheticCandidate,
+  Campaign, CampaignBuildError, CampaignConfiguration, CampaignError, CampaignLockError, CampaignStatus,
+  DEFAULT_EXECUTION_POLICY, DiscoveredFrontierModel, EffortLevel, ExecutionPolicy, FrontierCandidateRequest,
+  Ledger, LiveHost, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS, PRICING_FILE_NOTE, PROVIDER_LABELS, PricingSnapshot,
+  ProviderID, ProviderStatus, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
+  ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure, authorizeSpending,
+  breakCampaignLock, breakRuntimeLease, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths,
+  credentialStatus, desiredCandidates, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
+  discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI, estimateSpending, formatMicroUSD,
+  guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink,
+  modelStoreBaseline, normalizeEndpoint, offlineProviderStatuses, openaiBaseURL, parseCeilingToMicroUSD,
+  plannedWorkFor, pricingFor, privacyDisclosure, residencyDisclosure, steppingClock, syntheticCandidate,
+  terminateAllCLIProcesses,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
@@ -110,6 +117,10 @@ function renderStatus(status: CampaignStatus): void {
   say(`  ${status.label}  [${status.state}]${status.canonical ? '' : '  ** OBSERVE-ONLY — noncanonical **'}`);
   say(`  ${status.manifestSeal}`);
   say(`  ${describeExecutionPolicy(status.execution)}`);
+  if (status.operationalEnvelope) {
+    say(`  providers: ${status.operationalEnvelope.providers.map((provider) => PROVIDER_LABELS[provider]).join(', ')}`);
+    if (status.mixedExecution) say('  ** MIXED EXECUTION — task outcomes comparable; speed and cost are not **');
+  }
   say(`  ${status.terminalCount}/${status.slotCount} attempts recorded, ${status.remaining} remaining${status.blockedCount > 0 ? `, ${status.blockedCount} blocked` : ''}`);
   const byStatus = Object.entries(status.byStatus).sort();
   if (byStatus.length > 0) say(`  outcomes: ${byStatus.map(([name, count]) => `${name} ${count}`).join(', ')}`);
@@ -129,21 +140,29 @@ function renderStatus(status: CampaignStatus): void {
   if (!status.reconciliation.balances) say('  WARNING: the ledger does not balance; every rate derived from it is provisional.');
 }
 
-async function hostFor(configuration: CampaignConfiguration, options: Options) {
-  const catalogue = buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase);
+/**
+ * The host this campaign runs on, built the way the campaign was FROZEN.
+ *
+ * Every choice here comes from the manifest's own configuration — never from a flag on this
+ * invocation — and it is built by the SAME factory the desktop service calls. Two surfaces building
+ * a host separately is the defect Pass 3 shipped and then fixed; the surface that could differ is
+ * now every provider, adapter and credential in the campaign, so there is one factory.
+ */
+async function hostFor(configuration: CampaignConfiguration, options: Options, context: {
+  authorization?: ReturnType<Campaign['readAuthorization']>;
+  priorRows?: Record<string, unknown>[];
+  shouldCancel?: () => boolean;
+} = {}) {
   if (options.synthetic) {
     const pinned = Object.fromEntries(configuration.candidates.map((candidate) => [candidate.name, candidate]));
     return new SyntheticHost({}, steppingClock(), pinned);
   }
-  // Residency management follows the campaign's FROZEN policy, never a flag on this invocation.
-  // A mode you can change between resumes is not frozen, and a canonical campaign resumed without
-  // it would silently stop being canonical halfway through.
-  const execution = executionOf(configuration);
-  return new LiveHost({
+  return buildHostForCampaign(configuration, {
     endpoint: String(options.endpoint ?? DEFAULT_ENDPOINT),
-    catalogue,
-    ...hostOptionsFor(execution),
-  });
+    authorization: context.authorization,
+    priorRows: context.priorRows,
+    shouldCancel: context.shouldCancel,
+  }).host;
 }
 
 // MARK: - Commands
@@ -161,12 +180,287 @@ async function commandModels(options: Options): Promise<void> {
   say('Discovery is read-only. This command never pulls, creates or deletes a model.');
 }
 
+// MARK: - Providers, credentials and discovery
+
+/** The discovery cache. Written by `discover`, read by `create`. Never a source of availability by itself. */
+function discoveryCachePath(root: string): string {
+  return path.join(root, '.providers', 'discovered.json');
+}
+
+function readDiscovered(root: string): DiscoveredFrontierModel[] {
+  const file = discoveryCachePath(root);
+  if (!fs.existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { models?: DiscoveredFrontierModel[] };
+    return Array.isArray(parsed.models) ? parsed.models : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDiscovered(root: string, models: DiscoveredFrontierModel[]): void {
+  const file = discoveryCachePath(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ writtenAt: new Date().toISOString(), models }, null, 2) + '\n', 'utf8');
+}
+
+function renderProviderStatus(status: ProviderStatus): void {
+  say('');
+  say(`  ${status.label}  [${status.reachability}]`);
+  say(`    reached as   ${status.executionClass} · ${status.billingBasis}`);
+  if (status.executablePath) say(`    command      ${status.executablePath}`);
+  if (status.version) say(`    version      ${status.version}`);
+  if (status.credential) say(`    credential   ${status.credential.masked} (${status.credential.environmentVariable})`);
+  say(`    probe        ${status.probe === 'offline' ? 'nothing was contacted to produce this' : 'this provider was invoked'}`);
+  for (const line of wrap(status.detail, 76)) say(`    ${line}`);
+  for (const model of status.models) {
+    say(`      ${model.availability.padEnd(9)} ${model.modelID.padEnd(28)} ${model.displayName}`);
+  }
+}
+
+/** Wrap a sentence for a terminal without breaking a word. */
+function wrap(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const word of text.split(/\s+/)) {
+    if (current.length === 0) { current = word; continue; }
+    if (current.length + 1 + word.length > width) { lines.push(current); current = word; continue; }
+    current += ` ${word}`;
+  }
+  if (current.length > 0) lines.push(current);
+  return lines;
+}
+
+/**
+ * What can be said about every provider WITHOUT contacting any of them.
+ *
+ * This command makes no provider request of any kind. It is a PATH lookup and an environment read,
+ * which is why it is safe to run constantly and why its answers are mostly `unknown`.
+ */
+async function commandProviders(options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const statuses = offlineProviderStatuses();
+  say(`${statuses.length} provider(s). Nothing below contacted anything: this is a PATH lookup and a credential check.`);
+  const cached = readDiscovered(root);
+  for (const status of statuses) {
+    const known = cached.filter((model) => model.provider === status.provider);
+    renderProviderStatus({ ...status, models: known });
+  }
+  say('');
+  if (cached.length === 0) {
+    say('No provider discovery has been run, so no frontier model is selectable yet.');
+    say('The intended testing ladder, none of it confirmed:');
+    for (const model of desiredCandidates(new Date().toISOString())) {
+      say(`  unproven  ${model.modelID.padEnd(28)} ${model.displayName}`);
+    }
+    say('');
+  }
+  say(`Run discovery explicitly: ${TERMINAL_COMMAND} discover [claudeCLI|codexCLI|anthropicAPI|openaiAPI]`);
+}
+
+/** Credential configuration, masked. Shows that something is set and how long it is, and nothing else. */
+async function commandCredentials(): Promise<void> {
+  const statuses = allCredentialStatuses();
+  say('Metered API credentials. Cernum never stores a key itself and never prints one.');
+  for (const status of statuses) {
+    say('');
+    say(`  ${PROVIDER_LABELS[status.provider]}`);
+    say(`    variable   ${status.environmentVariable}`);
+    say(`    keychain   ${status.keychainService}`);
+    say(`    state      ${status.masked}`);
+    for (const line of wrap(status.remedy, 74)) say(`    ${line}`);
+  }
+  say('');
+  say('Subscription CLIs are not listed here: `claude` and `codex` authenticate themselves, and Cernum');
+  say('never reads their stored sessions, tokens or configuration.');
+}
+
+/**
+ * Ask a provider what it is and what this account may call. THIS INVOKES SOMETHING.
+ *
+ * Running the CLI's `--version` and its model listing costs no inference and spends no tokens.
+ * Listing a metered provider's models is a request made with the user's key, which is why it happens
+ * only here and never from a status read.
+ */
+async function commandDiscover(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const wanted = positional.length > 0 ? positional as ProviderID[] : ['claudeCLI', 'codexCLI'] as ProviderID[];
+  const discovered: DiscoveredFrontierModel[] = readDiscovered(root)
+    .filter((model) => !wanted.includes(model.provider));
+
+  for (const provider of wanted) {
+    let status: ProviderStatus;
+    if (provider === 'claudeCLI' || provider === 'codexCLI') {
+      status = await discoverSubscriptionCLI(provider);
+    } else if (provider === 'anthropicAPI' || provider === 'openaiAPI') {
+      status = await discoverMeteredProvider(provider, {
+        baseURL: provider === 'anthropicAPI' ? anthropicBaseURL() : openaiBaseURL(),
+      });
+    } else {
+      fail(`'${provider}' is not a provider. Try claudeCLI, codexCLI, anthropicAPI or openaiAPI.`);
+    }
+    renderProviderStatus(status);
+    discovered.push(...status.models);
+  }
+
+  writeDiscovered(root, discovered);
+  const proven = discovered.filter((model) => model.availability === 'proven');
+  say('');
+  say(`${proven.length} model(s) are now selectable. Anything not listed as 'proven' cannot be put in a campaign.`);
+  say(`Recorded in ${discoveryCachePath(root)}`);
+}
+
+// MARK: - Money
+
+function readPricingFile(options: Options): Record<string, unknown> {
+  if (options.pricing === undefined) return {};
+  const file = String(options.pricing);
+  if (!fs.existsSync(file)) fail(`no pricing file at ${file}. ${PRICING_FILE_NOTE}`);
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+  } catch (error) {
+    return fail(`${file} is not readable JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** What a campaign is expected to cost, without creating or running anything. */
+async function commandCost(positional: string[], options: Options): Promise<void> {
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} cost <name>`);
+  const directory = campaignDirectory(String(options.root ?? defaultCampaignRoot()), name);
+  const configuration = readConfiguration(directory);
+  const envelope = configuration.operationalEnvelope;
+  if (!envelope) {
+    say(`${name} binds no providers: it is a local campaign, and local execution has no monetary cost.`);
+    say('Wall-clock time is still recorded. No electricity cost is invented, because no rate and no measurement');
+    say('method were supplied.');
+    return;
+  }
+  const catalogue = buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase);
+  const work = plannedWorkFor(catalogue, configuration.candidates.map((candidate) => candidate.name), configuration.repeatsPerCase);
+  const estimate = estimateSpending(envelope, work);
+
+  say(`${configuration.label}`);
+  say('');
+  for (const binding of envelope.bindings) say(`  ${describeBinding(binding)}`);
+  say('');
+  if (!estimate.estimable) {
+    say('This campaign\'s cost CANNOT be calculated, so Cernum will not offer a number to approve:');
+    for (const reason of estimate.notEstimableBecause) for (const line of wrap(reason, 76)) say(`  · ${line}`);
+    process.exit(2);
+  }
+  for (const line of authorizationDisclosure(estimate, 0)) for (const wrapped of wrap(line, 78)) say(`  ${wrapped}`);
+  say('');
+  const authorization = Campaign.exists(directory)
+    ? Campaign.open(directory, configuration, await hostFor(configuration, options)).readAuthorization()
+    : undefined;
+  if (authorization) {
+    say(`Authorized ${authorization.authorizedAt} by ${authorization.authorizedBy}, ceiling `
+      + `${formatMicroUSD(authorization.hardCeilingMicroUSD)}.`);
+  } else if (estimate.meteredCandidateCount > 0) {
+    say(`NOT AUTHORIZED. No metered request will be sent until it is: ${TERMINAL_COMMAND} authorize ${name} --ceiling 5.00`);
+  }
+}
+
+/**
+ * Say yes to a specific amount of money, in writing, before the run.
+ *
+ * The record names the provider, the model, the planned attempts, the estimated floor and ceiling,
+ * when the prices were captured, and a hard ceiling the run stops at. It is written to the campaign
+ * directory and read back by the run, so it survives a resume, a crash and a change of surface.
+ */
+async function commandAuthorize(positional: string[], options: Options): Promise<void> {
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} authorize <name> --ceiling <dollars> [--yes]`);
+  if (options.ceiling === undefined) {
+    fail('--ceiling is required, in dollars. A paid run authorised with no stopping condition is not an authorisation.');
+  }
+  const directory = campaignDirectory(String(options.root ?? defaultCampaignRoot()), name);
+  const configuration = readConfiguration(directory);
+  const envelope = configuration.operationalEnvelope;
+  if (!envelope || !envelope.hasMeteredBinding) {
+    fail(`${name} has no metered candidate, so there is nothing to authorise. Subscription and local execution are `
+      + 'not billed per token and are not governed by a dollar ceiling.', 2);
+  }
+
+  const catalogue = buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase);
+  const work = plannedWorkFor(catalogue, configuration.candidates.map((candidate) => candidate.name), configuration.repeatsPerCase);
+  const estimate = estimateSpending(envelope, work);
+  let ceiling: number;
+  try {
+    ceiling = parseCeilingToMicroUSD(String(options.ceiling));
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error), 2);
+  }
+
+  const campaign = Campaign.open(directory, configuration, await hostFor(configuration, options));
+  say(`Authorising paid execution for ${configuration.label}:`);
+  say('');
+  for (const line of authorizationDisclosure(estimate, ceiling)) for (const wrapped of wrap(line, 78)) say(`  ${wrapped}`);
+  say('');
+  for (const line of privacyDisclosure(envelope.bindings.map((binding) => ({ label: PROVIDER_LABELS[binding.provider], executionClass: binding.executionClass })))) {
+    for (const wrapped of wrap(line, 78)) say(`  ${wrapped}`);
+  }
+  say('');
+  if (options.yes !== true) {
+    fail('Nothing was authorised. Re-run with --yes once the figures above are what you intend to spend.', 3);
+  }
+
+  try {
+    const authorization = authorizeSpending(estimate, {
+      campaignID: campaign.campaignID,
+      authorizedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      authorizedBy: invocation(process.argv.slice(2)),
+      hardCeilingMicroUSD: ceiling,
+      operationalEnvelopeDigest: campaign.manifest.operationalEnvelopeDigest ?? '',
+    });
+    campaign.writeAuthorization(authorization);
+    say(`Authorized. Ceiling ${formatMicroUSD(ceiling)}. Written to ${campaignPaths(directory).authorization}`);
+    say(`Run it with: ${TERMINAL_COMMAND} run ${name}`);
+  } catch (error) {
+    if (error instanceof SpendingError) fail(error.message, 2);
+    throw error;
+  }
+}
+
 async function commandSuites(): Promise<void> {
   const catalogue = buildEngineCatalogue(allRankableSuiteIDs(), 1);
   say(`${catalogue.suites.length} suite(s), ${catalogue.plannable.caseCount} case(s):`);
   for (const suite of catalogue.suites) {
     say(`  ${suite.id.raw.padEnd(42)} ${String(suite.cases.length).padStart(2)} case(s)  ${suite.title}`);
   }
+}
+
+/**
+ * `provider:model[:effort]` — one frontier candidate.
+ *
+ * The candidate NAME includes the effort, because a model at high effort and the same model at max
+ * effort are two different experiments and must not share a row, a rate or a cost. Naming them the
+ * same thing is how a comparison quietly averages two configurations together.
+ */
+export function parseFrontierSpec(spec: string, thinkingMode: ThinkingMode, pricingFile: Record<string, unknown>): FrontierCandidateRequest {
+  const parts = spec.split(':');
+  if (parts.length < 2) {
+    fail(`'${spec}' is not a frontier candidate. Write it as provider:model[:effort], for example `
+      + 'claudeCLI:claude-sonnet-5:high');
+  }
+  const [provider, modelID, effortText] = parts as [ProviderID, string, string | undefined];
+  const effort = (effortText ?? 'none') as EffortLevel;
+  if (!['none', 'low', 'medium', 'high', 'max'].includes(effort)) {
+    fail(`'${effortText}' is not an effort level. Use none, low, medium, high or max.`);
+  }
+  const pricing = pricingFor(pricingFile, provider, modelID);
+  const credential = provider === 'anthropicAPI' || provider === 'openaiAPI' ? credentialStatus(provider) : undefined;
+  return {
+    name: effort === 'none' ? `${provider}:${modelID}` : `${provider}:${modelID}@${effort}`,
+    provider,
+    modelID,
+    effort,
+    thinkingMode,
+    pricing,
+    authorizationMode: credential === undefined ? undefined
+      : credential.source === 'keychain' ? 'apiKeyKeychain' : 'apiKeyEnvironment',
+  };
 }
 
 async function commandCreate(positional: string[], options: Options): Promise<void> {
@@ -181,46 +475,87 @@ async function commandCreate(positional: string[], options: Options): Promise<vo
   const endpoint = String(options.endpoint ?? DEFAULT_ENDPOINT);
 
   const execution = executionFromOptions(options);
+  const frontierSpecs = options.frontier ? String(options.frontier).split(',').filter((entry) => entry.length > 0) : [];
 
-  let candidates: CampaignConfiguration['candidates'];
-  let hardware = SYNTHETIC_HARDWARE;
-  let storeBaseline = SYNTHETIC_STORE_BASELINE;
-  let runtimeVersion = 'synthetic-runtime-1.0';
-
+  // A synthetic campaign stays exactly what it was in Pass 3: local candidates, deterministic host,
+  // no bindings, no provider. It is the control, and a control that gained a provider would stop
+  // being one.
   if (options.synthetic) {
+    if (frontierSpecs.length > 0) fail('--synthetic and --frontier are mutually exclusive: the deterministic host reaches no provider');
     const names = String(options.models ?? 'alpha:1b,beta:2b').split(',');
-    candidates = names.map(syntheticCandidate);
-  } else {
-    if (!options.models) fail('--models is required (comma-separated), or pass --synthetic to run against the deterministic host');
-    const wanted = String(options.models).split(',');
-    const installed = await discoverLocalModels(endpoint);
-    candidates = wanted.map((wantedName) => {
-      const found = installed.find((model) => model.name === wantedName || model.name === `${wantedName}:latest`);
-      if (!found) fail(`model '${wantedName}' is not installed at ${endpoint}; run '${TERMINAL_COMMAND} models' to see what is`);
-      // Preflight, before anything is frozen: a campaign frozen with thinking ON against a model
-      // the runtime says cannot think would have to either fail later or quietly run with thinking
-      // off, and the second is worse.
-      if (execution.thinkingMode === 'enabled' && modelCanThink(found) === false) {
-        fail(`--thinking on was requested, but ${endpoint} reports that ${found.name} cannot think `
-          + `(it reports: ${(found.capabilities ?? []).join(', ') || 'nothing'}). Nothing was frozen. `
-          + `Choose a thinking-capable model, or create this campaign with --thinking off.`);
-      }
-      return { name: found.name, modelID: found.name, runtimeDigest: found.runtimeDigest, parameterSize: found.parameterSize, quantization: found.quantization };
-    });
-    storeBaseline = modelStoreBaseline(installed);
-    hardware = {
-      platform: process.platform, architecture: process.arch, model: os.hostname(),
-      cpuCoreCount: os.cpus().length, physicalMemoryBytes: os.totalmem(), osVersion: `${os.type()} ${os.release()}`,
+    const configuration: CampaignConfiguration = {
+      label: String(options.label ?? name),
+      suiteIDs, repeatsPerCase,
+      candidates: names.map(syntheticCandidate),
+      hardware: SYNTHETIC_HARDWARE,
+      runtimeVersion: 'synthetic-runtime-1.0',
+      storeBaseline: SYNTHETIC_STORE_BASELINE,
+      execution,
+      residencyDelayMilliseconds: 0,
     };
-    runtimeVersion = String(options['runtime-version'] ?? 'ollama-unreported');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'configuration.json'), JSON.stringify(configuration, null, 2) + '\n', 'utf8');
+    const synthetic = Campaign.create(directory, configuration, await hostFor(configuration, options));
+    say(`Created ${name} at ${directory}`);
+    renderStatus(synthetic.status());
+    say('');
+    say(`Start it with: ${TERMINAL_COMMAND} run ${name} --synthetic`);
+    return;
   }
 
-  const configuration: CampaignConfiguration = {
-    label: String(options.label ?? name),
-    suiteIDs, repeatsPerCase, candidates, hardware, runtimeVersion, storeBaseline, execution,
-    guardPolicy: options.synthetic ? undefined : guardPolicyForEndpoint(endpoint),
-    residencyDelayMilliseconds: options.synthetic ? 0 : 5_000,
-  };
+  if (!options.models && frontierSpecs.length === 0) {
+    fail('--models is required (comma-separated), or --frontier provider:model[:effort], or pass --synthetic to run '
+      + 'against the deterministic host');
+  }
+
+  const localNames = options.models ? String(options.models).split(',').filter((entry) => entry.length > 0) : [];
+  const installed = localNames.length > 0 ? await discoverLocalModels(endpoint) : [];
+  const local = localNames.map((wantedName) => {
+    const found = installed.find((model) => model.name === wantedName || model.name === `${wantedName}:latest`);
+    if (!found) fail(`model '${wantedName}' is not installed at ${endpoint}; run '${TERMINAL_COMMAND} models' to see what is`);
+    // Preflight, before anything is frozen: a campaign frozen with thinking ON against a model
+    // the runtime says cannot think would have to either fail later or quietly run with thinking
+    // off, and the second is worse.
+    if (execution.thinkingMode === 'enabled' && modelCanThink(found) === false) {
+      fail(`--thinking on was requested, but ${endpoint} reports that ${found.name} cannot think `
+        + `(it reports: ${(found.capabilities ?? []).join(', ') || 'nothing'}). Nothing was frozen. `
+        + `Choose a thinking-capable model, or create this campaign with --thinking off.`);
+    }
+    return { name: found.name, modelID: found.name, runtimeDigest: found.runtimeDigest, parameterSize: found.parameterSize, quantization: found.quantization };
+  });
+
+  const pricingFile = readPricingFile(options);
+  const frontier = frontierSpecs.map((spec) => parseFrontierSpec(spec, execution.thinkingMode, pricingFile));
+
+  // THE SAME BUILDER THE DESKTOP CALLS. Not an equivalent one written here — the same function, so
+  // the terminal and the interface cannot produce campaigns with different frozen identities for the
+  // same request.
+  let built;
+  try {
+    built = buildCampaignPlan({
+      label: String(options.label ?? name),
+      suiteIDs,
+      repeatsPerCase,
+      local,
+      frontier,
+      observeOnly: execution.residency === 'observeOnly',
+      thinkingMode: execution.thinkingMode,
+      endpoint,
+      hardware: {
+        platform: process.platform, architecture: process.arch, model: os.hostname(),
+        cpuCoreCount: os.cpus().length, physicalMemoryBytes: os.totalmem(), osVersion: `${os.type()} ${os.release()}`,
+      },
+      runtimeVersion: String(options['runtime-version'] ?? 'ollama-unreported'),
+      storeBaseline: local.length > 0 ? modelStoreBaseline(installed) : undefined,
+      provenModels: readDiscovered(root),
+    });
+  } catch (error) {
+    if (error instanceof CampaignBuildError) return fail(error.message, 2);
+    throw error;
+  }
+
+  const configuration = built.configuration;
+  const candidates = configuration.candidates;
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, 'configuration.json'), JSON.stringify(configuration, null, 2) + '\n', 'utf8');
 
@@ -228,17 +563,47 @@ async function commandCreate(positional: string[], options: Options): Promise<vo
   say(`Created ${name} at ${directory}`);
   renderStatus(campaign.status());
   say('');
-  if (!options.synthetic) {
+  for (const binding of built.envelope.bindings) say(`  ${describeBinding(binding)}`);
+  say('');
+  if (local.length > 0) {
     if (execution.residency === 'managed') {
-      say('This is a CANONICAL campaign. Before it runs:');
-      for (const line of residencyDisclosure(endpoint, candidates.map((candidate) => candidate.name))) say(`  · ${line}`);
+      // A campaign of local models reads exactly as it did in Pass 3. Only a MIXED campaign gets the
+      // narrower sentence, because only there is "canonical" a claim about some of the candidates
+      // rather than all of them.
+      say(frontier.length === 0
+        ? 'This is a CANONICAL campaign. Before it runs:'
+        : 'The LOCAL candidates in this campaign run canonically. Before it runs:');
+      for (const line of residencyDisclosure(endpoint, local.map((candidate) => candidate.name))) say(`  · ${line}`);
     } else {
       say('This is an OBSERVE-ONLY campaign — noncanonical, and not comparable with a canonical run:');
       for (const reason of NONCANONICAL_REASONS) say(`  · ${reason}`);
     }
     say('');
   }
-  say(`Start it with: ${TERMINAL_COMMAND} run ${name}${options.synthetic ? ' --synthetic' : ''}`);
+  if (built.frontierOnly) {
+    say('No candidate runs on this machine, so this campaign takes no Ollama endpoint lease and manages no residency.');
+    say('');
+  }
+  if (built.envelope.mixed) {
+    say('MIXED EXECUTION — task outcomes will be comparable; speed and cost will not:');
+    for (const reason of MIXED_EXECUTION_REASONS) for (const line of wrap(reason, 76)) say(`  · ${line}`);
+    say('');
+  }
+  const external = built.envelope.bindings.filter((binding) => binding.executionClass !== 'localRuntime');
+  if (external.length > 0) {
+    say('BEFORE YOU START IT:');
+    for (const line of privacyDisclosure(external.map((binding) => ({ label: PROVIDER_LABELS[binding.provider], executionClass: binding.executionClass })))) {
+      for (const wrapped of wrap(line, 76)) say(`  · ${wrapped}`);
+    }
+    say('');
+  }
+  if (built.envelope.hasMeteredBinding) {
+    say(`This campaign has metered candidates and is NOT yet authorised to spend anything.`);
+    say(`  preview:   ${TERMINAL_COMMAND} cost ${name}`);
+    say(`  authorize: ${TERMINAL_COMMAND} authorize ${name} --ceiling 5.00 --yes`);
+    say('');
+  }
+  say(`Start it with: ${TERMINAL_COMMAND} run ${name}`);
 }
 
 async function commandRun(positional: string[], options: Options, resuming: boolean, invocationLine: string): Promise<void> {
@@ -260,7 +625,17 @@ async function commandRun(positional: string[], options: Options, resuming: bool
       + 'and cannot be changed on a run; create a new campaign to change it.', 2);
   }
 
-  const campaign = Campaign.open(directory, configuration, await hostFor(configuration, options));
+  let stopping = false;
+
+  // Opened twice on purpose. The first open reads the ledger and the authorization off disk; the
+  // second builds the host WITH them, so a spending ceiling is enforced against everything this
+  // campaign has already spent rather than restarting at zero on every resume.
+  const reading = Campaign.open(directory, configuration, await hostFor(configuration, options));
+  const authorization = reading.readAuthorization();
+  const priorRows = reading.ledgerRows();
+  const campaign = Campaign.open(directory, configuration, await hostFor(configuration, options, {
+    authorization, priorRows, shouldCancel: () => stopping,
+  }));
 
   const verification = campaign.verify();
   if (!verification.intact && !verification.hardwareOnly) {
@@ -271,15 +646,27 @@ async function commandRun(positional: string[], options: Options, resuming: bool
     process.exit(2);
   }
 
-  let stopping = false;
   const onSignal = (): void => {
     if (stopping) return;
     stopping = true;
     say('');
     say('Pausing at the next attempt boundary — the attempt in flight will be recorded first.');
+    // A subscription CLI is a child process, and a child process that is merely abandoned keeps
+    // running: it keeps its slot in the rate limit and keeps consuming the allowance this run was
+    // measuring. Stopping the group is what makes a pause actually stop.
+    const stopped = terminateAllCLIProcesses();
+    if (stopped > 0) say(`  stopping ${stopped} provider command(s) in flight.`);
   };
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
+
+  // Refused here as well as in the host, and deliberately so. The host's refusal happens at the
+  // first metered slot, which may be a hundred local attempts into the run; this one happens before
+  // anything starts, which is the message a person can actually act on.
+  if (configuration.operationalEnvelope?.hasMeteredBinding && !authorization) {
+    fail(`${name} has metered candidates and no recorded spending authorization, so nothing was run and nothing was `
+      + `sent.\n  preview:   ${TERMINAL_COMMAND} cost ${name}\n  authorize: ${TERMINAL_COMMAND} authorize ${name} --ceiling 5.00 --yes`, 6);
+  }
 
   const maxAttempts = options['max-attempts'] !== undefined ? Number(options['max-attempts']) : undefined;
   let status: CampaignStatus;
@@ -361,7 +748,7 @@ async function commandFinalize(positional: string[], options: Options): Promise<
   const secret = String(options.secret ?? randomBytes(24).toString('hex'));
   let report;
   try {
-    report = campaign.finalize({ blindingSecret: secret });
+    report = campaign.finalize({ blindingSecret: secret, authorization: campaign.readAuthorization() });
   } catch (error) {
     if (error instanceof CampaignError && error.code === 'campaignInUse') fail(error.message, 4);
     throw error;
@@ -377,6 +764,11 @@ async function commandFinalize(positional: string[], options: Options): Promise<
     for (const reason of report.noncanonicalBecause) say(`  · ${reason}`);
     say('');
   }
+  if (report.mixedExecutionBecause.length > 0) {
+    say('*** MIXED EXECUTION. Task outcomes are comparable; speed and cost are not. ***');
+    for (const reason of report.mixedExecutionBecause) for (const line of wrap(reason, 76)) say(`  · ${line}`);
+    say('');
+  }
   if (report.rankings.provisional) {
     say('PROVISIONAL — these rates are not final:');
     for (const reason of report.rankings.provisionalBecause) say(`  · ${reason}`);
@@ -390,6 +782,26 @@ async function commandFinalize(positional: string[], options: Options): Promise<
     if (roles.length > 0) say(`      roles: ${roles.join(', ')}`);
   }
   say('');
+  if (report.frontierMetrics.length > 0) {
+    say('Tokens, speed and cost — with how each figure was obtained');
+    say(`  ${'candidate'.padEnd(24)}  ${'reached as'.padEnd(14)}  ${'success'.padStart(8)}  ${'cost/success'.padStart(16)}  quality`);
+    for (const metrics of report.frontierMetrics) say(`  ${describeCandidateMetrics(metrics)}`);
+    say('');
+    say('  measurement quality: measured (we watched it) · providerReported (they told us) ·');
+    say('  estimated (derived by a stated method) · unavailable (not known, and not guessed at).');
+    say('');
+  }
+  if (report.spending) {
+    say('Spending');
+    say(`  authorized     ${report.spending.authorized ? 'yes' : 'NO'}`);
+    if (report.spending.hardCeilingMicroUSD !== undefined) say(`  hard ceiling   ${formatMicroUSD(report.spending.hardCeilingMicroUSD)}`);
+    say(`  recorded       ${formatMicroUSD(report.spending.recordedMicroUSD)} across ${report.spending.meteredAttempts} metered attempt(s)`);
+    if (report.spending.stoppedAtCeiling) {
+      say('  THIS RUN STOPPED AT ITS CEILING. The attempts already recorded are kept; the remaining');
+      say('  slots were blocked and carry no result.');
+    }
+    say('');
+  }
   say(report.retention.heading);
   for (const line of report.retention.preamble) say(`  ${line}`);
   say('');
@@ -563,6 +975,9 @@ async function commandUninstallCommand(): Promise<void> {
 function commandHelp(): void {
   say(`${PRODUCT.name} benchmark engine · ${TERMINAL_COMMAND} ${PRODUCT.version}`);
   say('');
+  say('  providers                       every provider\'s status, WITHOUT contacting any of them');
+  say('  discover [<provider>]           ask a provider what it is and what this account may call');
+  say('  credentials                     which API keys are configured (masked; never printed)');
   say('  models                          list the models installed locally (read-only)');
   say('  suites                          list the benchmark suites this engine can plan');
   say('  create <name> --models a,b      freeze a manifest and write the plan');
@@ -572,6 +987,10 @@ function commandHelp(): void {
   say('  verify <name>                   recompute every manifest binding and report what moved');
   say('  finalize <name>                 reconcile, rank, interpret, and build the blinded packet');
   say('  retest <name> <new-name>        derive a manifest for this machine from another one');
+  say('');
+  say('  cost <name>                     what a campaign is estimated to cost, without running it');
+  say('  authorize <name> --ceiling 5.00 --yes');
+  say('                                  record explicit authorization for paid execution');
   say('');
   say('  lock <name>                     who holds this campaign, and whether they are still alive');
   say('  unlock <name> [--force]         release a crashed owner\'s lock; --force for a live one');
@@ -597,6 +1016,20 @@ function commandHelp(): void {
   say('  --thinking on|off   ask the model to think first, or not. Default off. Frozen; a model the');
   say('                      runtime says cannot think is refused at create rather than substituted.');
   say('');
+  say('  Frontier candidates, chosen at CREATE and frozen into the manifest:');
+  say('  --frontier <spec>,… provider:model[:effort], e.g. claudeCLI:claude-sonnet-5:high');
+  say('                      providers: claudeCLI, codexCLI (your own signed-in CLI, subscription-included)');
+  say('                                 anthropicAPI, openaiAPI (billed per token against your key)');
+  say('                      A model that provider discovery has not PROVEN this account can call is');
+  say('                      refused here. A model name is a plan, not a capability.');
+  say('  --pricing <file>    published prices for the metered candidates, with source and timestamp.');
+  say('                      Required for a metered candidate: Cernum never fetches prices, and will');
+  say('                      not run a paid campaign it cannot price.');
+  say('');
+  say('  Local execution costs no money. Subscription execution is subscription-included, with a');
+  say('  marginal API charge of $0 and a finite allowance — it is not free. Only metered API');
+  say('  execution is billed per token, and none of it happens without a recorded authorization.');
+  say('');
   say('  --live-residency    accepted and ignored: residency management is now the default. There is');
   say('                      nothing to remember to switch on, and nothing to forget.');
   say('');
@@ -614,6 +1047,11 @@ export async function main(argv: string[]): Promise<void> {
   const { command, positional, options } = parse(argv);
   const invocationLine = invocation(argv);
   switch (command) {
+    case 'providers': return commandProviders(options);
+    case 'discover': return commandDiscover(positional, options);
+    case 'credentials': return commandCredentials();
+    case 'cost': return commandCost(positional, options);
+    case 'authorize': return commandAuthorize(positional, options);
     case 'models': return commandModels(options);
     case 'suites': return commandSuites();
     case 'create': return commandCreate(positional, options);

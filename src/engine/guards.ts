@@ -19,8 +19,15 @@ export interface GuardPolicy {
   maximumSwapUsedBytes: number;
   /** Free memory as a fraction of total, in thousandths — integer-scaled so it can be canonically encoded. */
   minimumFreeMemoryMilli: number;
-  /** The port the benchmark is permitted to talk to. Work anywhere else is a breach. */
-  benchmarkPort: number;
+  /**
+   * The port the benchmark is permitted to talk to. Work anywhere else is a breach.
+   *
+   * ABSENT on a campaign with no local candidates. A frontier-only campaign has no benchmark lane on
+   * this machine, and a guard demanding a listener on one would abort every such campaign for
+   * failing to have a local runtime it never intended to use. Absent means "this campaign asserts it
+   * reaches no local runtime", which is checked against the bindings rather than assumed.
+   */
+  benchmarkPort?: number;
   /** Ports that must have no listener while the benchmark runs. */
   portsThatMustBeQuiet: number[];
   /** The production listener that must still be held by the same process it was at freeze time. */
@@ -120,16 +127,21 @@ export function evaluateGuards(policy: GuardPolicy, reading: SystemReading, base
     });
   }
 
-  const benchHolder = reading.listeners[String(policy.benchmarkPort)];
-  measurements.push({
-    guardID: 'port.benchmarkLane',
-    statement: benchHolder === undefined
-      ? `nothing is listening on the benchmark lane (port ${policy.benchmarkPort}); there is nothing to benchmark against`
-      : `the benchmark lane on port ${policy.benchmarkPort} is held by pid ${benchHolder}`,
-    passed: benchHolder !== undefined,
-    observed: benchHolder === undefined ? null : benchHolder,
-    floor: `a listener on ${policy.benchmarkPort}`,
-  });
+  // Skipped entirely when the policy names no lane — a frontier-only campaign. The guard is not
+  // recorded as passing either: a check that was never applicable must not appear in the trace as
+  // evidence that something was verified.
+  if (policy.benchmarkPort !== undefined) {
+    const benchHolder = reading.listeners[String(policy.benchmarkPort)];
+    measurements.push({
+      guardID: 'port.benchmarkLane',
+      statement: benchHolder === undefined
+        ? `nothing is listening on the benchmark lane (port ${policy.benchmarkPort}); there is nothing to benchmark against`
+        : `the benchmark lane on port ${policy.benchmarkPort} is held by pid ${benchHolder}`,
+      passed: benchHolder !== undefined,
+      observed: benchHolder === undefined ? null : benchHolder,
+      floor: `a listener on ${policy.benchmarkPort}`,
+    });
+  }
 
   // The strictest guard: production must still be held by the SAME process it was at freeze time.
   // A different pid on that port means production restarted under the benchmark, and the benchmark
@@ -186,6 +198,20 @@ export function guardPolicyForEndpoint(endpoint: string, overrides: Partial<Guar
     // than inventing a port that nothing is listening on.
   }
   return { ...DEFAULT_GUARD_POLICY, benchmarkPort: port, portsThatMustBeQuiet: [], ...overrides };
+}
+
+/**
+ * The policy for a campaign with NO local candidates.
+ *
+ * Everything that is a property of this machine still applies — a benchmark that fills the disk or
+ * drives the machine into swap is still a benchmark that stops, whoever is answering its prompts.
+ * What is dropped is the benchmark-lane check and the model-store check, because neither describes
+ * anything this campaign touches: there is no local lane to hold and no local store to drift.
+ */
+export function guardPolicyForFrontierOnly(overrides: Partial<GuardPolicy> = {}): GuardPolicy {
+  const policy: GuardPolicy = { ...DEFAULT_GUARD_POLICY, portsThatMustBeQuiet: [], ...overrides };
+  delete policy.benchmarkPort;
+  return policy;
 }
 
 /** A guard breach is an abort, never a warning. This is the reason line the ledger records. */

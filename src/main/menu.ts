@@ -28,7 +28,8 @@ export interface MenuOptions {
 }
 
 const SCREENS: { id: ScreenID; label: string }[] = [
-  { id: 'home', label: 'Home' }, { id: 'models', label: 'Models' }, { id: 'benchmark', label: 'Benchmark' }, { id: 'live', label: 'Live Run' },
+  { id: 'home', label: 'Home' }, { id: 'models', label: 'Models' }, { id: 'providers', label: 'Providers' },
+  { id: 'benchmark', label: 'Benchmark' }, { id: 'live', label: 'Live Run' },
   { id: 'results', label: 'Results' }, { id: 'history', label: 'History' }, { id: 'settings', label: 'Settings' },
 ];
 

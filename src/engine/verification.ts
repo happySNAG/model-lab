@@ -248,3 +248,85 @@ export function verifyThinkingMode(frozenMode: string, observed: ObservedModelId
 export function thinkingModePermitsExecution(verification: ThinkingModeVerification): boolean {
   return verification.state !== 'unsupported';
 }
+
+// MARK: - Provider identity: did the model we asked for actually answer?
+
+/**
+ * What a provider's own account of the response established about which model produced it.
+ *
+ * Deliberately the same three words the weights check uses, because it is the same question asked of
+ * a different kind of evidence: a local runtime identifies a model by its weights digest, and a
+ * provider identifies it by the name it puts in its response.
+ */
+export type ProviderIdentityState =
+  /** The provider named a model and it is the one that was frozen. */
+  | 'verified'
+  /** The provider named a DIFFERENT model. The attempt is poisoned. */
+  | 'substituted'
+  /** The provider named no model at all. Carried, labelled, never upgraded. */
+  | 'unverifiable';
+
+export interface ProviderIdentityVerification {
+  state: ProviderIdentityState;
+  requestedModelID: string;
+  reportedModelID: string;
+  detail: string;
+}
+
+/**
+ * Compare what was frozen with what the provider says answered.
+ *
+ * THE COMPARISON IS NOT EXACT-STRING-ONLY, and the reason matters. Providers routinely resolve an
+ * alias to a dated build: a request for `claude-sonnet-5` comes back as `claude-sonnet-5-20260114`.
+ * That is the same model, pinned more precisely, and refusing it would make every aliased request
+ * impossible to benchmark. A reported identifier that EXTENDS the requested one at a version
+ * boundary is therefore accepted, and the resolved identifier is what gets recorded — so the
+ * evidence names the exact build even though the request did not.
+ *
+ * Anything else is a substitution. A request for Opus answered by Sonnet is a real answer to a
+ * question about a different model, and recording it under this manifest would be the single most
+ * misleading thing this engine could do. It aborts the candidate rather than scoring it.
+ */
+export function verifyProviderIdentity(requestedModelID: string, reportedModelID: string): ProviderIdentityVerification {
+  if (reportedModelID.length === 0) {
+    return {
+      state: 'unverifiable',
+      requestedModelID,
+      reportedModelID,
+      detail: `the provider did not say which model answered, so nothing confirms that ${requestedModelID} did. `
+        + 'Nothing contradicts it either — this is recorded as unverifiable and carried, never counted as a verification.',
+    };
+  }
+  if (reportedModelID === requestedModelID) {
+    return {
+      state: 'verified',
+      requestedModelID,
+      reportedModelID,
+      detail: `the provider reported that ${reportedModelID} answered, which is what was frozen`,
+    };
+  }
+  // An alias resolved to a specific build: the requested name, then a version separator.
+  if (reportedModelID.startsWith(requestedModelID)
+      && /^[-@:_]/.test(reportedModelID.slice(requestedModelID.length))) {
+    return {
+      state: 'verified',
+      requestedModelID,
+      reportedModelID,
+      detail: `the provider resolved the alias ${requestedModelID} to the specific build ${reportedModelID}; `
+        + 'the exact build is what has been recorded, so a later reader sees which one answered rather than which one was asked for',
+    };
+  }
+  return {
+    state: 'substituted',
+    requestedModelID,
+    reportedModelID,
+    detail: `this campaign froze ${requestedModelID}, and the provider reports that ${reportedModelID} answered instead. `
+      + 'That is a real answer to a question about a different model. It is not scored and not recorded as a result: '
+      + 'accepting it would put one model\'s answers under another model\'s name in the evidence.',
+  };
+}
+
+/** A substitution poisons the attempt. An unverifiable provider identity does not — it is carried. */
+export function providerIdentityPermitsExecution(verification: ProviderIdentityVerification): boolean {
+  return verification.state !== 'substituted';
+}

@@ -16,18 +16,131 @@ import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { app } from 'electron';
 import {
-  Campaign, CampaignConfiguration, CampaignStatus, DEFAULT_EXECUTION_POLICY, ExecutionPolicy, Ledger, LiveHost,
-  NONCANONICAL_REASONS, allRankableSuiteIDs, buildEngineCatalogue, campaignPaths, describeExecutionPolicy,
-  discoverLocalModels, guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink, modelStoreBaseline,
-  residencyDisclosure,
+  Campaign, CampaignBuildError, CampaignConfiguration, CampaignStatus, DEFAULT_EXECUTION_POLICY, DiscoveredFrontierModel,
+  EffortLevel, ExecutionPolicy, FrontierCandidateRequest, Ledger, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS,
+  PROVIDER_LABELS, ProviderID, ProviderStatus, SpendingError, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure,
+  authorizeSpending, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths, credentialStatus,
+  describeBinding, describeExecutionPolicy, discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI,
+  estimateSpending, inspectCampaignLock, leasedEndpoints, modelCanThink, modelStoreBaseline, offlineProviderStatuses,
+  openaiBaseURL, plannedWorkFor, privacyDisclosure, quantityValue, residencyDisclosure,
 } from '../engine/index';
+import type { FrontierCandidateMetrics } from '../engine/frontier-metrics';
 import type { FinalReport } from '../engine/campaign';
 import type { VerificationReport } from '../engine/manifest';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
 import type {
-  CampaignRow, CampaignDetail, CampaignCreateRequest, CampaignExecutionRow, CampaignStartDisclosure, TerminalCommandRow,
+  CampaignRow, CampaignDetail, CampaignCreateRequest, CampaignExecutionRow, CampaignStartDisclosure,
+  CostPreviewRow, FrontierMetricsRow, ProviderStatusRow, TerminalCommandRow,
 } from '../shared/ipc';
 import { installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
+
+// MARK: - Projections
+//
+// The renderer sees plain JSON. These three functions are the ONLY place an engine record becomes a
+// renderer row, so a figure the engine recorded as unavailable cannot become a zero on its way to a
+// screen — the absence and its reason are carried across as an absence and a reason.
+
+function providerRow(status: ProviderStatus): ProviderStatusRow {
+  return {
+    provider: status.provider,
+    label: status.label,
+    executionClass: status.executionClass,
+    billingBasis: status.billingBasis,
+    reachability: status.reachability,
+    detail: status.detail,
+    probe: status.probe,
+    executablePath: status.executablePath,
+    version: status.version,
+    credential: status.credential
+      ? {
+        environmentVariable: status.credential.environmentVariable,
+        keychainService: status.credential.keychainService,
+        // Never the value, at any length. `masked` is "set · N characters", or "not set".
+        masked: status.credential.masked,
+        present: status.credential.present,
+        remedy: status.credential.remedy,
+      }
+      : undefined,
+    models: status.models.map((model) => ({
+      provider: model.provider,
+      modelID: model.modelID,
+      displayName: model.displayName,
+      availability: model.availability,
+      evidence: model.evidence,
+      verifiedModelID: model.verifiedModelID,
+      desiredEfforts: model.desiredEfforts,
+    })),
+    checkedAt: status.checkedAt,
+  };
+}
+
+function costRow(estimate: ReturnType<typeof estimateSpending>,
+                 providers: { label: string; executionClass: 'localRuntime' | 'subscriptionCLI' | 'meteredAPI' }[]): CostPreviewRow {
+  return {
+    estimable: estimate.estimable,
+    notEstimableBecause: estimate.notEstimableBecause,
+    perCandidate: estimate.perCandidate.map((entry) => ({
+      candidate: entry.candidate,
+      billingBasis: entry.billingBasis,
+      plannedAttempts: entry.plannedAttempts,
+      minimumMicroUSD: entry.minimumMicroUSD,
+      maximumMicroUSD: entry.maximumMicroUSD,
+      statement: entry.statement,
+    })),
+    totalMinimumMicroUSD: estimate.totalMinimumMicroUSD,
+    totalMaximumMicroUSD: estimate.totalMaximumMicroUSD,
+    meteredCandidateCount: estimate.meteredCandidateCount,
+    subscriptionCandidateCount: estimate.subscriptionCandidateCount,
+    localCandidateCount: estimate.localCandidateCount,
+    oldestPricingCapturedAt: estimate.oldestPricingCapturedAt,
+    disclosure: authorizationDisclosure(estimate, 0),
+    privacyDisclosure: privacyDisclosure(providers),
+  };
+}
+
+/**
+ * A candidate's metrics, with every absence kept as an absence.
+ *
+ * `absences` is the field that makes this honest. A screen that simply omitted an unavailable figure
+ * would show a blank cell, and a blank cell reads as zero. Carrying the REASON across means the
+ * interface can say "the provider reported no token count" where the number would have been.
+ */
+function metricsRow(metrics: FrontierCandidateMetrics): FrontierMetricsRow {
+  const absences: { field: string; reason: string }[] = [];
+  const value = (field: string, quantity: { provenance: string; value?: number; note?: string }): number | undefined => {
+    if (quantity.provenance === 'unavailable') {
+      absences.push({ field, reason: quantity.note ?? 'not known' });
+      return undefined;
+    }
+    return quantity.value;
+  };
+  return {
+    candidate: metrics.candidate,
+    provider: metrics.provider,
+    executionClass: metrics.executionClass,
+    billingBasis: metrics.billingBasis,
+    attemptCount: metrics.attemptCount,
+    successfulTaskCount: metrics.successfulTaskCount,
+    successfulTaskRateMilli: value('successful-task rate', metrics.successfulTaskRateMilli),
+    inputTokens: value('input tokens', metrics.inputTokens),
+    visibleOutputTokens: value('visible output tokens', metrics.visibleOutputTokens),
+    reasoningTokens: value('reasoning tokens', metrics.reasoningTokens),
+    totalTokens: value('total tokens', metrics.totalTokens),
+    medianTokensPerSecondMilli: value('tokens per second', metrics.medianTokensPerSecondMilli),
+    medianTimeToFirstVisibleTokenMilliseconds: value('time to first visible token', metrics.medianTimeToFirstVisibleTokenMilliseconds),
+    costPerRunMicroUSD: value('cost per run', metrics.costPerRunMicroUSD),
+    costPerSuccessfulTaskMicroUSD: value('cost per successful task', metrics.costPerSuccessfulTaskMicroUSD),
+    tokensPerCompletedPass: value('tokens per completed pass', metrics.tokensPerCompletedPass),
+    wastedTokens: value('wasted tokens', metrics.wastedTokens),
+    retryCount: metrics.retryCount,
+    timeoutCount: metrics.timeoutCount,
+    providerReportedTotalTokens: quantityValue(metrics.providerReportedTotalTokens),
+    estimatedTotalTokens: quantityValue(metrics.estimatedTotalTokens),
+    reportedMinusEstimatedTokens: quantityValue(metrics.reportedMinusEstimatedTokens),
+    measurementQuality: metrics.measurementQuality,
+    absences,
+  };
+}
 
 export class CampaignServiceError extends Error {
   constructor(message: string) {
@@ -74,14 +187,19 @@ export class CampaignService extends EventEmitter {
    * disclosed at Start rather than assumed silently. For an observe-only campaign it stays off, and
    * the campaign is labelled noncanonical everywhere it appears.
    */
-  private open(name: string): Campaign {
+  private open(name: string, context: { authorization?: ReturnType<Campaign['readAuthorization']>; priorRows?: Record<string, unknown>[]; shouldCancel?: () => boolean } = {}): Campaign {
     const configuration = this.configuration(name);
-    const execution = this.executionOf(configuration);
-    return Campaign.open(this.directory(name), configuration, new LiveHost({
+    // THE SAME FACTORY THE TERMINAL CALLS. Not an equivalent host built here: the same function, so
+    // a campaign started from this screen and the same campaign resumed in a terminal cannot be
+    // configured two different ways. That divergence is exactly the defect Pass 3 shipped.
+    const built = buildHostForCampaign(configuration, {
       endpoint: this.endpoint(),
       catalogue: buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase),
-      ...hostOptionsFor(execution),
-    }));
+      authorization: context.authorization,
+      priorRows: context.priorRows,
+      shouldCancel: context.shouldCancel,
+    });
+    return Campaign.open(this.directory(name), configuration, built.host);
   }
 
   private executionRow(execution: ExecutionPolicy): CampaignExecutionRow {
@@ -167,6 +285,12 @@ export class CampaignService extends EventEmitter {
           directory,
           execution: this.executionRow(this.executionOf(
             JSON.parse(fs.readFileSync(path.join(directory, 'configuration.json'), 'utf8')) as CampaignConfiguration)),
+          // Read from the LEDGER's own meta, written at creation, so a campaign can be labelled
+          // without opening and parsing its manifest on every three-second refresh.
+          providers: Array.isArray(meta.providers) ? (meta.providers as string[]) : undefined,
+          mixedExecution: meta.mixedExecution === true,
+          hasMeteredBinding: meta.hasMeteredBinding === true,
+          manifestFormatVersion: typeof meta.manifestFormatVersion === 'number' ? meta.manifestFormatVersion : 3,
           owner: lock.held && lock.record ? {
             processType: lock.record.processType, command: lock.record.command, pid: lock.record.pid,
             hostname: lock.record.hostname, acquiredAt: lock.record.acquiredAt,
@@ -231,7 +355,252 @@ export class CampaignService extends EventEmitter {
         packetPath: report.humanReview.packetPath,
         packetClean: report.humanReview.audit?.clean,
       } : undefined,
+      bindings: (campaign.operationalEnvelope?.bindings ?? []).map((binding) => ({
+        candidate: binding.candidate,
+        provider: binding.provider,
+        providerLabel: PROVIDER_LABELS[binding.provider],
+        executionClass: binding.executionClass,
+        billingBasis: binding.billingBasis,
+        requestedModelID: binding.requestedModelID,
+        verifiedModelID: binding.verifiedModelID,
+        identityState: binding.identityState,
+        identityEvidence: binding.identityEvidence,
+        effort: binding.effort,
+        thinkingMode: binding.thinkingMode,
+        maxInputTokens: binding.maxInputTokens,
+        maxOutputTokens: binding.maxOutputTokens,
+        timeoutMilliseconds: binding.timeoutMilliseconds,
+        maxRetries: binding.retry.maxRetries,
+        summary: describeBinding(binding),
+        pricing: binding.pricing
+          ? {
+            source: binding.pricing.source,
+            capturedAt: binding.pricing.capturedAt,
+            inputMicroUSDPerMillionTokens: binding.pricing.inputMicroUSDPerMillionTokens,
+            outputMicroUSDPerMillionTokens: binding.pricing.outputMicroUSDPerMillionTokens,
+          }
+          : undefined,
+      })),
+      mixedExecutionBecause: campaign.operationalEnvelope?.mixed === true ? MIXED_EXECUTION_REASONS : [],
+      frontierMetrics: (report?.frontierMetrics ?? []).map(metricsRow),
+      // Read LIVE, not only from a finalized report. Whether a campaign is authorised to spend money
+      // matters most BEFORE it runs — which is precisely when no report exists yet. Showing it only
+      // afterwards would hide the one fact a person needs while they can still act on it.
+      spending: this.spendingRow(name, campaign),
+      manifestFormatVersion: campaign.manifest.manifestFormatVersion,
       terminalHint: `${TERMINAL_COMMAND} status ${name} --root ${this.root()}`,
+    };
+  }
+
+  /**
+   * What this campaign is authorised to spend and what it has spent, read off disk.
+   *
+   * Absent entirely when nothing in the campaign is billed per token: a local or subscription
+   * campaign has no dollar figure to show, and inventing a zero-cost spending panel for one would
+   * imply a ceiling that does not govern anything.
+   */
+  private spendingRow(name: string, campaign: Campaign) {
+    const configuration = this.configuration(name);
+    if (configuration.operationalEnvelope?.hasMeteredBinding !== true) return undefined;
+    const authorization = campaign.readAuthorization();
+    const rows = campaign.ledgerRows().filter((row) => row.billingBasis === 'meteredAPI');
+    return {
+      authorized: authorization !== undefined,
+      hardCeilingMicroUSD: authorization?.hardCeilingMicroUSD,
+      recordedMicroUSD: rows.reduce((sum, row) => sum + (typeof row.costMicroUSD === 'number' ? row.costMicroUSD : 0), 0),
+      meteredAttempts: rows.length,
+      stoppedAtCeiling: campaign.ledger.standingAbort()?.stage === 'spendingAuthorization',
+    };
+  }
+
+  // ------------------------------------------------------------------ providers
+
+  /**
+   * Every provider's status WITHOUT contacting any of them.
+   *
+   * This is what the Providers screen calls on open and on every refresh. It performs a PATH lookup
+   * and a credential check and NOTHING else — no request, no CLI invocation, no rate-limit slot.
+   * Opening the application therefore sends zero provider requests, which is asserted in the tests
+   * rather than merely intended.
+   */
+  providerStatuses(): ProviderStatusRow[] {
+    const cached = this.readDiscovered();
+    return offlineProviderStatuses().map((status) => providerRow({
+      ...status,
+      models: cached.filter((model) => model.provider === status.provider),
+    }));
+  }
+
+  /** Where discovery's findings are kept. Beside the campaigns, so the terminal reads the same file. */
+  private discoveryPath(): string {
+    return path.join(this.root(), '.providers', 'discovered.json');
+  }
+
+  private readDiscovered(): DiscoveredFrontierModel[] {
+    const file = this.discoveryPath();
+    if (!fs.existsSync(file)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { models?: DiscoveredFrontierModel[] };
+      return Array.isArray(parsed.models) ? parsed.models : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeDiscovered(models: DiscoveredFrontierModel[]): void {
+    const file = this.discoveryPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ writtenAt: new Date().toISOString(), models }, null, 2) + '\n', 'utf8');
+  }
+
+  /** Ask one provider what it is and what this account may call. THIS INVOKES SOMETHING. */
+  async discoverProvider(provider: string): Promise<ProviderStatusRow> {
+    let status: ProviderStatus;
+    if (provider === 'claudeCLI' || provider === 'codexCLI') {
+      status = await discoverSubscriptionCLI(provider);
+    } else if (provider === 'anthropicAPI' || provider === 'openaiAPI') {
+      status = await discoverMeteredProvider(provider, {
+        baseURL: provider === 'anthropicAPI' ? anthropicBaseURL() : openaiBaseURL(),
+      });
+    } else {
+      throw new CampaignServiceError(`'${provider}' is not a provider Cernum can discover`);
+    }
+    const kept = this.readDiscovered().filter((model) => model.provider !== provider);
+    this.writeDiscovered([...kept, ...status.models]);
+    return providerRow(status);
+  }
+
+  // ------------------------------------------------------------------ money
+
+  /** Turn a create request into the frontier candidates the shared builder wants. */
+  private frontierRequests(request: CampaignCreateRequest): FrontierCandidateRequest[] {
+    return (request.frontier ?? []).map((selection) => {
+      const provider = selection.provider as ProviderID;
+      const metered = provider === 'anthropicAPI' || provider === 'openaiAPI';
+      const credential = metered ? credentialStatus(provider) : undefined;
+      return {
+        // The effort is in the NAME, because a model at high effort and the same model at max effort
+        // are two experiments and must never share a row, a rate or a cost.
+        name: selection.effort === 'none' ? `${provider}:${selection.modelID}` : `${provider}:${selection.modelID}@${selection.effort}`,
+        provider,
+        modelID: selection.modelID,
+        effort: selection.effort as EffortLevel,
+        thinkingMode: selection.thinkingMode ?? request.thinkingMode ?? 'disabled',
+        pricing: selection.pricing
+          ? {
+            source: selection.pricing.source,
+            capturedAt: selection.pricing.capturedAt,
+            currency: 'USD' as const,
+            inputMicroUSDPerMillionTokens: selection.pricing.inputMicroUSDPerMillionTokens,
+            outputMicroUSDPerMillionTokens: selection.pricing.outputMicroUSDPerMillionTokens,
+            reasoningMicroUSDPerMillionTokens: selection.pricing.reasoningMicroUSDPerMillionTokens ?? null,
+          }
+          : undefined,
+        authorizationMode: credential === undefined ? undefined
+          : credential.source === 'keychain' ? 'apiKeyKeychain' as const : 'apiKeyEnvironment' as const,
+      };
+    });
+  }
+
+  /**
+   * What this selection WOULD cost, without creating anything.
+   *
+   * Built by the same builder that would freeze it, so the preview prices the campaign that would
+   * actually be created rather than an approximation of it.
+   */
+  async previewCost(request: CampaignCreateRequest): Promise<CostPreviewRow> {
+    const endpoint = this.endpoint();
+    const installed = request.modelNames.length > 0 ? await discoverLocalModels(endpoint) : [];
+    try {
+      const built = buildCampaignPlan({
+        label: request.label || request.name,
+        suiteIDs: request.suiteIDs.length > 0 ? request.suiteIDs : allRankableSuiteIDs(),
+        repeatsPerCase: Math.max(1, request.repeatsPerCase),
+        local: request.modelNames.map((wanted) => {
+          const found = installed.find((model) => model.name === wanted || model.name === `${wanted}:latest`);
+          if (!found) throw new CampaignServiceError(`model '${wanted}' is not installed at ${endpoint}`);
+          return { name: found.name, modelID: found.name, runtimeDigest: found.runtimeDigest, parameterSize: found.parameterSize, quantization: found.quantization };
+        }),
+        frontier: this.frontierRequests(request),
+        observeOnly: request.observeOnly === true,
+        thinkingMode: request.thinkingMode ?? 'disabled',
+        endpoint,
+        hardware: this.hardware(),
+        runtimeVersion: request.runtimeVersion || 'ollama-unreported',
+        storeBaseline: request.modelNames.length > 0 ? modelStoreBaseline(installed) : undefined,
+        provenModels: this.readDiscovered(),
+      });
+      return costRow(estimateSpending(built.envelope, built.plannedWork), built.envelope.bindings.map((binding) => ({
+        label: PROVIDER_LABELS[binding.provider], executionClass: binding.executionClass,
+      })));
+    } catch (error) {
+      if (error instanceof CampaignBuildError) throw new CampaignServiceError(error.message);
+      throw error;
+    }
+  }
+
+  /** What a created campaign is estimated to cost, and whether it has been authorised. */
+  campaignCost(name: string): CostPreviewRow & { authorized: boolean; hardCeilingMicroUSD?: number } {
+    const configuration = this.configuration(name);
+    const envelope = configuration.operationalEnvelope;
+    const authorization = this.open(name).readAuthorization();
+    if (!envelope) {
+      return {
+        ...costRow(estimateSpending({ bindings: [], executionClasses: [], providers: [], mixed: false, hasMeteredBinding: false }, []), []),
+        estimable: true,
+        notEstimableBecause: [],
+        disclosure: ['This campaign binds no providers: it runs on the local runtime, which has no monetary cost. '
+          + 'Wall-clock time is still recorded, and no electricity cost is invented.'],
+        authorized: false,
+      };
+    }
+    const catalogue = buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase);
+    const work = plannedWorkFor(catalogue, configuration.candidates.map((candidate) => candidate.name), configuration.repeatsPerCase);
+    return {
+      ...costRow(estimateSpending(envelope, work), envelope.bindings.map((binding) => ({
+        label: PROVIDER_LABELS[binding.provider], executionClass: binding.executionClass,
+      }))),
+      authorized: authorization !== undefined,
+      hardCeilingMicroUSD: authorization?.hardCeilingMicroUSD,
+    };
+  }
+
+  /**
+   * Record explicit authorization for paid execution, with a hard ceiling, before any run.
+   *
+   * Written to the campaign directory and read back by the run, so it survives a resume, a crash and
+   * a change of surface: a campaign authorised here is authorised for the terminal too, at the same
+   * ceiling, because both read the same file.
+   */
+  authorize(name: string, ceilingMicroUSD: number): CampaignDetail {
+    const configuration = this.configuration(name);
+    const envelope = configuration.operationalEnvelope;
+    if (!envelope || !envelope.hasMeteredBinding) {
+      throw new CampaignServiceError(`${name} has no metered candidate, so there is nothing to authorise. `
+        + 'Subscription and local execution are not billed per token and are not governed by a dollar ceiling.');
+    }
+    const campaign = this.open(name);
+    const catalogue = buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase);
+    const work = plannedWorkFor(catalogue, configuration.candidates.map((candidate) => candidate.name), configuration.repeatsPerCase);
+    try {
+      campaign.writeAuthorization(authorizeSpending(estimateSpending(envelope, work), {
+        campaignID: campaign.campaignID,
+        authorizedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        authorizedBy: `${PRODUCT.name} ${PRODUCT.version} · Campaigns screen`,
+        hardCeilingMicroUSD: ceilingMicroUSD,
+        operationalEnvelopeDigest: campaign.manifest.operationalEnvelopeDigest ?? '',
+      }));
+    } catch (error) {
+      if (error instanceof SpendingError) throw new CampaignServiceError(error.message);
+      throw error;
+    }
+    return this.detail(name);
+  }
+
+  private hardware() {
+    return {
+      platform: process.platform, architecture: process.arch, model: os.hostname(),
+      cpuCoreCount: os.cpus().length, physicalMemoryBytes: os.totalmem(), osVersion: `${os.type()} ${os.release()}`,
     };
   }
 
@@ -248,17 +617,15 @@ export class CampaignService extends EventEmitter {
     const directory = this.directory(request.name);
     if (Campaign.exists(directory)) throw new CampaignServiceError(`a campaign already exists at ${directory}`);
     const endpoint = this.endpoint();
-    const installed = await discoverLocalModels(endpoint);
-    const execution: ExecutionPolicy = {
-      residency: request.observeOnly === true ? 'observeOnly' : 'managed',
-      thinkingMode: request.thinkingMode ?? 'disabled',
-    };
-    const candidates = request.modelNames.map((wanted) => {
+    const installed = request.modelNames.length > 0 ? await discoverLocalModels(endpoint) : [];
+    const thinkingMode = request.thinkingMode ?? 'disabled';
+
+    const local = request.modelNames.map((wanted) => {
       const found = installed.find((model) => model.name === wanted || model.name === `${wanted}:latest`);
       if (!found) throw new CampaignServiceError(`model '${wanted}' is not installed at ${endpoint}`);
       // Refused at create, before anything is frozen. Substituting thinking-off would record
       // answers to a different experiment under a manifest that says otherwise.
-      if (execution.thinkingMode === 'enabled' && modelCanThink(found) === false) {
+      if (thinkingMode === 'enabled' && modelCanThink(found) === false) {
         throw new CampaignServiceError(
           `Thinking was requested, but ${endpoint} reports that ${found.name} cannot think `
           + `(it reports: ${(found.capabilities ?? []).join(', ') || 'nothing'}). Nothing was created. `
@@ -266,36 +633,59 @@ export class CampaignService extends EventEmitter {
       }
       return { name: found.name, modelID: found.name, runtimeDigest: found.runtimeDigest, parameterSize: found.parameterSize, quantization: found.quantization };
     });
-    const configuration: CampaignConfiguration = {
-      label: request.label || request.name,
-      suiteIDs: request.suiteIDs.length > 0 ? request.suiteIDs : allRankableSuiteIDs(),
-      repeatsPerCase: Math.max(1, request.repeatsPerCase),
-      candidates,
-      hardware: {
-        platform: process.platform, architecture: process.arch, model: os.hostname(),
-        cpuCoreCount: os.cpus().length, physicalMemoryBytes: os.totalmem(), osVersion: `${os.type()} ${os.release()}`,
-      },
-      runtimeVersion: request.runtimeVersion || 'ollama-unreported',
-      execution,
-      storeBaseline: modelStoreBaseline(installed),
-      guardPolicy: guardPolicyForEndpoint(endpoint),
-      residencyDelayMilliseconds: 5_000,
-    };
+
+    // THE SAME BUILDER THE TERMINAL CALLS, with the same inputs. Two surfaces building a frozen
+    // configuration separately would not merely behave differently — they would produce different
+    // manifest IDENTITIES for the same request, which is the one thing a frozen manifest exists to
+    // make impossible.
+    let built;
+    try {
+      built = buildCampaignPlan({
+        label: request.label || request.name,
+        suiteIDs: request.suiteIDs.length > 0 ? request.suiteIDs : allRankableSuiteIDs(),
+        repeatsPerCase: Math.max(1, request.repeatsPerCase),
+        local,
+        frontier: this.frontierRequests(request),
+        observeOnly: request.observeOnly === true,
+        thinkingMode,
+        endpoint,
+        hardware: this.hardware(),
+        runtimeVersion: request.runtimeVersion || 'ollama-unreported',
+        storeBaseline: request.modelNames.length > 0 ? modelStoreBaseline(installed) : undefined,
+        provenModels: this.readDiscovered(),
+      });
+    } catch (error) {
+      if (error instanceof CampaignBuildError) throw new CampaignServiceError(error.message);
+      throw error;
+    }
+
+    const configuration = built.configuration;
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, 'configuration.json'), JSON.stringify(configuration, null, 2) + '\n', 'utf8');
-    Campaign.create(directory, configuration, new LiveHost({
-      endpoint,
-      catalogue: buildEngineCatalogue(configuration.suiteIDs, configuration.repeatsPerCase),
-      ...hostOptionsFor(execution),
-    }));
+    Campaign.create(directory, configuration, buildHostForCampaign(configuration, {
+      endpoint, catalogue: built.catalogue,
+    }).host);
     return this.list();
   }
 
   /** Start (or resume) a campaign in this process. One at a time: two runners would race the ledger. */
   async start(name: string): Promise<CampaignStatus> {
     if (this.active) throw new CampaignServiceError(`${this.active.name} is already running; only one campaign runs at a time so two runners cannot race the same ledger`);
-    const campaign = this.open(name);
     let pausing = false;
+
+    // Read the ledger and the authorization off disk BEFORE building the host with them, so a
+    // spending ceiling is enforced against everything this campaign has already spent rather than
+    // restarting at zero every time somebody presses Resume.
+    const reading = this.open(name);
+    const authorization = reading.readAuthorization();
+    const priorRows = reading.ledgerRows();
+    const configuration = this.configuration(name);
+    if (configuration.operationalEnvelope?.hasMeteredBinding && !authorization) {
+      throw new CampaignServiceError(`${name} has metered candidates and no recorded spending authorization, so `
+        + 'nothing was run and nothing was sent. Authorize it explicitly, with a hard ceiling, first.');
+    }
+
+    const campaign = this.open(name, { authorization, priorRows, shouldCancel: () => pausing });
     this.active = { name, pause: () => { pausing = true; } };
     try {
       return await campaign.run({
@@ -320,7 +710,8 @@ export class CampaignService extends EventEmitter {
   }
 
   finalize(name: string, blindingSecret: string): FinalReport {
-    return this.open(name).finalize({ blindingSecret });
+    const campaign = this.open(name);
+    return campaign.finalize({ blindingSecret, authorization: campaign.readAuthorization() });
   }
 
   activeName(): string | undefined {

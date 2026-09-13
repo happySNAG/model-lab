@@ -1,0 +1,234 @@
+// E2E · a frontier campaign driven from the terminal, observed in the desktop application.
+//
+// The same acceptance shape as `campaign-across-surfaces`, extended to a candidate that is not on
+// this machine: discovery, creation, a cost preview, a REFUSED run, an explicit authorization, a
+// completed run, and a finalized report — all from the supported terminal command, then read in the
+// interface with nothing between them but the shared campaign directory.
+//
+// No provider is contacted. `claude` is a fake executable on PATH, and the metered provider is a
+// loopback recorder. That is the point: these are the paths that spend money.
+//
+// Run `npm run build` first.
+
+import { test, expect, _electron as electron, ElectronApplication, Page } from '@playwright/test';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import * as http from 'node:http';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { AddressInfo } from 'node:net';
+import { FIXTURE_ANTHROPIC_KEY, FIXTURE_OPENAI_PROJECT_KEY } from '../secret-fixtures';
+
+const root = path.resolve(__dirname, '../..');
+const SUITE = 'suite.model-lab.foundation';
+
+let userData: string;
+let campaignRoot: string;
+let fakeBin: string;
+let pricingFile: string;
+let providerServer: http.Server;
+let providerBaseURL: string;
+let providerRequests: string[];
+
+function environment(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+    CERNUM_ANTHROPIC_BASE_URL: providerBaseURL,
+    CERNUM_OPENAI_BASE_URL: providerBaseURL,
+    ANTHROPIC_API_KEY: FIXTURE_ANTHROPIC_KEY,
+  };
+}
+
+// ASYNC on purpose, exactly as in `campaign-canonical-ui.spec.ts`. The loopback provider recorder
+// lives in THIS process, so a synchronous child-process call would block the event loop that has to
+// answer it: the command would wait for a server that cannot reply until the command returns.
+const run = promisify(execFile);
+
+async function cernum(...args: string[]): Promise<string> {
+  const { stdout } = await run('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaignRoot], {
+    cwd: root, encoding: 'utf8', env: environment(), timeout: 300_000,
+  });
+  return stdout;
+}
+
+async function cernumExpectingFailure(...args: string[]): Promise<{ status: number; stderr: string; stdout: string }> {
+  try {
+    const { stdout } = await run('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaignRoot], {
+      cwd: root, encoding: 'utf8', env: environment(), timeout: 300_000,
+    });
+    return { status: 0, stderr: '', stdout };
+  } catch (error) {
+    const failure = error as { code: number; stderr: string; stdout: string };
+    return { status: failure.code, stderr: String(failure.stderr ?? ''), stdout: String(failure.stdout ?? '') };
+  }
+}
+
+async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
+  const app = await electron.launch({
+    args: [path.join(root, 'out/main/index.js')],
+    env: { ...environment(), MODEL_LAB_USER_DATA: userData, MODEL_LAB_CAMPAIGN_ROOT: campaignRoot },
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('.shell');
+  return { app, page };
+}
+
+test.beforeAll(async () => {
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-'));
+  campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-campaigns-'));
+  fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-bin-'));
+
+  // A fake `claude` that lists one model and answers every prompt with the same string.
+  const claude = path.join(fakeBin, 'claude');
+  fs.writeFileSync(claude, [
+    '#!/bin/sh',
+    'if [ "$1" = "--version" ]; then echo "9.9.9 (fixture)"; exit 0; fi',
+    'if [ "$1" = "models" ]; then echo \'{"models":[{"id":"a-subscription-model"}]}\'; exit 0; fi',
+    'cat > /dev/null',
+    'echo \'{"result":"acknowledged","model":"a-subscription-model","usage":{"input_tokens":42,"output_tokens":7}}\'',
+  ].join('\n') + '\n', 'utf8');
+  fs.chmodSync(claude, 0o755);
+
+  providerRequests = [];
+  providerServer = http.createServer((request, response) => {
+    providerRequests.push(`${request.method} ${request.url}`);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: [{ id: 'a-metered-model' }] }));
+  });
+  await new Promise<void>((resolve) => providerServer.listen(0, '127.0.0.1', resolve));
+  providerBaseURL = `http://127.0.0.1:${(providerServer.address() as AddressInfo).port}`;
+
+  pricingFile = path.join(fakeBin, 'prices.json');
+  fs.writeFileSync(pricingFile, JSON.stringify({
+    'anthropicAPI:a-metered-model': {
+      source: 'a fixture written by the e2e test; these are not real prices and were never fetched',
+      capturedAt: '2026-01-01T00:00:00Z',
+      inputMicroUSDPerMillionTokens: 3_000_000,
+      outputMicroUSDPerMillionTokens: 15_000_000,
+      reasoningMicroUSDPerMillionTokens: null,
+    },
+  }, null, 2), 'utf8');
+
+  fs.writeFileSync(path.join(userData, 'settings.json'),
+    JSON.stringify({ ollamaEndpoint: 'http://127.0.0.1:1', thinkingMode: 'disabled', evidenceRootOverride: '' }));
+});
+
+test.afterAll(async () => {
+  providerServer.closeAllConnections?.();
+  await new Promise<void>((resolve) => providerServer.close(() => resolve()));
+});
+
+test('the terminal reports providers without contacting any of them', async () => {
+  const providers = await cernum('providers');
+  expect(providers).toContain('Nothing below contacted anything');
+  expect(providers).toContain('Claude Subscription');
+  expect(providers).toContain('Anthropic API');
+  expect(providers).toContain('No provider discovery has been run');
+  // The ladder is named, and every entry is unproven.
+  expect(providers).toContain('unproven');
+  expect(providers).toContain('Luna Max');
+  expect(providerRequests).toEqual([]);
+
+  const credentials = await cernum('credentials');
+  expect(credentials).toContain('ANTHROPIC_API_KEY');
+  expect(credentials).toContain('set · ');
+  expect(credentials).not.toContain(FIXTURE_ANTHROPIC_KEY);
+  expect(credentials).toContain('never reads their stored sessions');
+});
+
+test('an unproven model cannot be put in a campaign', async () => {
+  const refused = await cernumExpectingFailure('create', 'unproven-run', '--frontier', 'claudeCLI:luna-max', '--suites', SUITE);
+  expect(refused.status).toBe(2);
+  expect(refused.stderr).toMatch(/has not been proven callable by this account/);
+  expect(refused.stderr).toMatch(/A model identifier is a plan, not a capability/);
+});
+
+test('discovery proves a model, and then a subscription campaign runs end to end', async () => {
+  const discovered = await cernum('discover', 'claudeCLI');
+  expect(discovered).toContain('a-subscription-model');
+  expect(discovered).toContain('proven');
+  expect(providerRequests).toEqual([]);
+
+  const created = await cernum('create', 'sub-run', '--frontier', 'claudeCLI:a-subscription-model', '--suites', SUITE, '--repeats', '1');
+  expect(created).toContain('Claude Subscription');
+  expect(created).toContain('subscription-included');
+  expect(created).toContain('This campaign sends prompts to an external provider');
+  expect(created).toContain('takes no Ollama endpoint lease');
+  // Subscription execution is never described as free.
+  expect(created).toContain('marginal API charge $0');
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(campaignRoot, 'sub-run/manifest.json'), 'utf8')) as Record<string, any>;
+  expect(manifest.manifestFormatVersion).toBe(4);
+  expect(manifest.operationalEnvelope.bindings[0].provider).toBe('claudeCLI');
+  expect(manifest.operationalEnvelope.bindings[0].billingBasis).toBe('subscriptionIncluded');
+
+  const ran = await cernum('run', 'sub-run');
+  expect(ran).toContain('[complete]');
+
+  const finalized = await cernum('finalize', 'sub-run');
+  expect(finalized).toContain('Tokens, speed and cost');
+  expect(finalized).toContain('subscription');
+  expect(finalized).toContain('measurement quality');
+
+  // The desktop application reads the same campaign, and describes it the same way.
+  const { app, page } = await launch();
+  await page.click('[data-nav="campaigns"]');
+  await expect(page.locator('[data-testid="campaign-table"]')).toContainText('sub-run', { timeout: 20_000 });
+  await page.locator('[data-testid="campaign-table"] tr', { hasText: 'sub-run' }).first().click();
+  await expect(page.locator('.modal')).toBeVisible();
+  await expect(page.locator('[data-testid="binding-table"]')).toContainText('Claude Subscription');
+  await expect(page.locator('[data-testid="binding-table"]')).toContainText('a-subscription-model');
+  await expect(page.locator('[data-testid="metrics-table"]')).toContainText('subscription');
+  await app.close();
+
+  // And no provider request ever happened: the model answers came from the fake CLI on PATH.
+  expect(providerRequests).toEqual([]);
+});
+
+test('a metered campaign refuses to run until it is explicitly authorized, with a ceiling', async () => {
+  await cernum('discover', 'anthropicAPI');
+  const created = await cernum('create', 'paid-run', '--frontier', 'anthropicAPI:a-metered-model',
+    '--suites', SUITE, '--repeats', '1', '--pricing', pricingFile);
+  expect(created).toContain('billed per token');
+  expect(created).toContain('NOT yet authorised to spend anything');
+
+  // The cost preview names the bracket and the pricing timestamp.
+  const cost = await cernum('cost', 'paid-run');
+  expect(cost).toContain('Estimated total');
+  expect(cost).toContain('prices captured 2026-01-01T00:00:00Z');
+  expect(cost).toContain('NOT AUTHORIZED');
+
+  // The run is refused, and nothing is sent.
+  const before = providerRequests.length;
+  const refused = await cernumExpectingFailure('run', 'paid-run');
+  expect(refused.status).toBe(6);
+  expect(refused.stderr).toMatch(/no recorded spending authorization/);
+  expect(refused.stderr).toMatch(/nothing was run and nothing was sent/);
+  expect(providerRequests.length).toBe(before);
+
+  // Authorizing without --yes changes nothing either.
+  const notYet = await cernumExpectingFailure('authorize', 'paid-run', '--ceiling', '5.00');
+  expect(notYet.status).toBe(3);
+  expect(notYet.stdout).toContain('Estimated total');
+  expect(notYet.stdout).toContain('This campaign sends prompts to an external provider');
+  expect(notYet.stderr).toMatch(/Nothing was authorised/);
+  expect(fs.existsSync(path.join(campaignRoot, 'paid-run/authorization.json'))).toBe(false);
+
+  // With --yes, the authorization is written beside the campaign and names its ceiling.
+  const authorized = await cernum('authorize', 'paid-run', '--ceiling', '5.00', '--yes');
+  expect(authorized).toContain('Authorized. Ceiling $5.00');
+  const record = JSON.parse(fs.readFileSync(path.join(campaignRoot, 'paid-run/authorization.json'), 'utf8')) as Record<string, any>;
+  expect(record.hardCeilingMicroUSD).toBe(5_000_000);
+  expect(record.estimate.meteredCandidateCount).toBe(1);
+  expect(record.authorizationDigest).toMatch(/^[0-9a-f]{64}$/);
+
+  // The desktop application shows the same authorization, at the same ceiling.
+  const { app, page } = await launch();
+  await page.click('[data-nav="campaigns"]');
+  await expect(page.locator('[data-testid="campaign-table"]')).toContainText('paid-run', { timeout: 20_000 });
+  await page.locator('[data-testid="campaign-table"] tr', { hasText: 'paid-run' }).first().click();
+  await expect(page.locator('.modal')).toContainText('Authorised with a hard ceiling of $5.00');
+  await app.close();
+});

@@ -6,6 +6,16 @@
 // convention two callers are trusted to follow.
 
 export * from './canonical';
+export * from './provider';
+export * from './redaction';
+export * from './credentials';
+export * from './cli-process';
+export * from './discovery';
+export * from './spending';
+export * from './frontier-metrics';
+export * from './frontier-adapter';
+export * from './machine';
+export * from './scoring';
 export * from './ledger';
 export * from './lock';
 export * from './execution';
@@ -21,5 +31,8 @@ export * from './ranking';
 export * from './retention';
 export * from './catalogue';
 export * from './campaign';
+export * from './campaign-builder';
 export * from './synthetic';
 export * from './live-host';
+export * from './frontier-host';
+export * from './host-factory';

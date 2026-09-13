@@ -21,6 +21,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CanonicalValue, canonicalJSON, sha256Text } from './canonical';
+import { redactValue } from './redaction';
 
 export const LEDGER_FORMAT_VERSION = 2;
 
@@ -372,7 +373,16 @@ export class Ledger {
     if (existing) {
       throw new LedgerError(`slot ${JSON.stringify(key)} already has a terminal result (${existing.status}); a terminal attempt is never re-run`);
     }
-    const stored: SlotResult = { recordedAt: this.clock(), ...record, status: record.status as TerminalSlotStatus, seq: this.results.size };
+    // THE CHOKEPOINT. Every terminal row passes through the secret scrubber on its way to disk,
+    // including `answerText` and every `detail` string, whoever authored them. A provider that
+    // echoes an Authorization header into an error, or a model that repeats a key back in its
+    // answer, would otherwise write that key into evidence that outlives the run — and evidence is
+    // exactly the thing that gets copied into a report, a packet and an issue attachment.
+    //
+    // It is applied HERE rather than at each call site because a call site is a thing somebody can
+    // forget. There is one way into this file, and it goes through this line.
+    const stored: SlotResult = redactValue(
+      { recordedAt: this.clock(), ...record, status: record.status as TerminalSlotStatus, seq: this.results.size } as SlotResult);
     const handle = fs.openSync(this.resultsPath, 'a');
     try {
       fs.writeFileSync(handle, canonicalJSON(stored as unknown as CanonicalValue) + '\n', 'utf8');
@@ -386,7 +396,9 @@ export class Ledger {
 
   /** Append one line to the operational trace. Guards, unloads, pauses and resumes all land here. */
   event(kind: string, fields: Record<string, CanonicalValue | undefined> = {}): void {
-    const record = { ...fields, kind, at: this.clock() };
+    // The same chokepoint for the operational trace. Refusals and transport failures are exactly the
+    // events whose text a provider authored, which makes them exactly the ones worth scrubbing.
+    const record = redactValue({ ...fields, kind, at: this.clock() });
     const handle = fs.openSync(this.eventsPath, 'a');
     try {
       fs.writeFileSync(handle, canonicalJSON(record as CanonicalValue) + '\n', 'utf8');

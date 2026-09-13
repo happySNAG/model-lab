@@ -81,6 +81,132 @@ facts, and only the second is grounds to refuse.
 
 ---
 
+## Who answers: local, subscription, or metered API
+
+Until this pass a candidate was always a model on this machine, served by a runtime Cernum managed.
+That is still the default and still the most trustworthy arrangement — but a campaign can now also
+contain a model somebody else runs.
+
+There are **three execution classes**, and they are not interchangeable:
+
+| | reached by | monetary cost | prompts leave this machine | residency |
+|---|---|---|---|---|
+| **local** | an Ollama endpoint Cernum manages | none | no | managed and proved |
+| **subscription** | your own installed, signed-in `claude` / `codex`, as a child process | **subscription-included**: marginal API charge $0, consuming a finite allowance | yes | not applicable |
+| **metered API** | a published HTTP API, billed per token against your key | billed per token | yes | not applicable |
+
+**Subscription execution is not free.** Its marginal API charge is zero because you already pay for
+the subscription, and it consumes an allowance a dollar figure cannot express. Cernum records it as
+`subscriptionIncluded` and never as free, in every artefact and both interfaces, because describing
+it as free is the easiest way for a benchmark to mislead somebody about what a model costs them.
+
+### What is compared, and what is not
+
+Task outcomes **are** comparable across all three: every candidate answered the same frozen prompts
+and was judged by the same frozen evaluators, by a scorer that cannot see who produced the text.
+
+Latency, throughput, time-to-first-token and cost are **not**. A local model has no network; a
+subscription CLI pays a process launch; an API sits behind somebody else's queue. A ranking that
+ordered these by speed or by price would be ordering their access methods. A campaign containing more
+than one class is labelled `MIXED-EXECUTION` in its manifest seal, its report, its rankings table and
+both interfaces.
+
+### Nothing is scraped, impersonated, or worked around
+
+- A subscription is reached by running **the official CLI you installed and signed into yourself**,
+  with its documented flags and its documented output. Cernum never reads its token file, its
+  configuration directory or its Keychain entry; never reuses a browser session; never calls a private
+  endpoint; and never tries to make a subscription behave like an API.
+- A metered API is reached at its **published endpoint** with a key **you** supplied.
+- The environment handed to a subscription CLI has every credential-bearing variable **stripped out**,
+  including your API keys — so a run you authorised as subscription-included cannot quietly bill your
+  card instead.
+
+### A model name is a plan, not a capability
+
+There is a list of models this project intends to test. Every one of them starts **`unproven`**, and
+nothing but **provider discovery** or an **identity smoke test** moves it to `proven`. The shared
+campaign builder refuses an unproven model outright — in the terminal and in the interface, from the
+same function — so editing that list can never make a model runnable.
+
+Discovery is always something you ask for by name. Reading the Providers screen, checking status, or
+opening the application performs a PATH lookup and a credential check and **contacts nobody**; every
+row says so, and `test/e2e/providers-offline.spec.ts` asserts it by launching the application with
+fake CLIs that log every invocation and a loopback recorder that logs every request, then checking
+both logs are empty.
+
+### Who actually answered
+
+A local model is identified by its **weights digest**, before the request. A frontier model can only
+be identified by what the provider says **afterwards**, so every frontier response is read for which
+model produced it:
+
+- the provider named the frozen model, or resolved its alias to a dated build → **verified**, and the
+  exact build is what gets recorded;
+- the provider named a **different** model → **substituted**. The candidate aborts. Nothing is scored,
+  because a real answer to a question about a different model is not this campaign's evidence;
+- the provider named nothing → **unverifiable**, carried and labelled on every row, never upgraded to
+  verified by assuming the request was honoured.
+
+---
+
+## Money, and the authorization that has to exist first
+
+**Not one metered request leaves this machine unless an authorization record for that campaign already
+exists on disk.** It is written before the run and read back by it, so it survives a resume, a crash
+and a change of surface. It names:
+
+provider · model · planned attempts · estimated input and output tokens · estimated minimum and
+maximum cost · the pricing timestamp · a hard spending ceiling.
+
+**An estimate that cannot be calculated is a refusal, not a guess.** If prices are missing or the
+prompt sizes are unknown, Cernum declines the paid run and says which input was absent. The bracket it
+does produce is a real one: the **maximum** assumes every attempt fills its entire frozen input and
+output budget, which the adapter enforces; the **minimum** assumes every attempt pays for its input
+and produces nothing. The one inexact number — the input-token estimate — carries its own method, and
+the characters-per-token divisor is written into the record where you can disagree with it.
+
+**Cernum never fetches prices.** An estimate that changed between the preview and the run is not one
+anybody can approve, so prices are supplied with their source and the moment they were captured, and
+both are frozen into the manifest where a later reader can see how stale they are.
+
+The **hard ceiling stops the request that would exceed it**, rather than noticing afterwards that one
+did. Attempts already recorded are kept; the remaining slots are blocked and carry no result, exactly
+as for a guard breach. The running total is rebuilt from the ledger on every resume, so a ceiling
+cannot be reset by pressing Resume.
+
+```
+cernum cost <name>                                  what it is estimated to cost, without running it
+cernum authorize <name> --ceiling 5.00 --yes        record the authorization
+```
+
+---
+
+## Credentials
+
+Two sources, and Cernum owns neither: an **environment variable**, or the **macOS Keychain**. There
+is no Cernum-owned credential store — a product that stores the key has to get its permissions, its
+backups, its sync behaviour and its deletion right, and every one of those is a way to leak it that
+simply does not exist if the key is never stored.
+
+A key that is read is registered with the **secret scrubber** immediately, and every ledger row and
+every event passes through that scrubber on its way to disk — including `answerText` and every
+`detail` string, whoever authored them. The scrubber recognises credential *shapes*, not just values
+it was told about, so it catches a key echoed back by a provider inside a 401 that this process never
+held. It is applied at the ledger's single write path rather than at each call site, because a call
+site is a thing somebody can forget.
+
+A key is never shown at any length. The interface and the terminal show `set · N characters` or
+`not set` — never a prefix, never a suffix, never a fragment.
+
+A **missing credential is a clean refusal before the socket opens**: discovering it from a 401 would
+cost a round trip, write a failure into the evidence that is not the model's, and on some providers
+count against a rate limit.
+
+`.env.example` carries variable **names only** and is the only such file in the repository.
+
+---
+
 ## Why a frozen manifest
 
 A benchmark result is a claim about a specific set of prompts, scored by a specific set of rules, on
@@ -101,9 +227,45 @@ Creating a campaign freezes:
 | the safety floors | the run would proceed under different limits than the ones authorised |
 | the hardware and runtime version | latency and throughput are not comparable across either |
 | the execution policy — residency mode and thinking mode | the run would not be the experiment that was authorised, and a canonical result and an observe-only one are not comparable |
+| the **operational envelope** — per candidate: provider, execution class, requested model, verified identity, effort, thinking mode, sampling, input and output budgets, timeout, retry policy, billing basis, pricing snapshot, authorization mode | a campaign whose second half was answered by a different model, at a different effort, or on a different bill is not the campaign that was authorised |
 
 Every resume re-verifies all of it and **refuses to continue** if anything moved. Verification never
 repairs a drift: a manifest that silently updates itself proves nothing.
+
+### The manifest version decision: format 4
+
+**A new campaign freezes at format 4.** Format 4 adds one binding to the hashed body — the
+operational-envelope digest — and carries the envelope itself alongside.
+
+*Why a format bump and not an extra field.* The same prompts, scored the same way, answered by the
+same named model, produce different results depending on whether that model was reached on this
+machine, through a subscription CLI, or through a metered API. Their latencies are not the same
+measurement, their costs are not the same currency, and their identities are established by different
+evidence. Binding the envelope into the digest makes a local run and an API run of "the same" model
+**two manifests rather than one** — for exactly the reason an observe-only run and a canonical one
+became two in format 3. It is stronger than a label somebody has to remember to read.
+
+*Why the scored core stays separate.* `scoredCoreDigest` still binds only the prompts, the scoring
+modes and the output budgets — the things that must be identical for two results to be comparable at
+all. The envelope binds the things that make them different. Keeping the two apart is what lets a
+reader say "the same benchmark, three ways" instead of choosing between pretending they are identical
+and refusing to put them on one page.
+
+*Why a local-only campaign gets one too.* Its envelope says `provider: ollama`, `executionClass:
+localRuntime`, `billingBasis: local`. "This ran locally" becomes an assertion somebody made rather
+than the absence of a claim.
+
+*What happens to format 3.* **Nothing.** A format-3 manifest is read, verified, finalized and resumed
+exactly as it always was; its stored identity is untouched; and its verification never recomputes a
+binding it never froze — a live envelope offered to a format-3 manifest is not compared, because
+there is nothing frozen to have moved. `freezeManifest` still produces a **byte-identical** format-3
+manifest when no envelope is supplied, which is what keeps the recorded parity vectors valid and what
+`test/engine/manifest-format-4.test.ts` pins against a digest **recorded from the Pass 3 engine
+itself**, at commit `162d14d4`, rather than recomputed from today's code.
+
+A retest carries the **original's** format version and envelope rather than being reissued at today's:
+a retest is the same benchmark on a different machine, and re-freezing it at a newer format would
+change what its identity binds.
 
 ### When the machine changes
 
@@ -150,6 +312,17 @@ a report can say `free 12.41 GiB, floor 15.00 GiB` rather than `disk guard faile
 | the benchmark lane | work reaching a server other than the authorised one is not the measurement |
 | the model store | a model added, removed or re-pulled mid-campaign changes what is being measured |
 | **residency release** | see below |
+| **spending authorization** | a metered request nobody authorised is money nobody agreed to spend |
+| **the hard spending ceiling** | it stops the request that *would* exceed it, not the one that did |
+| **provider model substitution** | a real answer to a question about a different model is not this campaign's evidence |
+
+The last three are new with frontier support, and the first two of them refuse **before anything is
+sent**: the cheapest refusal is the one that happens before the request leaves.
+
+A campaign with no local candidates drops the **benchmark lane** and **model store** guards, because
+neither describes anything it touches — there is no local lane to hold and no local store to drift.
+Everything that is a property of *this machine* still applies: a benchmark that fills the disk or
+drives the box into swap still stops, whoever is answering its prompts.
 
 **Residency** is the subtle one. Two models resident at once means swap, and swap means the next
 candidate's latency measures the disk. Worse, it is *invisible in the result* — every attempt still
@@ -157,6 +330,17 @@ returns text. A residual model does not corrupt a score, it corrupts the **compa
 only thing a benchmark produces. So at every model transition the engine issues an unload, waits, and
 then **reads the resident set back**. An unload that reports success and leaves a model resident is
 precisely the failure this exists to catch, so its own success message is not evidence.
+
+**Residency applies to local candidates only.** A frontier candidate has no weights on this machine,
+so there is nothing to unload and — the part worth being explicit about — nothing an unload could
+*prove*. The transition is recorded as `residencyNotApplicable` rather than silently skipped, because
+"we did not need to" and "we did not bother" look identical in an empty event log. In a mixed
+campaign the local candidates' residency proofs are unaffected by the frontier ones, and vice versa.
+
+**A frontier candidate takes no Ollama endpoint lease**, and a campaign with no local candidates takes
+none at all — so it runs happily alongside a local campaign that owns the endpoint. That is structural
+rather than a flag: the lease is taken against the host's runtime identity, and a frontier-only host
+offers none.
 
 When a guard trips, the remaining slots are **blocked**: they were never attempted and carry no
 result. Resolve what stopped it, resume, and they run normally. The abort record is kept, never
@@ -219,6 +403,49 @@ completion count in its final chunk and no per-channel split:
 `completionTokenCount` always carries the runtime's own combined figure, and throughput is derived
 from that and the runtime's own generation duration — never from the client clock, never from an
 estimate.
+
+### Four states, once a provider is involved
+
+Two states were exactly right for a local runtime: either it counted something or it did not. A
+frontier campaign needs four, because "we watched it" and "they told us" are different facts, and a
+cost computed from the second cannot be reconciled against a bill in the same way as one computed from
+the first:
+
+| provenance | means |
+|---|---|
+| `measured` | this process watched it happen — a wall clock, a byte arrival time |
+| `providerReported` | the provider told us — its own usage block |
+| `estimated` | nobody counted it; it was derived by a **stated** method from something that was |
+| `unavailable` | not known, and the reason is recorded rather than a zero being written |
+
+They are never silently promoted, an aggregate carries the **worst** provenance of its inputs, and a
+sum containing an `unavailable` term is itself `unavailable` — not the sum of the terms that happened
+to be known. Every table prints the provenance rather than hiding it, and the provider's own usage
+block is kept **verbatim** beside the figures derived from it, because a derived number with its
+source discarded is a number nobody can check.
+
+### Recorded per attempt, aggregated per model
+
+input tokens · visible output tokens · reasoning tokens (when reported apart) · total tokens · tokens
+per second · time to first **visible** token · total wall-clock time · cost per run · cost per
+successful task · tokens per completed pass · tokens wasted on failed and retried attempts · retry
+count · timeout count · successful-task rate · provider-reported versus estimated usage ·
+measurement quality.
+
+Three of those deserve their reasoning written down:
+
+- **Cost per successful task** divides the campaign's **total** spend — failures and retries included
+  — by the number of successes. Money spent on a failed attempt is money spent, and a model that
+  fails half the time costs *more* per useful answer, not the same.
+- **A model with no successes has no cost per success.** Not infinity, not zero, not the total: it is
+  `unavailable` with a reason, because every other answer invites an arithmetic somebody will mistake
+  for a comparison.
+- **Wasted tokens** are tracked separately rather than folded into the total, so a campaign that
+  retried its way to an answer cannot present itself as one that did not.
+
+For a local model the monetary cost is `0` with `measured` provenance — "this cost nothing" is a fact
+about local execution, not an absence of evidence. **No electricity cost is invented**, because no
+rate and no measurement method were supplied.
 
 ---
 
@@ -293,6 +520,33 @@ cernum <command>                     # once installed for your account (see belo
 # From a development checkout
 npm run cernum -- <command>
 ```
+
+It offers the same operations as the Campaigns and Providers screens, through the same engine, and
+every campaign policy is built by the **same function** both surfaces call — so a campaign created in
+one and resumed in the other is the same campaign, with the same frozen identity:
+
+```
+cernum providers                     every provider's status, WITHOUT contacting any of them
+cernum discover [<provider>]         ask a provider what it is and what this account may call
+cernum credentials                   which API keys are configured (masked; never printed)
+cernum models                        the models installed locally (read-only)
+cernum suites                        the benchmark suites this engine can plan
+
+cernum create <name> --models a,b --frontier claudeCLI:claude-sonnet-5:high --pricing prices.json
+cernum cost <name>                   what it is estimated to cost, without running it
+cernum authorize <name> --ceiling 5.00 --yes
+cernum run | resume | pause (Ctrl-C) | status | verify | finalize | retest
+```
+
+`--frontier` takes `provider:model[:effort]`. The effort is part of the candidate **name**, because
+the same model at high effort and at max effort are two experiments and must never share a row, a
+rate or a cost. A model provider discovery has not proven callable is refused here rather than
+offered.
+
+Ctrl-C pauses at the next attempt boundary **and stops every provider command in flight** — a child
+process that is merely abandoned keeps its slot in your rate limit and keeps consuming the allowance
+the run was measuring. The signal goes to the process *group*, so a tool that shelled out takes its
+helpers with it, and a tool that ignores `SIGTERM` is killed after a grace period.
 
 ### Installing it for your account
 
@@ -427,12 +681,16 @@ campaign's hold on one.
     events.jsonl          guards, unloads, pauses, resumes, lock acquire/refuse/recover/release
     abort.json            present only while an abort stands
     aborts/               superseded aborts, kept for the report
+  authorization.json      present only on a campaign authorised to spend money, and read back by the run
   campaign.lock           present only while a process owns this campaign
   locks/                  reclaimed and released locks, kept as crash evidence
 
 <campaign root>/
   .runtime-leases/        one file per benchmark endpoint, shared between campaigns
     recovered/            reclaimed and released leases, kept as crash evidence
+  .providers/
+    discovered.json       what discovery actually proved, shared by both surfaces. NOT a source of
+                          availability on its own: a campaign still refuses anything not `proven`.
   rankings.json           measurement
   retention.json          interpretation, labelled as such
   final-report.json       both, plus the reconciliation

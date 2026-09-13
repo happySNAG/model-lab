@@ -37,6 +37,11 @@ import { CampaignLockError, CampaignLockHandle, LockOptions, LockOwnerState, Loc
 import { DEFAULT_EXECUTION_POLICY, ExecutionPolicy, NONCANONICAL_REASONS, isCanonical } from './execution';
 import { RuntimeLeaseError, acquireRuntimeLease, runtimeLeaseDirectory } from './runtime-lease';
 import { ThinkingModeVerification, thinkingModePermitsExecution, verifyThinkingMode } from './verification';
+import { ProviderIdentityVerification, providerIdentityPermitsExecution, verifyProviderIdentity } from './verification';
+import { OperationalEnvelope, ProviderBinding, bindingFor, isLocal } from './provider';
+import { FrontierAttemptRecord, FrontierCandidateMetrics, aggregateFromRows } from './frontier-metrics';
+import { MIXED_EXECUTION_REASONS } from './provider';
+import { SpendingAuthorization } from './spending';
 
 export const CAMPAIGN_FORMAT_VERSION = 1;
 
@@ -59,7 +64,25 @@ export interface AttemptOutcome {
   totalElapsedMilliseconds?: number;
   /** Set when the adapter itself failed, as opposed to the model answering badly. */
   failure?: { code: string; detail: string };
+  /**
+   * Who answered, what it cost, and how well any of that was counted.
+   *
+   * Present on every attempt of a campaign that froze an operational envelope — including a local
+   * one, so a mixed campaign's rows all answer the same questions rather than half of them being
+   * silent about cost.
+   */
+  frontier?: FrontierAttemptRecord;
 }
+
+/**
+ * Whether an attempt may be made at all, decided BEFORE anything is sent.
+ *
+ * A refusal is not a result. The campaign records an abort and blocks the remaining slots, exactly
+ * as a guard breach does, because a request that never left cannot have an outcome.
+ */
+export type AttemptAuthorization =
+  | { allowed: true }
+  | { allowed: false; code: string; reason: string; detail?: CanonicalValue };
 
 export interface AttemptRequest {
   slot: PlanSlot;
@@ -80,6 +103,14 @@ export interface CampaignHost {
   run(request: AttemptRequest): Promise<AttemptOutcome>;
   /** Score one answer. Returns a terminal status and whether it broke a governance rule. */
   score(slot: PlanSlot, answerText: string): Promise<{ status: TerminalSlotStatus; governanceViolated: boolean; detail: string }>;
+  /**
+   * Refuse, before the request, anything that would spend money nobody authorised.
+   *
+   * Optional, because a host that can only reach a local runtime has nothing to authorise. A host
+   * that CAN spend money and does not implement this is a host whose spending nothing checks, so the
+   * routing host always does.
+   */
+  authorizeAttempt?(slot: PlanSlot): Promise<AttemptAuthorization>;
   /** Read the machine, for the guards. */
   readSystem(): Promise<SystemReading>;
   /**
@@ -111,6 +142,15 @@ export interface CampaignConfiguration {
   execution?: ExecutionPolicy;
   /** Milliseconds to wait between unload rounds. Zero in tests; five seconds in life. */
   residencyDelayMilliseconds?: number;
+  /**
+   * Who answers each candidate, how they are reached, and on whose bill. Frozen into a format-4
+   * manifest at creation, and thereafter as unchangeable as the execution policy.
+   *
+   * Omitted, the campaign freezes a format-3 manifest exactly as Pass 3 did — which is what keeps
+   * every campaign already on disk readable, verifiable, finalizable and resumable under its own
+   * stored identity.
+   */
+  operationalEnvelope?: OperationalEnvelope;
 }
 
 export type CampaignState = 'created' | 'running' | 'paused' | 'aborted' | 'complete';
@@ -137,6 +177,12 @@ export interface CampaignStatus {
   /** The frozen execution policy, and whether this campaign's numbers are canonical. */
   execution: ExecutionPolicy;
   canonical: boolean;
+  /** The frozen provider bindings. Absent on a format-3 campaign, which bound none. */
+  operationalEnvelope?: OperationalEnvelope;
+  /** True when candidates were reached through more than one execution class. */
+  mixedExecution: boolean;
+  /** The manifest format this campaign was frozen at: 3 for a Pass 3 campaign, 4 for a bound one. */
+  manifestFormatVersion: number;
 }
 
 export interface AttemptTrace {
@@ -145,6 +191,8 @@ export interface AttemptTrace {
   identity: ModelIdentityVerification['state'];
   suppliedContext: SuppliedContextVerification['state'];
   thinkingMode: ThinkingModeVerification['state'];
+  /** Absent on a local candidate, whose identity is established by its weights rather than its answer. */
+  providerIdentity?: ProviderIdentityVerification['state'];
   telemetry?: AttemptTelemetry;
   detail: string;
 }
@@ -192,6 +240,22 @@ export interface FinalReport {
   canonical: boolean;
   /** Empty on a canonical report; the reasons it cannot be compared on an observe-only one. */
   noncanonicalBecause: string[];
+  /** Who answered each candidate and on whose bill. Absent on a format-3 report. */
+  operationalEnvelope?: OperationalEnvelope;
+  /** Empty unless candidates were reached through more than one execution class. */
+  mixedExecutionBecause: string[];
+  /** Tokens, speed, cost and their provenance, per candidate. Empty on a format-3 campaign. */
+  frontierMetrics: FrontierCandidateMetrics[];
+  /** What was authorised and what was actually spent. Absent when nothing metered was planned. */
+  spending?: {
+    authorized: boolean;
+    hardCeilingMicroUSD?: number;
+    /** The sum of every metered attempt's recorded cost, whatever its provenance. */
+    recordedMicroUSD: number;
+    meteredAttempts: number;
+    /** True when the run stopped because the ceiling would have been exceeded. */
+    stoppedAtCeiling: boolean;
+  };
   reconciliation: Reconciliation;
   rankings: FinalRankings;
   retention: RetentionReport;
@@ -209,6 +273,9 @@ export function campaignPaths(root: string) {
     manifest: path.join(root, 'manifest.json'),
     ledger: path.join(root, 'ledger'),
     report: path.join(root, 'final-report.json'),
+    // Beside the campaign it authorises, not in a settings file somewhere: an authorization that is
+    // not part of the campaign's own evidence is an authorization nobody can audit afterwards.
+    authorization: path.join(root, 'authorization.json'),
     rankings: path.join(root, 'rankings.json'),
     retention: path.join(root, 'retention.json'),
     reviewDirectory: path.join(root, 'review'),
@@ -253,6 +320,37 @@ export class Campaign {
     return isCanonical(this.execution);
   }
 
+  /**
+   * The frozen operational envelope, or undefined on a format-3 campaign.
+   *
+   * The MANIFEST is the authority, exactly as it is for the execution policy: `configuration.json`
+   * is an ordinary file a person can edit, and the point of freezing the bindings was that editing
+   * them afterwards changes nothing except the verification result.
+   */
+  get operationalEnvelope(): OperationalEnvelope | undefined {
+    return this.manifest.operationalEnvelope;
+  }
+
+  /** One candidate's frozen binding, or undefined when this campaign froze none. */
+  bindingFor(candidate: string): ProviderBinding | undefined {
+    const envelope = this.operationalEnvelope;
+    if (!envelope) return undefined;
+    try { return bindingFor(envelope, candidate); } catch { return undefined; }
+  }
+
+  /**
+   * Does this campaign manage residency for this candidate?
+   *
+   * A format-3 campaign has no bindings and is all-local, which is what it always was. A format-4
+   * campaign manages residency for its local candidates only: a frontier candidate has no weights on
+   * this machine, so there is nothing to unload and nothing an unload could prove.
+   */
+  private managesResidencyFor(candidate: string): boolean {
+    if (!this.canonical) return false;
+    const binding = this.bindingFor(candidate);
+    return binding === undefined ? true : isLocal(binding);
+  }
+
   // -------------------------------------------------------------------- create
 
   static create(root: string, configuration: CampaignConfiguration, host: CampaignHost): Campaign {
@@ -281,6 +379,7 @@ export class Campaign {
       hardware: configuration.hardware,
       runtimeVersion: configuration.runtimeVersion,
       execution: configuration.execution ?? DEFAULT_EXECUTION_POLICY,
+      operationalEnvelope: configuration.operationalEnvelope,
       frozenAt,
     });
 
@@ -299,6 +398,12 @@ export class Campaign {
       residencyMode: (configuration.execution ?? DEFAULT_EXECUTION_POLICY).residency,
       thinkingMode: (configuration.execution ?? DEFAULT_EXECUTION_POLICY).thinkingMode,
       canonical: isCanonical(configuration.execution ?? DEFAULT_EXECUTION_POLICY),
+      manifestFormatVersion: manifest.manifestFormatVersion,
+      // On the ledger's own meta, so a campaign row can be labelled without opening the manifest.
+      providers: (configuration.operationalEnvelope?.providers ?? []) as unknown as CanonicalValue,
+      executionClasses: (configuration.operationalEnvelope?.executionClasses ?? []) as unknown as CanonicalValue,
+      mixedExecution: configuration.operationalEnvelope?.mixed ?? false,
+      hasMeteredBinding: configuration.operationalEnvelope?.hasMeteredBinding ?? false,
     });
     ledger.event('campaignCreated', { campaignID, manifestID: manifest.manifestID, slotCount: ledger.plan.length });
     ledger.writeCheckpoint();
@@ -340,6 +445,10 @@ export class Campaign {
       // thinking mode on a frozen campaign is a drift that refuses the resume rather than a change
       // that quietly takes effect.
       execution: this.configuration.execution ?? DEFAULT_EXECUTION_POLICY,
+      // Compared against the frozen envelope, so editing `configuration.json` to point a candidate at
+      // a cheaper model, a lower effort or a different provider is a drift that refuses the resume
+      // rather than a change that quietly takes effect halfway through a campaign.
+      operationalEnvelope: this.configuration.operationalEnvelope,
     }, this.host.now().toISOString().replace(/\.\d{3}Z$/, 'Z'));
   }
 
@@ -557,6 +666,22 @@ export class Campaign {
   }
 
   private async releaseResidency(candidate: string): Promise<void> {
+    // A frontier candidate has no weights on this machine. There is nothing to unload, and — this is
+    // the part worth being explicit about — nothing an unload could PROVE. Recording it as
+    // inapplicable rather than silently skipping it keeps the distinction visible in the trace:
+    // "we did not need to" and "we did not bother" look identical in an empty event log.
+    const binding = this.bindingFor(candidate);
+    if (binding !== undefined && !isLocal(binding)) {
+      this.ledger.event('residencyNotApplicable', {
+        candidate,
+        provider: binding.provider,
+        executionClass: binding.executionClass,
+        why: 'this candidate runs on the provider\'s hardware, so no weights were loaded on this machine and there is '
+          + 'nothing here to release. Its latency is not affected by what is resident locally, and the local '
+          + 'candidates\' residency proofs are unaffected by it.',
+      });
+      return;
+    }
     // An observe-only campaign touches nothing. This is the ONLY place the mode changes behaviour,
     // and it is why the mode has to be frozen and labelled rather than left as a runtime flag: the
     // difference between the two runs is invisible in every artefact except the one that says so.
@@ -596,6 +721,19 @@ export class Campaign {
       throw new CampaignAbort();
     }
 
+    // 1b. Money. Asked BEFORE the model is even identified, because the cheapest refusal is the one
+    // that happens before anything is sent. A refusal aborts and blocks the remaining slots rather
+    // than recording a result: a request that never left is not an outcome a model produced.
+    if (this.host.authorizeAttempt) {
+      const authorization = await this.host.authorizeAttempt(slot);
+      if (!authorization.allowed) {
+        const blocked = this.ledger.pending().map((pending) => pending.slotKey);
+        this.ledger.event('spendingRefused', { code: authorization.code, candidate: slot.candidate, detail: authorization.detail });
+        this.ledger.recordAbort(authorization.reason, authorization.detail ?? { code: authorization.code }, 'spendingAuthorization', blocked);
+        throw new CampaignAbort();
+      }
+    }
+
     const benchmarkCase = this.catalogue.cases.get(slot.caseID);
     if (!benchmarkCase) throw new CampaignError('unknownCase', `slot ${slot.slotKey} names case ${slot.caseID}, which this catalogue does not contain`);
     const pinned = this.manifest.candidates.find((candidate) => candidate.name === slot.candidate);
@@ -628,6 +766,27 @@ export class Campaign {
       suppliedContext: promptRecord.suppliedContext,
       maxOutputTokens: slot.maxOutputTokens,
     });
+
+    // 3b. WHO ACTUALLY ANSWERED. A local candidate was identified by its weights before the request;
+    // a frontier candidate can only be identified by what the provider says afterwards. A provider
+    // that names a different model has answered a question about a different model, and recording
+    // that under this manifest would put one model's answers under another model's name.
+    const binding = this.bindingFor(slot.candidate);
+    let providerIdentity: ProviderIdentityVerification | undefined;
+    if (binding !== undefined && !isLocal(binding) && outcome.failure === undefined) {
+      providerIdentity = verifyProviderIdentity(binding.requestedModelID, outcome.frontier?.reportedModelID ?? '');
+      if (!providerIdentityPermitsExecution(providerIdentity)) {
+        const blocked = this.ledger.pending().filter((pending) => pending.candidate === slot.candidate).map((pending) => pending.slotKey);
+        this.ledger.event('providerModelSubstituted', {
+          candidate: slot.candidate,
+          requested: providerIdentity.requestedModelID,
+          reported: providerIdentity.reportedModelID,
+        });
+        this.ledger.recordAbort(providerIdentity.detail, providerIdentity as unknown as CanonicalValue,
+          'providerIdentityVerification', blocked);
+        throw new CampaignAbort();
+      }
+    }
 
     // 4. Supplied context, checked against what the request ACTUALLY carried.
     const suppliedContext = verifySuppliedContext(promptRecord.suppliedContext, outcome.assembledContext);
@@ -683,9 +842,32 @@ export class Campaign {
       thinkingTokenCount: 'measured' in telemetry.thinkingTokenCount ? telemetry.thinkingTokenCount.measured : undefined,
       thinkingOnly: telemetry.thinkingOnly,
       streamed: telemetry.streamed,
+      // On every row, exactly as `canonical` is: a row lifted out of its campaign carries who
+      // answered and what it cost with it, so it can never be silently merged into a set whose
+      // numbers mean something else.
+      provider: outcome.frontier?.provider,
+      executionClass: outcome.frontier?.executionClass,
+      billingBasis: outcome.frontier?.billingBasis,
+      requestedModelID: outcome.frontier?.requestedModelID,
+      reportedModelID: outcome.frontier?.reportedModelID,
+      providerIdentityState: providerIdentity?.state,
+      inputTokens: outcome.frontier?.inputTokens,
+      visibleOutputTokens: outcome.frontier?.visibleOutputTokens,
+      reasoningTokens: outcome.frontier?.reasoningTokens,
+      totalTokens: outcome.frontier?.totalTokens,
+      usageProvenance: outcome.frontier?.usageProvenance,
+      costMicroUSD: outcome.frontier?.costMicroUSD,
+      costProvenance: outcome.frontier?.costProvenance,
+      retryCount: outcome.frontier?.retryCount,
+      wastedTokens: outcome.frontier?.wastedTokens,
+      timedOut: outcome.frontier?.timedOut,
+      providerReportedUsage: outcome.frontier?.rawUsage,
     });
 
-    return { slotKey: slot.slotKey, status, identity: identity.state, suppliedContext: suppliedContext.state, thinkingMode: thinking.state, telemetry, detail };
+    return {
+      slotKey: slot.slotKey, status, identity: identity.state, suppliedContext: suppliedContext.state,
+      thinkingMode: thinking.state, providerIdentity: providerIdentity?.state, telemetry, detail,
+    };
   }
 
   private recordGuardVerdict(verdict: GuardVerdict): void {
@@ -740,6 +922,9 @@ export class Campaign {
       } : undefined,
       execution: this.execution,
       canonical: this.canonical,
+      operationalEnvelope: this.operationalEnvelope,
+      mixedExecution: this.operationalEnvelope?.mixed ?? false,
+      manifestFormatVersion: this.manifest.manifestFormatVersion,
     };
   }
 
@@ -751,7 +936,7 @@ export class Campaign {
    * A blinded packet is written whenever anything is awaiting human review, and is written BEFORE
    * the rankings are read by a person, so nobody adjudicates while holding the leaderboard.
    */
-  finalize(options: { blindingSecret?: string; lockOptions?: LockOptions } = {}): FinalReport {
+  finalize(options: { blindingSecret?: string; lockOptions?: LockOptions; authorization?: SpendingAuthorization } = {}): FinalReport {
     // Finalizing reads a ledger that a live runner is still appending to. The numbers would be a
     // snapshot presented as a conclusion, which is the one thing a final report must not be.
     const lock = inspectCampaignLock(this.root, options.lockOptions);
@@ -795,6 +980,28 @@ export class Campaign {
       this.ledger.event('blindedPacketWritten', { responses: responses.length, clean: audit.clean, leaks: audit.leaks.length });
     }
 
+    // The metrics come out of the LEDGER, not out of an in-memory tally kept beside it. A campaign
+    // half-run in a terminal and finalized in the application reaches the same totals as one done in
+    // a single process, because both read the same rows.
+    const rows = [...this.ledger.results.values()] as unknown as Record<string, unknown>[];
+    // The same rule the ranking uses, and deliberately only `pass`: `partial` is reported beside a
+    // pass and never merged into one, so a cost-per-success cannot be made to look better by
+    // counting the near-misses.
+    const frontierMetrics = aggregateFromRows(rows, (row) => row.status === 'pass');
+
+    const meteredRows = rows.filter((row) => row.billingBasis === 'meteredAPI');
+    const recordedMicroUSD = meteredRows.reduce((sum, row) => sum + (typeof row.costMicroUSD === 'number' ? row.costMicroUSD : 0), 0);
+    const stoppedAtCeiling = this.ledger.standingAbort()?.stage === 'spendingAuthorization';
+    const spending = meteredRows.length > 0 || options.authorization !== undefined
+      ? {
+        authorized: options.authorization !== undefined,
+        hardCeilingMicroUSD: options.authorization?.hardCeilingMicroUSD,
+        recordedMicroUSD,
+        meteredAttempts: meteredRows.length,
+        stoppedAtCeiling,
+      }
+      : undefined;
+
     const report: FinalReport = {
       campaignID: this.campaignID,
       label: this.configuration.label,
@@ -802,12 +1009,17 @@ export class Campaign {
       execution: this.execution,
       canonical: this.canonical,
       noncanonicalBecause: this.canonical ? [] : NONCANONICAL_REASONS,
+      operationalEnvelope: this.operationalEnvelope,
+      mixedExecutionBecause: this.operationalEnvelope?.mixed === true ? MIXED_EXECUTION_REASONS : [],
+      frontierMetrics,
+      spending,
       reconciliation,
       rankings,
       retention,
       humanReview: { awaiting: awaiting.length, packetWritten, packetPath: packetWritten ? paths.packet : undefined, audit },
       guardTrace: this.ledger.events().filter((event) => event.kind === 'guardBreach' || event.kind === 'residencyVerified'
-        || event.kind === 'residencyNotManaged' || event.kind === 'abort')
+        || event.kind === 'residencyNotManaged' || event.kind === 'residencyNotApplicable' || event.kind === 'abort'
+        || event.kind === 'spendingRefused' || event.kind === 'providerModelSubstituted')
         .map((event) => ({ at: String(event.at), kind: String(event.kind) })),
       producedAt,
     };
@@ -816,6 +1028,39 @@ export class Campaign {
     atomicWriteJSON(paths.report, report as unknown as CanonicalValue);
     this.ledger.event('finalized', { complete: reconciliation.complete, provisional: rankings.provisional });
     return report;
+  }
+
+  // ------------------------------------------------------------------ spending authorization
+
+  /**
+   * Record the authorization that makes this campaign's paid attempts permissible.
+   *
+   * Written atomically, and written BEFORE the run reads it. It is never overwritten silently: a
+   * second authorization for the same campaign replaces the first only because the caller asked for
+   * one, and the ledger records that it happened.
+   */
+  writeAuthorization(authorization: SpendingAuthorization): void {
+    atomicWriteJSON(campaignPaths(this.root).authorization, authorization as unknown as CanonicalValue);
+    this.ledger.event('spendingAuthorized', {
+      hardCeilingMicroUSD: authorization.hardCeilingMicroUSD,
+      estimatedMinimumMicroUSD: authorization.estimate.totalMinimumMicroUSD,
+      estimatedMaximumMicroUSD: authorization.estimate.totalMaximumMicroUSD,
+      meteredCandidates: authorization.estimate.meteredCandidateCount,
+      authorizedBy: authorization.authorizedBy,
+      authorizationDigest: authorization.authorizationDigest,
+    });
+  }
+
+  /** The authorization on disk, or undefined. Undefined is what refuses a metered run. */
+  readAuthorization(): SpendingAuthorization | undefined {
+    const file = campaignPaths(this.root).authorization;
+    if (!fs.existsSync(file)) return undefined;
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')) as SpendingAuthorization; } catch { return undefined; }
+  }
+
+  /** Every terminal row, as the spend tracker and the metrics need to read them. */
+  ledgerRows(): Record<string, unknown>[] {
+    return [...this.ledger.results.values()] as unknown as Record<string, unknown>[];
   }
 
   /** Read back a packet key, for applying verdicts after adjudication. */

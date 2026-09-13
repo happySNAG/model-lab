@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Shell } from '../App';
 import type {
-  CampaignDetail, CampaignRow, CampaignStartDisclosure, CampaignVerification, ModelRow, TerminalCommandRow,
+  CampaignDetail, CampaignRow, CampaignStartDisclosure, CampaignVerification, CostPreviewRow,
+  FrontierCandidateSelection, FrontierMetricsRow, ModelRow, ProviderStatusRow, TerminalCommandRow,
 } from '../../shared/ipc';
 import { Card, Empty, Modal, Pill, when } from '../components';
 
@@ -39,6 +40,27 @@ function ratePercent(milli?: number): string {
   return milli === undefined ? 'no rate' : `${(milli / 10).toFixed(1)}%`;
 }
 
+/** Integer microUSD as money. Sub-cent figures keep their digits; rendering them as $0.00 hides them. */
+function money(microUSD?: number): string {
+  if (microUSD === undefined) return 'not known';
+  const dollars = microUSD / 1_000_000;
+  if (microUSD !== 0 && Math.abs(dollars) < 0.01) return `$${dollars.toFixed(6)}`;
+  return `$${dollars.toFixed(2)}`;
+}
+
+/** A count, or the recorded reason there is none. Never a blank cell, which reads as zero. */
+function countOrAbsence(value: number | undefined, field: string, absences: { field: string; reason: string }[]): React.ReactNode {
+  if (value !== undefined) return value.toLocaleString();
+  const absence = absences.find((entry) => entry.field === field);
+  return <span className="muted small" title={absence?.reason}>not known</span>;
+}
+
+function executionLabel(executionClass: string): string {
+  if (executionClass === 'localRuntime') return 'local';
+  if (executionClass === 'subscriptionCLI') return 'subscription';
+  return 'metered API';
+}
+
 export function CampaignsView({ shell }: { shell: Shell }) {
   const [rows, setRows] = useState<CampaignRow[]>();
   const [selected, setSelected] = useState<string>();
@@ -51,6 +73,10 @@ export function CampaignsView({ shell }: { shell: Shell }) {
   // What the person is shown before a campaign starts. Set when Start is pressed, cleared when they
   // decide. It is asked once per start, never per attempt.
   const [disclosure, setDisclosure] = useState<CampaignStartDisclosure>();
+  // The spending approval, which is a separate decision from starting. A person may create and price
+  // a campaign today and authorise it tomorrow, and the authorisation is what the run reads.
+  const [authorizing, setAuthorizing] = useState<(CostPreviewRow & { authorized: boolean; hardCeilingMicroUSD?: number })>();
+  const [ceilingText, setCeilingText] = useState('5.00');
 
   const refresh = useCallback(async () => {
     try {
@@ -120,6 +146,12 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                   {row.execution && !row.execution.canonical && (
                     <div className="muted small"><Pill tone="warn">observe-only</Pill> noncanonical</div>
                   )}
+                  {row.mixedExecution && (
+                    <div className="muted small"><Pill tone="warn">mixed execution</Pill> speed and cost not comparable</div>
+                  )}
+                  {row.hasMeteredBinding && (
+                    <div className="muted small"><Pill tone="accent">metered</Pill> billed per token</div>
+                  )}
                   {row.problem && <div className="note bad small">{row.problem}</div>}
                 </td>
                 <td>
@@ -150,6 +182,12 @@ export function CampaignsView({ shell }: { shell: Shell }) {
         <Modal title={detail.status.label} wide onClose={() => { setSelected(undefined); setDetail(undefined); }}
                actions={<>
                  <button className="btn" disabled={busy} onClick={() => void act(async () => setVerification(await api.verifyCampaign(selected)))}>Verify manifest</button>
+                 {detail.spending && !detail.spending.authorized && (
+                   <button className="btn" disabled={busy} data-testid="authorize-campaign"
+                           onClick={() => void act(async () => setAuthorizing(await api.campaignCost(selected)))}>
+                     Authorize spending
+                   </button>
+                 )}
                  {detail.status.state === 'complete'
                    ? <button className="btn" disabled={busy} onClick={() => void act(async () => setDetail(await api.finalizeCampaign(selected)))}>Finalize</button>
                    : rows?.find((row) => row.name === selected)?.running
@@ -250,6 +288,75 @@ export function CampaignsView({ shell }: { shell: Shell }) {
             </>
           )}
 
+          {detail.bindings.length > 0 && (
+            <>
+              <h3>Who answers each candidate</h3>
+              <div className="table-wrap"><table className="table" data-testid="binding-table">
+                <thead><tr><th>Candidate</th><th>Reached as</th><th>Identity</th><th>Settings</th><th>Cost basis</th></tr></thead>
+                <tbody>{detail.bindings.map((binding) => (
+                  <tr key={binding.candidate}>
+                    <td>
+                      <strong>{binding.candidate}</strong>
+                      <div className="mono small muted">{binding.requestedModelID}</div>
+                    </td>
+                    <td>
+                      {binding.providerLabel}
+                      <div className="muted small">{executionLabel(binding.executionClass)}</div>
+                    </td>
+                    <td className="small">
+                      {binding.identityState === 'verified'
+                        ? <><Pill tone="ok">verified</Pill> <span className="mono">{binding.verifiedModelID}</span></>
+                        : <Pill tone="warn">unverifiable</Pill>}
+                      <div className="muted small">{binding.identityEvidence}</div>
+                    </td>
+                    <td className="small">
+                      effort {binding.effort} · thinking {binding.thinkingMode}
+                      <div className="muted small">
+                        {binding.maxInputTokens.toLocaleString()} in / {binding.maxOutputTokens.toLocaleString()} out ·
+                        {' '}{Math.round(binding.timeoutMilliseconds / 1000)}s timeout · {binding.maxRetries} retries
+                      </div>
+                    </td>
+                    <td className="small">
+                      {binding.billingBasis === 'local' ? 'no monetary cost'
+                        : binding.billingBasis === 'subscriptionIncluded' ? 'subscription-included · $0 marginal'
+                          : 'billed per token'}
+                      {binding.pricing && (
+                        <div className="muted small">
+                          prices captured {when(binding.pricing.capturedAt)} from {binding.pricing.source}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table></div>
+            </>
+          )}
+
+          {detail.mixedExecutionBecause.length > 0 && (
+            <div className="note warn">
+              <strong>Mixed execution.</strong> Task outcomes below are comparable; speed and cost are not.
+              <ul>{detail.mixedExecutionBecause.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+            </div>
+          )}
+
+          {detail.spending && (
+            <div className={`note ${detail.spending.authorized ? '' : 'warn'}`}>
+              <strong>Spending.</strong>{' '}
+              {detail.spending.authorized
+                ? <>Authorised with a hard ceiling of {money(detail.spending.hardCeilingMicroUSD)}.</>
+                : <>NOT authorised. No metered request will be sent until it is.</>}
+              {' '}{money(detail.spending.recordedMicroUSD)} recorded across {detail.spending.meteredAttempts} metered attempt(s).
+              {detail.spending.stoppedAtCeiling && (
+                <p>
+                  This run stopped at its ceiling. The attempts already recorded are kept; the remaining slots were
+                  blocked and carry no result.
+                </p>
+              )}
+            </div>
+          )}
+
+          {detail.frontierMetrics.length > 0 && <MetricsTable rows={detail.frontierMetrics} />}
+
           <h3>Latest attempts</h3>
           {detail.recentAttempts.length === 0 ? <p className="muted">Nothing recorded yet.</p> : (
             <div className="table-wrap"><table className="table">
@@ -290,8 +397,124 @@ export function CampaignsView({ shell }: { shell: Shell }) {
         </Modal>
       )}
 
+      {authorizing && selected && (
+        <Modal title="Authorize paid execution" wide onClose={() => setAuthorizing(undefined)}
+               actions={<>
+                 <button className="btn" onClick={() => setAuthorizing(undefined)}>Cancel</button>
+                 <button className="btn primary" disabled={busy || !/^\$?\d+(\.\d{1,6})?$/.test(ceilingText.trim()) || Number(ceilingText.replace('$', '')) <= 0}
+                         data-testid="confirm-authorize"
+                         onClick={() => {
+                           const name = selected;
+                           const ceiling = Math.round(Number(ceilingText.trim().replace('$', '')) * 1_000_000);
+                           setAuthorizing(undefined);
+                           void act(async () => setDetail(await api.authorizeCampaign(name, ceiling)));
+                         }}>
+                   Authorize with this ceiling
+                 </button>
+               </>}>
+          {!authorizing.estimable ? (
+            <div className="note bad">
+              <strong>This campaign cannot be priced, so it will not be offered for approval.</strong>
+              <ul>{authorizing.notEstimableBecause.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+            </div>
+          ) : (
+            <>
+              <p>
+                <strong>Estimated {money(authorizing.totalMinimumMicroUSD)} – {money(authorizing.totalMaximumMicroUSD)}</strong>
+                {' '}across {authorizing.meteredCandidateCount} metered candidate(s).
+              </p>
+              <ul>{authorizing.disclosure.map((line, index) => <li key={index}>{line}</li>)}</ul>
+              <ul>{authorizing.privacyDisclosure.map((line, index) => <li key={index}>{line}</li>)}</ul>
+              <label className="field">
+                <span>Hard spending ceiling (dollars)</span>
+                <input value={ceilingText} onChange={(event) => setCeilingText(event.target.value)} data-testid="ceiling-input" />
+                <span className="muted small">
+                  The run stops before the request that would take it past this. Attempts already recorded are kept; the
+                  remaining slots are blocked and carry no result. A ceiling below the estimated maximum is a legitimate
+                  choice — it is what a ceiling is for.
+                </span>
+              </label>
+            </>
+          )}
+        </Modal>
+      )}
+
       {creating && <CreateCampaign onClose={() => setCreating(false)} onCreated={(rows_) => { setRows(rows_); setCreating(false); }} onError={setError} />}
     </div>
+  );
+}
+
+/**
+ * Tokens, speed and cost, with how each figure was obtained printed beside it.
+ *
+ * The `measurement quality` column is not decoration. A cost derived from a provider's own usage
+ * block and a cost derived from a local character estimate are different kinds of number, and a
+ * table that showed them in the same font without saying so would invite somebody to reconcile the
+ * second against a bill.
+ *
+ * An absent figure shows as "not known" carrying its reason, never as a blank cell — a blank cell
+ * reads as zero, and a zero cost is a claim.
+ */
+function MetricsTable({ rows }: { rows: FrontierMetricsRow[] }) {
+  const mixed = new Set(rows.map((row) => row.executionClass)).size > 1;
+  return (
+    <>
+      <h3>Tokens, speed and cost</h3>
+      {mixed && (
+        <p className="note warn small">
+          These candidates were reached through different execution classes. Their task outcomes are comparable; their
+          speed and cost are properties of the access method as much as of the model.
+        </p>
+      )}
+      <div className="table-wrap"><table className="table" data-testid="metrics-table">
+        <thead><tr>
+          <th>Candidate</th><th>Reached as</th><th className="num">Success</th><th className="num">In</th>
+          <th className="num">Out</th><th className="num">Reasoning</th><th className="num">First token</th>
+          <th className="num">Cost</th><th className="num">Cost / success</th><th className="num">Retries</th>
+          <th className="num">Wasted</th><th>Quality</th>
+        </tr></thead>
+        <tbody>{rows.map((row) => (
+          <tr key={row.candidate}>
+            <td><strong>{row.candidate}</strong><div className="muted small">{row.provider}</div></td>
+            <td className="small">
+              {executionLabel(row.executionClass)}
+              <div className="muted small">
+                {row.billingBasis === 'local' ? 'no monetary cost'
+                  : row.billingBasis === 'subscriptionIncluded' ? '$0 marginal, allowance consumed'
+                    : 'billed per token'}
+              </div>
+            </td>
+            <td className="num">
+              {ratePercent(row.successfulTaskRateMilli)}
+              <div className="muted small">{row.successfulTaskCount}/{row.attemptCount}</div>
+            </td>
+            <td className="num">{countOrAbsence(row.inputTokens, 'input tokens', row.absences)}</td>
+            <td className="num">{countOrAbsence(row.visibleOutputTokens, 'visible output tokens', row.absences)}</td>
+            <td className="num">{countOrAbsence(row.reasoningTokens, 'reasoning tokens', row.absences)}</td>
+            <td className="num">
+              {row.medianTimeToFirstVisibleTokenMilliseconds === undefined
+                ? <span className="muted small">not observed</span>
+                : `${row.medianTimeToFirstVisibleTokenMilliseconds} ms`}
+            </td>
+            <td className="num">{money(row.costPerRunMicroUSD)}</td>
+            <td className="num">
+              {row.costPerSuccessfulTaskMicroUSD === undefined
+                ? <span className="muted small" title={row.absences.find((a) => a.field === 'cost per successful task')?.reason}>no successes</span>
+                : money(row.costPerSuccessfulTaskMicroUSD)}
+            </td>
+            <td className="num">{row.retryCount}{row.timeoutCount > 0 ? ` · ${row.timeoutCount} timed out` : ''}</td>
+            <td className="num">{countOrAbsence(row.wastedTokens, 'wasted tokens', row.absences)}</td>
+            <td className="small">{row.measurementQuality}</td>
+          </tr>
+        ))}</tbody>
+      </table></div>
+      <p className="muted small">
+        <strong>measured</strong> — this application watched it happen. <strong>providerReported</strong> — the provider
+        told us. <strong>estimated</strong> — derived by a stated method from something that was counted.
+        <strong> unavailable</strong> — not known, and not guessed at. Cost per successful task counts the money spent on
+        failed and retried attempts too: a model that fails half the time costs more per useful answer, not less.
+      </p>
+    </>
   );
 }
 
@@ -379,27 +602,44 @@ function CreateCampaign({ onClose, onCreated, onError }: { onClose: () => void; 
   const [thinking, setThinking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [endpoint, setEndpoint] = useState('');
+  const [providers, setProviders] = useState<ProviderStatusRow[]>();
+  const [frontier, setFrontier] = useState<FrontierCandidateSelection[]>([]);
+  const [cost, setCost] = useState<CostPreviewRow>();
+  const [costProblem, setCostProblem] = useState<string>();
 
   useEffect(() => {
     void api.getSettings().then((settings) => setEndpoint(settings.ollamaEndpoint));
     void api.listModels().then((rows) => setModels(rows.filter((row) => row.kind === 'ollama')));
     void api.campaignSuites().then((rows) => { setSuites(rows); setChosenSuites(rows.map((row) => row.id)); });
+    // Offline: this reaches no provider. It is what makes the frontier list safe to show in a dialog.
+    void api.providerStatuses().then(setProviders);
   }, []);
 
   const toggle = (list: string[], value: string, set: (next: string[]) => void) =>
     set(list.includes(value) ? list.filter((item) => item !== value) : [...list, value]);
 
   const safeName = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-  const ready = safeName.length > 0 && chosenModels.length > 0 && chosenSuites.length > 0;
+  const ready = safeName.length > 0 && (chosenModels.length > 0 || frontier.length > 0) && chosenSuites.length > 0;
+
+  const request = () => ({
+    name: safeName, label: name.trim() || safeName, modelNames: chosenModels,
+    suiteIDs: chosenSuites, repeatsPerCase: repeats, runtimeVersion: 'ollama-unreported',
+    observeOnly, thinkingMode: (thinking ? 'enabled' : 'disabled') as 'enabled' | 'disabled',
+    frontier,
+  });
+
+  // Priced by the SAME builder that would freeze it, so this previews the campaign that would
+  // actually be created rather than an approximation of one.
+  const preview = async () => {
+    setCost(undefined); setCostProblem(undefined);
+    try { setCost(await api.previewCampaignCost(request())); }
+    catch (error) { setCostProblem(readableError(error)); }
+  };
 
   const create = async () => {
     setBusy(true);
     try {
-      onCreated(await api.createCampaign({
-        name: safeName, label: name.trim() || safeName, modelNames: chosenModels,
-        suiteIDs: chosenSuites, repeatsPerCase: repeats, runtimeVersion: 'ollama-unreported',
-        observeOnly, thinkingMode: thinking ? 'enabled' : 'disabled',
-      }));
+      onCreated(await api.createCampaign(request()));
     } catch (error) { onError(readableError(error)); }
     finally { setBusy(false); }
   };
@@ -429,6 +669,8 @@ function CreateCampaign({ onClose, onCreated, onError }: { onClose: () => void; 
           </label>
         ))}</div>
       )}
+
+      <FrontierPicker providers={providers} selected={frontier} onChange={setFrontier} />
 
       <h3>Suites</h3>
       {suites === undefined ? <p className="muted">Loading…</p> : (
@@ -487,6 +729,139 @@ function CreateCampaign({ onClose, onCreated, onError }: { onClose: () => void; 
       </label>
 
       <p className={attempts > 0 ? 'note' : 'muted'}>{attempts > 0 ? `${attempts} attempt(s) will be planned.` : 'Choose at least one model and one suite.'}</p>
+
+      {frontier.length > 0 && (
+        <>
+          <h3>What this will cost, and where the prompts go</h3>
+          <p className="row">
+            <button className="btn" type="button" data-testid="preview-cost" disabled={!ready} onClick={() => void preview()}>
+              Show projected usage and cost
+            </button>
+          </p>
+          {costProblem && <div className="note bad">{costProblem}</div>}
+          {cost && (
+            <div className={cost.estimable ? 'note' : 'note bad'} data-testid="cost-preview">
+              {!cost.estimable ? (
+                <>
+                  <strong>This cannot be priced, so it will not be offered for approval.</strong>
+                  <ul>{cost.notEstimableBecause.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                </>
+              ) : (
+                <>
+                  <p>
+                    <strong>
+                      {cost.meteredCandidateCount === 0
+                        ? 'Nothing here is billed per token.'
+                        : `Estimated ${money(cost.totalMinimumMicroUSD)} – ${money(cost.totalMaximumMicroUSD)}.`}
+                    </strong>
+                  </p>
+                  <ul>{cost.disclosure.map((line, index) => <li key={index}>{line}</li>)}</ul>
+                </>
+              )}
+              <p className="small">
+                <strong>Before you start it:</strong>
+              </p>
+              <ul>{cost.privacyDisclosure.map((line, index) => <li key={index}>{line}</li>)}</ul>
+              {cost.meteredCandidateCount > 0 && (
+                <p className="small">
+                  Creating the campaign freezes it but authorises nothing. No metered request is sent until you record an
+                  explicit authorization with a hard spending ceiling.
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </Modal>
+  );
+}
+
+/**
+ * Choosing models somebody else runs.
+ *
+ * Only `proven` models appear as selectable. Unproven ones are shown, greyed, WITH the reason — a
+ * person needs to know the model they were expecting exists in the plan and has not been confirmed,
+ * rather than wondering why it is missing. Selecting one is not possible, and the shared builder
+ * would refuse it even if it were.
+ */
+function FrontierPicker({ providers, selected, onChange }: {
+  providers?: ProviderStatusRow[];
+  selected: FrontierCandidateSelection[];
+  onChange: (next: FrontierCandidateSelection[]) => void;
+}) {
+  if (providers === undefined) return <><h3>Models somebody else runs</h3><p className="muted">Loading…</p></>;
+  const frontierProviders = providers.filter((provider) => provider.executionClass !== 'localRuntime');
+  const anyProven = frontierProviders.some((provider) => provider.models.some((model) => model.availability === 'proven'));
+
+  const isSelected = (provider: string, modelID: string, effort: string) =>
+    selected.some((entry) => entry.provider === provider && entry.modelID === modelID && entry.effort === effort);
+
+  const toggle = (provider: string, modelID: string, effort: FrontierCandidateSelection['effort']) => {
+    if (isSelected(provider, modelID, effort)) {
+      onChange(selected.filter((entry) => !(entry.provider === provider && entry.modelID === modelID && entry.effort === effort)));
+      return;
+    }
+    onChange([...selected, { provider, modelID, effort }]);
+  };
+
+  return (
+    <>
+      <h3>Models somebody else runs</h3>
+      {!anyProven ? (
+        <p className="muted">
+          No frontier model has been proven callable by your account yet, so none can be selected. Open the Providers
+          screen and ask a provider what it can call. A model name on its own is a plan, not a capability.
+        </p>
+      ) : (
+        <>
+          <p className="muted small">
+            Each choice is frozen with its provider, its effort level and its billing basis. The same model at two
+            effort levels is two candidates, because it is two experiments.
+          </p>
+          {frontierProviders.map((provider) => (
+            <div key={provider.provider}>
+              <p className="small"><strong>{provider.label}</strong>{' '}
+                <Pill tone="neutral">{provider.executionClass === 'subscriptionCLI' ? 'subscription-included · $0 marginal' : 'billed per token'}</Pill>
+              </p>
+              <div className="check-list" data-testid={`frontier-${provider.provider}`}>
+                {provider.models.map((model) => {
+                  const efforts = model.desiredEfforts.length > 0 ? model.desiredEfforts : ['none'];
+                  if (model.availability !== 'proven') {
+                    return (
+                      <label key={model.modelID} className="check" title={model.evidence}>
+                        <input type="checkbox" disabled checked={false} readOnly />
+                        <span className="muted">
+                          {model.displayName} <Pill tone={model.availability === 'refused' ? 'bad' : 'neutral'}>{model.availability}</Pill>
+                          <div className="muted small">{model.evidence}</div>
+                        </span>
+                      </label>
+                    );
+                  }
+                  return efforts.map((effort) => (
+                    <label key={`${model.modelID}@${effort}`} className="check">
+                      <input type="checkbox"
+                             checked={isSelected(provider.provider, model.modelID, effort)}
+                             onChange={() => toggle(provider.provider, model.modelID, effort as FrontierCandidateSelection['effort'])} />
+                      <span>
+                        {model.displayName}{effort !== 'none' ? ` · effort ${effort}` : ''}
+                        <div className="muted small mono">{model.verifiedModelID || model.modelID}</div>
+                      </span>
+                    </label>
+                  ));
+                })}
+              </div>
+            </div>
+          ))}
+          {selected.some((entry) => entry.provider === 'anthropicAPI' || entry.provider === 'openaiAPI') && (
+            <div className="note warn">
+              A metered candidate needs the provider's published prices, with their source and when you captured them.
+              Model Lab never fetches prices — an estimate that changed between the preview and the run is not an estimate
+              anybody can approve — so a metered campaign is created from the terminal with
+              <code> cernum create … --pricing prices.json</code> until a price editor exists here.
+            </div>
+          )}
+        </>
+      )}
+    </>
   );
 }

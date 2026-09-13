@@ -1,0 +1,295 @@
+// Benchmark engine · turning "I want to compare these models" into a frozen campaign, once.
+//
+// WHY THIS EXISTS AT ALL. Pass 3 already learned this lesson the expensive way: the desktop service
+// and the terminal each decided for themselves how to configure a host, they decided differently,
+// and the same campaign ran two different ways depending on which button started it. The fix was
+// `hostOptionsFor`, one function both call.
+//
+// The surface area that could drift is now much larger. A frontier campaign has a provider per
+// candidate, an effort level, a thinking mode, sampling settings, two token budgets, a timeout, a
+// retry policy, a billing basis, a pricing snapshot and an authorization mode — and every one of
+// them is bound into the manifest identity. Two surfaces building those separately would not merely
+// behave differently; they would produce campaigns with DIFFERENT IDENTITIES for the same request,
+// which is the one failure a frozen manifest exists to make impossible.
+//
+// So there is exactly one builder, and both surfaces call it. `test/engine/surface-parity.test.ts`
+// asserts that a request expressed in terminal flags and the same request expressed as an IPC
+// payload produce byte-identical configurations.
+//
+// AN UNPROVEN MODEL IS REFUSED HERE. Not filtered out of a list somewhere, not greyed out in an
+// interface — refused, by the builder, with a message naming what would prove it. A model name is a
+// plan, and nothing but discovery or an identity smoke test turns a plan into something a campaign
+// may spend real money on.
+
+import { ThinkingMode } from './execution';
+import { EngineCatalogue, buildEngineCatalogue } from './catalogue';
+import { HardwareIdentity, ManifestCandidate } from './manifest';
+import { PlannableCandidate } from './ledger';
+import { CampaignConfiguration } from './campaign';
+import { GuardPolicy, StoreBaseline, guardPolicyForEndpoint, guardPolicyForFrontierOnly } from './guards';
+import { ExecutionPolicy } from './execution';
+import {
+  DEFAULT_RETRY, EffortLevel, OperationalEnvelope, PricingSnapshot, ProviderBinding, ProviderBindingError,
+  ProviderID, RetryPolicy, SamplingSettings, buildOperationalEnvelope, executionClassOf, billingBasisOf,
+  localOllamaBinding,
+} from './provider';
+import { DiscoveredFrontierModel } from './discovery';
+import { PlannedWork } from './spending';
+
+export class CampaignBuildError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = 'CampaignBuildError';
+  }
+}
+
+/** A local model, as discovery found it installed. */
+export interface LocalCandidateRequest {
+  name: string;
+  modelID: string;
+  runtimeDigest: string;
+  parameterSize: string;
+  quantization: string;
+}
+
+/** A model somebody else runs. Every field is frozen; nothing here is defaulted silently at run time. */
+export interface FrontierCandidateRequest {
+  /** The candidate name in this campaign. Distinct per candidate, because a model at two efforts is two candidates. */
+  name: string;
+  provider: ProviderID;
+  modelID: string;
+  effort: EffortLevel;
+  thinkingMode: ThinkingMode;
+  /** Required for a metered provider, refused for the others. Never fetched; always supplied by a person. */
+  pricing?: PricingSnapshot;
+  retry?: RetryPolicy;
+  sampling?: SamplingSettings;
+  timeoutMilliseconds?: number;
+  /** Defaults to the frozen budgets the chosen suites imply. Override only with a reason. */
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  /** Which of the two key sources the credential was found in. Decided by the resolver, never guessed. */
+  authorizationMode?: 'apiKeyEnvironment' | 'apiKeyKeychain';
+}
+
+export interface CampaignPlanRequest {
+  label: string;
+  suiteIDs: string[];
+  repeatsPerCase: number;
+  local: LocalCandidateRequest[];
+  frontier: FrontierCandidateRequest[];
+  /** The frozen execution policy for the LOCAL candidates. Frontier candidates have no residency. */
+  observeOnly?: boolean;
+  thinkingMode?: ThinkingMode;
+  endpoint: string;
+  hardware: HardwareIdentity;
+  runtimeVersion: string;
+  storeBaseline?: StoreBaseline;
+  residencyDelayMilliseconds?: number;
+  guardOverrides?: Partial<GuardPolicy>;
+  /**
+   * What discovery actually proved this account can invoke.
+   *
+   * Required whenever there is a frontier candidate. Passing an empty list does not mean "skip the
+   * check"; it means nothing is proven, and every frontier candidate is refused.
+   */
+  provenModels?: DiscoveredFrontierModel[];
+}
+
+export interface BuiltCampaign {
+  configuration: CampaignConfiguration;
+  catalogue: EngineCatalogue;
+  envelope: OperationalEnvelope;
+  /** What the spending estimator needs, derived from the same frozen catalogue the manifest binds. */
+  plannedWork: PlannedWork[];
+  /** True when no candidate runs on this machine: the campaign takes no endpoint lease. */
+  frontierOnly: boolean;
+}
+
+/**
+ * The default budgets a campaign's own suites imply.
+ *
+ * Derived from the FROZEN catalogue rather than typed in: a budget that does not match the benchmark
+ * would either truncate an answer the scoring rules expect in full, or authorise spending on tokens
+ * the benchmark never asks for. The input budget is the largest any case declares, with headroom for
+ * the prompt itself.
+ */
+export function budgetsFor(catalogue: EngineCatalogue): { maxInputTokens: number; maxOutputTokens: number } {
+  let maxOutputTokens = 0;
+  let maxInputTokens = 0;
+  for (const entry of catalogue.plannable.suites) {
+    for (const benchmarkCase of entry.cases) {
+      maxOutputTokens = Math.max(maxOutputTokens, benchmarkCase.maxOutputTokens);
+      maxInputTokens = Math.max(maxInputTokens, benchmarkCase.inputBudgetTokens);
+    }
+  }
+  return {
+    // A floor of 1 rather than 0: a budget of zero is not a budget, and `validateBinding` refuses it.
+    maxOutputTokens: Math.max(1, maxOutputTokens),
+    maxInputTokens: Math.max(1, maxInputTokens),
+  };
+}
+
+/** Every planned attempt's prompt length, per candidate, from the frozen prompts. Exact, not sampled. */
+export function plannedWorkFor(catalogue: EngineCatalogue, candidateNames: string[], repeatsPerCase: number): PlannedWork[] {
+  let charactersPerPass = 0;
+  for (const prompt of catalogue.prompts) {
+    charactersPerPass += prompt.text.length + (prompt.suppliedContext?.length ?? 0);
+  }
+  const attemptsPerCandidate = catalogue.plannable.caseCount * repeatsPerCase;
+  return candidateNames.map((candidate) => ({
+    candidate,
+    plannedAttempts: attemptsPerCandidate,
+    promptCharacters: charactersPerPass * repeatsPerCase,
+  }));
+}
+
+/**
+ * Build one campaign's configuration, or refuse with a reason a person can act on.
+ *
+ * Nothing is written to disk here and nothing is frozen; this produces the configuration that
+ * `Campaign.create` then freezes. Keeping the two apart is what lets a cost preview show exactly
+ * what a campaign WOULD be without creating it.
+ */
+export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
+  if (request.local.length === 0 && request.frontier.length === 0) {
+    throw new CampaignBuildError('noCandidates', 'a campaign with no candidates measures nothing');
+  }
+  const catalogue = buildEngineCatalogue(request.suiteIDs, request.repeatsPerCase);
+  const defaults = budgetsFor(catalogue);
+  const thinkingMode: ThinkingMode = request.thinkingMode ?? 'disabled';
+  const execution: ExecutionPolicy = {
+    residency: request.observeOnly === true ? 'observeOnly' : 'managed',
+    thinkingMode,
+  };
+
+  const names = new Set<string>();
+  const candidates: (PlannableCandidate & ManifestCandidate)[] = [];
+  const bindings: ProviderBinding[] = [];
+
+  for (const local of request.local) {
+    if (names.has(local.name)) throw new CampaignBuildError('duplicateCandidate', `${local.name} is named twice`);
+    names.add(local.name);
+    candidates.push({
+      name: local.name, modelID: local.modelID, runtimeDigest: local.runtimeDigest,
+      parameterSize: local.parameterSize, quantization: local.quantization,
+    });
+    bindings.push(localOllamaBinding({
+      candidate: local.name,
+      modelID: local.modelID,
+      runtimeDigest: local.runtimeDigest,
+      thinkingMode,
+      maxInputTokens: defaults.maxInputTokens,
+      maxOutputTokens: defaults.maxOutputTokens,
+      // The largest execution budget any chosen case declares, so a local timeout is the benchmark's
+      // own rather than a number invented here.
+      timeoutMilliseconds: Math.max(1_000, ...[...catalogue.cases.values()].map((c) => c.executionBudgetMilliseconds)),
+    }));
+  }
+
+  const proven = new Map((request.provenModels ?? [])
+    .filter((model) => model.availability === 'proven')
+    .map((model) => [`${model.provider}:${model.modelID}`, model]));
+
+  for (const frontier of request.frontier) {
+    if (names.has(frontier.name)) throw new CampaignBuildError('duplicateCandidate', `${frontier.name} is named twice`);
+    names.add(frontier.name);
+
+    const key = `${frontier.provider}:${frontier.modelID}`;
+    const discovered = proven.get(key);
+    if (!discovered) {
+      // The refusal that makes the whole "desired candidate" discipline real. A model nobody proved
+      // this account can call must not be spendable on, and must not be recorded as having answered.
+      throw new CampaignBuildError('unprovenModel',
+        `${frontier.modelID} on ${frontier.provider} has not been proven callable by this account, so it cannot be `
+        + 'put in a campaign. A model identifier is a plan, not a capability: run provider discovery, or an identity '
+        + 'smoke test that establishes this exact model by name, and select it once something has confirmed it.');
+    }
+
+    const executionClass = executionClassOf(frontier.provider);
+    const billingBasis = billingBasisOf(executionClass);
+    if (billingBasis === 'meteredAPI' && !frontier.pricing) {
+      throw new CampaignBuildError('noPricing',
+        `${frontier.name} is billed per token and no pricing snapshot was supplied. Cernum will not estimate a cost `
+        + 'from prices it invented, and will not run a paid campaign it cannot price. Supply the provider\'s published '
+        + 'prices and when you captured them.');
+    }
+    if (billingBasis !== 'meteredAPI' && frontier.pricing) {
+      throw new CampaignBuildError('pricingOnUnmetered',
+        `${frontier.name} is ${billingBasis} and is not billed per token, so a per-token price on it would be a number `
+        + 'that looks like a cost and is not one');
+    }
+    if (billingBasis === 'meteredAPI' && !frontier.authorizationMode) {
+      throw new CampaignBuildError('noAuthorizationMode',
+        `${frontier.name} is billed per token and its binding does not say where its key comes from. That is recorded `
+        + 'in the manifest so a later reader knows which credential produced these answers.');
+    }
+
+    // The candidate the manifest pins. A frontier model has no local weights, so `runtimeDigest` is
+    // the identifier the provider itself confirmed — which is the strongest identity available for
+    // one, and is empty when discovery could not confirm one.
+    candidates.push({
+      name: frontier.name,
+      modelID: frontier.modelID,
+      runtimeDigest: '',
+      parameterSize: '',
+      quantization: '',
+    });
+
+    bindings.push({
+      candidate: frontier.name,
+      provider: frontier.provider,
+      executionClass,
+      requestedModelID: frontier.modelID,
+      identityState: discovered.verifiedModelID.length > 0 ? 'verified' : 'unverifiable',
+      verifiedModelID: discovered.verifiedModelID,
+      identityEvidence: discovered.evidence,
+      effort: frontier.effort,
+      thinkingMode: frontier.thinkingMode,
+      sampling: frontier.sampling ?? { temperatureMilli: null, topPMilli: null, seed: null },
+      maxInputTokens: frontier.maxInputTokens ?? defaults.maxInputTokens,
+      maxOutputTokens: frontier.maxOutputTokens ?? defaults.maxOutputTokens,
+      timeoutMilliseconds: frontier.timeoutMilliseconds ?? 300_000,
+      retry: frontier.retry ?? DEFAULT_RETRY,
+      billingBasis,
+      pricing: frontier.pricing ?? null,
+      authorizationMode: executionClass === 'subscriptionCLI' ? 'subscriptionCLISession'
+        : frontier.authorizationMode ?? 'apiKeyEnvironment',
+    });
+  }
+
+  let envelope: OperationalEnvelope;
+  try {
+    envelope = buildOperationalEnvelope(bindings);
+  } catch (error) {
+    if (error instanceof ProviderBindingError) throw new CampaignBuildError(error.code, error.message);
+    throw error;
+  }
+
+  const frontierOnly = request.local.length === 0;
+  const configuration: CampaignConfiguration = {
+    label: request.label,
+    suiteIDs: request.suiteIDs,
+    repeatsPerCase: request.repeatsPerCase,
+    candidates,
+    hardware: request.hardware,
+    runtimeVersion: request.runtimeVersion,
+    execution,
+    operationalEnvelope: envelope,
+    // A frontier-only campaign has no local lane to hold and no local store to drift, so neither is
+    // guarded. Everything that is a property of THIS machine — disk, swap, memory — still is.
+    guardPolicy: frontierOnly
+      ? guardPolicyForFrontierOnly(request.guardOverrides)
+      : guardPolicyForEndpoint(request.endpoint, request.guardOverrides),
+    storeBaseline: frontierOnly ? undefined : request.storeBaseline,
+    residencyDelayMilliseconds: request.residencyDelayMilliseconds ?? 5_000,
+  };
+
+  return {
+    configuration,
+    catalogue,
+    envelope,
+    plannedWork: plannedWorkFor(catalogue, candidates.map((candidate) => candidate.name), request.repeatsPerCase),
+    frontierOnly,
+  };
+}
