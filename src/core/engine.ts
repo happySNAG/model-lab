@@ -54,6 +54,19 @@ export class EvaluationEngine {
     });
   }
 
+  /**
+   * The LEAF policy that actually judges this attempt, delegation already followed.
+   *
+   * Exposed so a second, separately-labelled reading of the same answer can be produced under the
+   * SAME sealed policy the strict verdict used. A caller that resolved the policy itself would be a
+   * caller with its own opinion about delegation, and the two opinions would drift.
+   */
+  leafPolicyFor(attempt: AttemptRecord): ScoringPolicy {
+    const policy = this.catalog.policy(attempt.scoringPolicyID, attempt.scoringPolicyVersion);
+    if (!policy) throw new EvaluationEngineFailure('unknownScoringPolicy', `no scoring policy ${attempt.scoringPolicyID}@${attempt.scoringPolicyVersion} in the catalog`);
+    return policy.method === 'caseDelegation' ? this.delegate(attempt, policy) : policy;
+  }
+
   async evaluateRun(runID: string, store: ResultStore): Promise<EvaluationOutcome[]> {
     const outcomes: EvaluationOutcome[] = [];
     for (const attempt of await store.attempts(runID)) outcomes.push(await this.appendEvaluation(attempt, store));

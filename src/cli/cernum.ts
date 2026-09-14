@@ -21,6 +21,7 @@ import {
   Ledger, LiveHost, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS, PRICING_FILE_NOTE, PROVIDER_LABELS, PricingSnapshot,
   DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, ProviderID, ProviderStatus, REQUESTED_COHORT, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
   configurationKey, ladderConfigurations, reconcileCohort,
+  DIVERGENCE_MEANS, FinalRankings,
   ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure, authorizeSpending,
   breakCampaignLock, breakRuntimeLease, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths,
   SubscriptionCLIAdapter, credentialStatus, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
@@ -1067,6 +1068,23 @@ async function commandFinalize(positional: string[], options: Options): Promise<
     for (const reason of report.noncanonicalBecause) say(`  · ${reason}`);
     say('');
   }
+  // One printer, two tables. Two hand-written loops would be two loops that could come to disagree
+  // about what a rank means, and a reader comparing the tables would be comparing the printing.
+  const sayRankings = (heading: string, table: FinalRankings): void => {
+    say(heading);
+    for (const line of wrap(table.viewLabel, 76)) say(`  ${line}`);
+    for (const ranking of table.rankings) {
+      const rate = 'measured' in ranking.overallPassRateMilli ? `${(ranking.overallPassRateMilli.measured / 10).toFixed(1)}%` : 'no rate';
+      say(`  ${String(ranking.rank).padStart(2)}. ${ranking.candidate.padEnd(20)} ${rate.padStart(8)}  ${ranking.disqualified ? 'DISQUALIFIED' : ''}`);
+      const roles = ranking.roles.filter((role) => role.qualified).map((role) => role.role);
+      if (roles.length > 0) say(`      roles: ${roles.join(', ')}`);
+      // Said on the ranking row itself. A candidate can sit at rank 1 on a real measurement and
+      // still be a candidate nobody may act on, and those two facts have to arrive together.
+      if (!ranking.promotable) say(`      ** ${ADMISSION_STAMP_SHORT} — no role, no retention recommendation **`);
+    }
+    say('');
+  };
+
   if (report.mixedExecutionBecause.length > 0) {
     say('*** MIXED EXECUTION. Task outcomes are comparable; speed and cost are not. ***');
     for (const reason of report.mixedExecutionBecause) for (const line of wrap(reason, 76)) say(`  · ${line}`);
@@ -1077,16 +1095,27 @@ async function commandFinalize(positional: string[], options: Options): Promise<
     for (const reason of report.rankings.provisionalBecause) say(`  · ${reason}`);
     say('');
   }
-  say('Rankings');
-  for (const ranking of report.rankings.rankings) {
-    const rate = 'measured' in ranking.overallPassRateMilli ? `${(ranking.overallPassRateMilli.measured / 10).toFixed(1)}%` : 'no rate';
-    say(`  ${String(ranking.rank).padStart(2)}. ${ranking.candidate.padEnd(20)} ${rate.padStart(8)}  ${ranking.disqualified ? 'DISQUALIFIED' : ''}`);
-    const roles = ranking.roles.filter((role) => role.qualified).map((role) => role.role);
-    if (roles.length > 0) say(`      roles: ${roles.join(', ')}`);
-    // Said on the ranking row itself. A candidate can sit at rank 1 on a real measurement and still
-    // be a candidate nobody may act on, and those two facts have to arrive together.
-    if (!ranking.promotable) say(`      ** ${ADMISSION_STAMP_SHORT} — no role, no retention recommendation **`);
+  // TWO TABLES, IN THIS ORDER, ALWAYS BOTH.
+  //
+  // The divergence list comes FIRST, before either leaderboard. A reader who reaches a table showing
+  // four Claude configurations at 75% without having read that every one of those shortfalls is a
+  // markdown fence round a correct answer has already drawn the conclusion Pass 6 drew.
+  if (report.rankings.divergences.length > 0) {
+    say(`*** ${report.rankings.divergences.length} OUTCOME(S) ARE SCORED DIFFERENTLY BY THE TWO READINGS BELOW ***`);
+    for (const line of wrap(DIVERGENCE_MEANS, 76)) say(`  ${line}`);
+    say('');
+    for (const divergence of report.rankings.divergences) {
+      say(`  · ${divergence.candidate} on ${divergence.caseID}`);
+      say(`      strict transport: ${divergence.strict}    semantic schema: ${divergence.semantic}`);
+    }
+    say('');
   }
+
+  sayRankings('Rankings — strict JSON transport compliance', report.rankings);
+  sayRankings('Rankings — semantic JSON / schema correctness', report.rankingsSemanticJSONView);
+  say('  A capability role is awarded on the STRICT table only: the output real work would receive is');
+  say('  the output as it arrives, fence included. The semantic table explains a shortfall; it does');
+  say('  not license a promotion.');
   say('');
   // BEFORE the rankings and the metrics, not after them. A reader who reaches a leaderboard without
   // having read this has already formed the impression it exists to prevent.
@@ -1103,6 +1132,28 @@ async function commandFinalize(positional: string[], options: Options): Promise<
     say('Tokens, speed and cost — with how each figure was obtained');
     say(`  ${'candidate'.padEnd(24)}  ${'reached as'.padEnd(14)}  ${'success'.padStart(8)}  ${'cost/success'.padStart(16)}  quality`);
     for (const metrics of report.frontierMetrics) say(`  ${describeCandidateMetrics(metrics)}`);
+    say('');
+    // THE INPUT TOTAL AND THE ALLOWANCE, SPELLED OUT.
+    //
+    // `describeCandidateMetrics` above is one line per candidate and has no room for the split. This
+    // block exists because Pass 6's single "in" column was the FRESH REMAINDER on both providers and
+    // understated Claude by ~1,650x and Codex by ~1.75x while looking like a token count — and
+    // because the allowance beside it is the figure that says a subscription is not free.
+    say('  input tokens, decomposed — the total is what a cost rests on');
+    for (const metrics of report.frontierMetrics) {
+      const q = (quantity: { provenance: string; value?: number }): string =>
+        (quantity.provenance === 'unavailable' ? 'not known' : String(quantity.value ?? 0).padStart(9));
+      say(`    ${metrics.candidate.padEnd(24)} all ${q(metrics.inputTokens)}  = fresh ${q(metrics.freshInputTokens)}`
+        + `  + cache write ${q(metrics.cacheCreationInputTokens)}  + cache read ${q(metrics.cacheReadInputTokens)}`);
+      if (metrics.billingBasis === 'subscriptionIncluded') {
+        const allowance = metrics.subscriptionIncludedUsageMicroUSD;
+        say(`    ${' '.padEnd(24)} plan allowance consumed, at list value: ${renderMoney(allowance)}`
+          + (allowance.provenance === 'unavailable' ? '' : '  (NOT a charge — no card was billed)'));
+        if (allowance.provenance === 'unavailable' && allowance.note) {
+          for (const line of wrap(allowance.note, 68)) say(`    ${' '.padEnd(24)} ! ${line}`);
+        }
+      }
+    }
     say('');
     say('  measurement quality: measured (we watched it) · providerReported (they told us) ·');
     say('  estimated (derived by a stated method) · unavailable (not known, and not guessed at).');

@@ -28,6 +28,8 @@ import {
 import type { FrontierCandidateMetrics } from '../engine/frontier-metrics';
 import type { FinalReport } from '../engine/campaign';
 import type { VerificationReport } from '../engine/manifest';
+import type { CandidateRanking } from '../engine/ranking';
+import { RANKING_VIEW_LABELS } from '../engine/ranking';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
 import type {
   CampaignRow, CampaignDetail, CampaignCreateRequest, CampaignExecutionRow, CampaignStartDisclosure,
@@ -128,7 +130,10 @@ function metricsRow(metrics: FrontierCandidateMetrics): FrontierMetricsRow {
     attemptCount: metrics.attemptCount,
     successfulTaskCount: metrics.successfulTaskCount,
     successfulTaskRateMilli: value('successful-task rate', metrics.successfulTaskRateMilli),
-    inputTokens: value('input tokens', metrics.inputTokens),
+    inputTokens: value('input tokens (all, cached and fresh)', metrics.inputTokens),
+    freshInputTokens: value('fresh input tokens', metrics.freshInputTokens),
+    cacheCreationInputTokens: value('cache-creation input tokens', metrics.cacheCreationInputTokens),
+    cacheReadInputTokens: value('cache-read input tokens', metrics.cacheReadInputTokens),
     visibleOutputTokens: value('visible output tokens', metrics.visibleOutputTokens),
     reasoningTokens: value('reasoning tokens', metrics.reasoningTokens),
     totalTokens: value('total tokens', metrics.totalTokens),
@@ -152,6 +157,20 @@ function metricsRow(metrics: FrontierCandidateMetrics): FrontierMetricsRow {
     reportedMinusEstimatedTokens: quantityValue(metrics.reportedMinusEstimatedTokens),
     measurementQuality: metrics.measurementQuality,
     absences,
+  };
+}
+
+/** One ranking row, shaped once. Both tables use it, so neither can drift from the other. */
+function rankingRow(ranking: CandidateRanking) {
+  return {
+    rank: ranking.rank,
+    candidate: ranking.candidate,
+    disqualified: ranking.disqualified,
+    passRateMilli: 'measured' in ranking.overallPassRateMilli ? ranking.overallPassRateMilli.measured : undefined,
+    scoredCount: ranking.scoredCount,
+    roles: ranking.roles.filter((role) => role.qualified).map((role) => role.role),
+    promotable: ranking.promotable,
+    notPromotableBecause: ranking.notPromotableBecause,
   };
 }
 
@@ -350,6 +369,11 @@ export class CampaignService extends EventEmitter {
           suppliedContextState: typeof result.suppliedContextState === 'string' ? result.suppliedContextState : 'notSupplied',
           bindingIdentityState: typeof result.bindingIdentityState === 'string' ? result.bindingIdentityState : undefined,
           identityAdmissionStamp: typeof result.identityAdmissionStamp === 'string' ? result.identityAdmissionStamp : undefined,
+          jsonSemanticSchemaStatus: typeof result.jsonSemanticSchemaStatus === 'string' ? result.jsonSemanticSchemaStatus : undefined,
+          jsonViewsDivergent: result.jsonViewsDivergent === true,
+          jsonViewsDivergenceExplanation: typeof result.jsonViewsDivergenceExplanation === 'string'
+            ? result.jsonViewsDivergenceExplanation : undefined,
+          jsonFenceRemoved: result.jsonFenceRemoved === true,
         })),
       events: campaign.ledger.events().slice(-40).map((event) => ({ kind: String(event.kind), at: String(event.at) })),
       anomalies: campaign.ledger.anomalies.map((anomaly) => ({ kind: anomaly.kind, why: anomaly.why ?? '' })),
@@ -358,14 +382,13 @@ export class CampaignService extends EventEmitter {
         noncanonicalBecause: report.noncanonicalBecause ?? [],
         provisional: report.rankings.provisional,
         provisionalBecause: report.rankings.provisionalBecause,
-        rankings: report.rankings.rankings.map((ranking) => ({
-          rank: ranking.rank, candidate: ranking.candidate, disqualified: ranking.disqualified,
-          passRateMilli: 'measured' in ranking.overallPassRateMilli ? ranking.overallPassRateMilli.measured : undefined,
-          scoredCount: ranking.scoredCount,
-          roles: ranking.roles.filter((role) => role.qualified).map((role) => role.role),
-          promotable: ranking.promotable,
-          notPromotableBecause: ranking.notPromotableBecause,
-        })),
+        rankings: (report.rankings.rankings ?? []).map(rankingRow),
+        rankingsViewLabel: report.rankings.viewLabel ?? RANKING_VIEW_LABELS.strictTransport,
+        // Always sent, even when the two agree. A renderer that received it only on a divergence
+        // could not tell "they agreed" from "this report predates the second reading".
+        rankingsSemanticJSONView: (report.rankingsSemanticJSONView?.rankings ?? []).map(rankingRow),
+        rankingsSemanticViewLabel: report.rankingsSemanticJSONView?.viewLabel ?? RANKING_VIEW_LABELS.semanticSchema,
+        jsonViewDivergences: report.rankings.divergences ?? [],
         retentionHeading: report.retention.heading,
         retention: report.retention.recommendations.map((recommendation) => ({ candidate: recommendation.candidate, outcome: recommendation.outcome, statement: recommendation.statement })),
         awaitingHumanReview: report.humanReview.awaiting,

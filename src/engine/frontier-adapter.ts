@@ -1074,6 +1074,8 @@ export interface ScriptedFrontierAnswer {
   reportedModelID?: string;
   usage?: FrontierUsage;
   usageProvenance?: Provenance;
+  /** The provider's own list valuation of the request, so the allowance path is testable end to end. */
+  subscriptionIncludedUsageMicroUSD?: number;
   firstVisibleTokenMilliseconds?: number;
   totalElapsedMilliseconds?: number;
   failure?: { kind: FrontierFailureKind; detail: string };
@@ -1127,6 +1129,9 @@ export class ScriptedFrontierAdapter implements FrontierAdapter {
       reportedModelID: answer.reportedModelID ?? request.binding.requestedModelID,
       usage: answer.usage ?? { inputTokens: 120, visibleOutputTokens: 30, reasoningTokens: undefined },
       usageProvenance: answer.usageProvenance ?? 'providerReported',
+      // Left UNDEFINED unless a test sets it, which is the Codex case in life: a provider that
+      // reports no valuation must not acquire one by default.
+      subscriptionIncludedUsageMicroUSD: answer.subscriptionIncludedUsageMicroUSD,
       firstVisibleTokenMilliseconds: answer.firstVisibleTokenMilliseconds ?? 25,
       totalElapsedMilliseconds: answer.totalElapsedMilliseconds ?? 90,
       retryCount: 0,

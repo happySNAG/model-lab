@@ -341,6 +341,17 @@ export interface CampaignAttemptRow {
   bindingIdentityState?: string;
   /** The exact words this row must be displayed with when it carries the admission state. */
   identityAdmissionStamp?: string;
+  /**
+   * BOTH READINGS OF A JSON ANSWER, on the attempt row. Absent on a non-JSON case.
+   *
+   * `status` above is the strict transport-compliance verdict and stays the campaign result.
+   * `jsonSemanticSchemaStatus` is the second reading. A surface that shows one without the other
+   * is the surface that produced the Pass 6 confusion, so they travel together.
+   */
+  jsonSemanticSchemaStatus?: string;
+  jsonViewsDivergent?: boolean;
+  jsonViewsDivergenceExplanation?: string;
+  jsonFenceRemoved?: boolean;
 }
 
 export interface CampaignRankingRow {
@@ -375,7 +386,14 @@ export interface CampaignDetail {
     noncanonicalBecause: string[];
     provisional: boolean;
     provisionalBecause: string[];
+    /** The frozen table: strict JSON transport compliance. */
     rankings: CampaignRankingRow[];
+    rankingsViewLabel: string;
+    /** The second table: semantic JSON/schema correctness, over the same rows. Always present. */
+    rankingsSemanticJSONView: CampaignRankingRow[];
+    rankingsSemanticViewLabel: string;
+    /** Every outcome on which the two tables disagree. Empty when they agree, never absent. */
+    jsonViewDivergences: { candidate: string; caseID: string; strict: string; semantic: string; explanation: string }[];
     retentionHeading: string;
     retention: { candidate: string; outcome: string; statement: string }[];
     awaitingHumanReview: number;
@@ -518,7 +536,12 @@ export interface FrontierMetricsRow {
   attemptCount: number;
   successfulTaskCount: number;
   successfulTaskRateMilli?: number;
+  /** EVERY input token the provider processed, cached and fresh. Absent is not zero. */
   inputTokens?: number;
+  /** The fresh remainder alone — what Pass 6 mistakenly published as the input count. */
+  freshInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
   visibleOutputTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;

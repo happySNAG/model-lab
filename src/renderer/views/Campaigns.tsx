@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Shell } from '../App';
 import type {
-  CampaignDetail, CampaignRow, CampaignStartDisclosure, CampaignVerification, CostPreviewRow,
+  CampaignDetail, CampaignRankingRow, CampaignRow, CampaignStartDisclosure, CampaignVerification, CostPreviewRow,
   FrontierCandidateSelection, FrontierMetricsRow, ModelRow, ProviderStatusRow, TerminalCommandRow,
 } from '../../shared/ipc';
 import { Card, Empty, Modal, Pill, when } from '../components';
@@ -53,6 +53,34 @@ function countOrAbsence(value: number | undefined, field: string, absences: { fi
   if (value !== undefined) return value.toLocaleString();
   const absence = absences.find((entry) => entry.field === field);
   return <span className="muted small" title={absence?.reason}>not known</span>;
+}
+
+/**
+ * One rankings table, rendered once and used for both readings.
+ *
+ * Deliberately one component: two hand-written tables would be two tables that could come to differ
+ * in their columns, and a reader comparing them would be comparing the renderings as much as the
+ * results.
+ */
+function RankingTable({ rows, testID }: { rows: CampaignRankingRow[]; testID: string }) {
+  if (rows.length === 0) return <p className="muted small">No ranked candidate in this reading.</p>;
+  return (
+    <div className="table-wrap"><table className="table" data-testid={testID}>
+      <thead><tr><th className="num">#</th><th>Model</th><th className="num">Pass rate</th><th className="num">Scored</th><th>Suited to</th></tr></thead>
+      <tbody>{rows.map((ranking) => (
+        <tr key={ranking.candidate}>
+          <td className="num">{ranking.rank}</td>
+          <td>{ranking.candidate}{ranking.disqualified && <> <Pill tone="bad">disqualified</Pill></>}</td>
+          <td className="num">{ratePercent(ranking.passRateMilli)}</td>
+          <td className="num">{ranking.scoredCount}</td>
+          <td>
+            {ranking.roles.length > 0 ? ranking.roles.join(', ') : <span className="muted">no role cleared</span>}
+            {!ranking.promotable && <div className="warn small">{ranking.notPromotableBecause}</div>}
+          </td>
+        </tr>
+      ))}</tbody>
+    </table></div>
+  );
 }
 
 function executionLabel(executionClass: string): string {
@@ -258,21 +286,43 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                   <ul>{detail.report.provisionalBecause.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
                 </div>
               )}
-              <div className="table-wrap"><table className="table">
-                <thead><tr><th className="num">#</th><th>Model</th><th className="num">Pass rate</th><th className="num">Scored</th><th>Suited to</th></tr></thead>
-                <tbody>{detail.report.rankings.map((ranking) => (
-                  <tr key={ranking.candidate}>
-                    <td className="num">{ranking.rank}</td>
-                    <td>{ranking.candidate}{ranking.disqualified && <> <Pill tone="bad">disqualified</Pill></>}</td>
-                    <td className="num">{ratePercent(ranking.passRateMilli)}</td>
-                    <td className="num">{ranking.scoredCount}</td>
-                    <td>
-                      {ranking.roles.length > 0 ? ranking.roles.join(', ') : <span className="muted">no role cleared</span>}
-                      {!ranking.promotable && <div className="warn small">{ranking.notPromotableBecause}</div>}
-                    </td>
-                  </tr>
-                ))}</tbody>
-              </table></div>
+              {/* TWO TABLES, AND THE SECOND IS NOT OPTIONAL.
+                  A JSON answer wrapped in a markdown fence is correct and unparseable at the same
+                  time. Pass 6 published only the first reading, and four Claude configurations came
+                  out at 75% or 50% for putting a fence round a right answer. Showing one table
+                  without the other is what made that look like a capability gap. */}
+              {detail.report.jsonViewDivergences.length > 0 && (
+                <div className="note warn" data-testid="json-view-divergence">
+                  <strong>
+                    {detail.report.jsonViewDivergences.length} outcome(s) are scored differently by the two readings
+                    below.
+                  </strong>
+                  <p>
+                    Both readings are real and they answer different questions. Neither replaces the other, and the
+                    strict result is the campaign result.
+                  </p>
+                  <ul>{detail.report.jsonViewDivergences.map((divergence, index) => (
+                    <li key={index}>
+                      <strong>{divergence.candidate}</strong> on {divergence.caseID} — strict{' '}
+                      <Pill tone="bad">{divergence.strict}</Pill> · semantic <Pill tone="ok">{divergence.semantic}</Pill>
+                    </li>
+                  ))}</ul>
+                </div>
+              )}
+
+              <h4>Strict JSON transport compliance</h4>
+              <p className="muted small">{detail.report.rankingsViewLabel}</p>
+              <RankingTable rows={detail.report.rankings} testID="ranking-table-strict" />
+
+              <h4>Semantic JSON / schema correctness</h4>
+              <p className="muted small">{detail.report.rankingsSemanticViewLabel}</p>
+              <RankingTable rows={detail.report.rankingsSemanticJSONView} testID="ranking-table-semantic" />
+              <p className="muted small">
+                This table is published beside the strict one and never instead of it. It answers &ldquo;was the object
+                right&rdquo;; the strict table answers &ldquo;could it be parsed as it arrived&rdquo;. A capability role
+                is awarded on the strict table only, because the output real work would receive is the output as it
+                arrives.
+              </p>
 
               <h3>{detail.report.retentionHeading}</h3>
               <ul>{detail.report.retention.map((recommendation) => <li key={recommendation.candidate}>{recommendation.statement}</li>)}</ul>
@@ -391,13 +441,26 @@ export function CampaignsView({ shell }: { shell: Shell }) {
               <tbody>{detail.recentAttempts.map((attempt) => (
                 <tr key={attempt.slotKey}>
                   <td className="mono small">{attempt.slotKey}</td>
-                  <td>{attempt.status}</td>
+                  <td>
+                    {attempt.status}
+                    {/* The second reading, on the row, exactly when it disagrees. A reader looking
+                        at a `fail` is entitled to know the object was right. */}
+                    {attempt.jsonViewsDivergent && attempt.jsonSemanticSchemaStatus && (
+                      <div className="muted small" title={attempt.jsonViewsDivergenceExplanation}>
+                        semantic: {attempt.jsonSemanticSchemaStatus}
+                        {attempt.jsonFenceRemoved && ' (one markdown fence removed)'}
+                      </div>
+                    )}
+                  </td>
                   <td className="num">{attempt.latencyMilliseconds === undefined ? 'not reported' : `${attempt.latencyMilliseconds} ms`}</td>
                   <td className="small">
                     {attempt.identityState !== 'verified' && <div className="muted">identity {attempt.identityState}</div>}
                     {attempt.identityAdmissionStamp && <div className="warn small">{attempt.identityAdmissionStamp}</div>}
                     {attempt.suppliedContextState !== 'intact' && attempt.suppliedContextState !== 'notSupplied' && <div className="muted">context {attempt.suppliedContextState}</div>}
                     {attempt.detail}
+                    {attempt.jsonViewsDivergent && attempt.jsonViewsDivergenceExplanation && (
+                      <div className="warn small">{attempt.jsonViewsDivergenceExplanation}</div>
+                    )}
                   </td>
                 </tr>
               ))}</tbody>
@@ -507,10 +570,10 @@ function MetricsTable({ rows }: { rows: FrontierMetricsRow[] }) {
       )}
       <div className="table-wrap"><table className="table" data-testid="metrics-table">
         <thead><tr>
-          <th>Candidate</th><th>Reached as</th><th className="num">Success</th><th className="num">In</th>
+          <th>Candidate</th><th>Reached as</th><th className="num">Success</th><th className="num">In (all)</th>
           <th className="num">Out</th><th className="num">Reasoning</th><th className="num">First token</th>
-          <th className="num">Cost</th><th className="num">Cost / success</th><th className="num">Retries</th>
-          <th className="num">Wasted</th><th>Quality</th>
+          <th className="num">Charge</th><th className="num">Allowance</th><th className="num">Cost / success</th>
+          <th className="num">Retries</th><th className="num">Wasted</th><th>Quality</th>
         </tr></thead>
         <tbody>{rows.map((row) => (
           <tr key={row.candidate}>
@@ -532,7 +595,21 @@ function MetricsTable({ rows }: { rows: FrontierMetricsRow[] }) {
               {ratePercent(row.successfulTaskRateMilli)}
               <div className="muted small">{row.successfulTaskCount}/{row.attemptCount}</div>
             </td>
-            <td className="num">{countOrAbsence(row.inputTokens, 'input tokens', row.absences)}</td>
+            <td className="num">
+              {countOrAbsence(row.inputTokens, 'input tokens (all, cached and fresh)', row.absences)}
+              {/* The split, under the total. A subscription CLI sends a multi-thousand-token system
+                  prompt in front of a nine-token question, and a column that showed only the fresh
+                  remainder — as this one did until Pass 7 — understated the request by two orders of
+                  magnitude while looking like a token count. */}
+              {row.freshInputTokens !== undefined && row.inputTokens !== undefined
+                && row.freshInputTokens !== row.inputTokens && (
+                <div className="muted small" title="fresh · cache write · cache read">
+                  {row.freshInputTokens.toLocaleString()} fresh
+                  {(row.cacheCreationInputTokens ?? 0) > 0 && ` · ${row.cacheCreationInputTokens!.toLocaleString()} cached in`}
+                  {(row.cacheReadInputTokens ?? 0) > 0 && ` · ${row.cacheReadInputTokens!.toLocaleString()} cache read`}
+                </div>
+              )}
+            </td>
             <td className="num">{countOrAbsence(row.visibleOutputTokens, 'visible output tokens', row.absences)}</td>
             <td className="num">{countOrAbsence(row.reasoningTokens, 'reasoning tokens', row.absences)}</td>
             <td className="num">
@@ -541,6 +618,21 @@ function MetricsTable({ rows }: { rows: FrontierMetricsRow[] }) {
                 : `${row.medianTimeToFirstVisibleTokenMilliseconds} ms`}
             </td>
             <td className="num">{money(row.costPerRunMicroUSD)}</td>
+            {/* THE PLAN ALLOWANCE, in its own column beside the charge. The charge is a true zero on
+                a subscription; a table that printed only that told the reader a Max plan was free.
+                An unreported allowance shows its recorded reason and never a zero. */}
+            <td className="num">
+              {row.billingBasis !== 'subscriptionIncluded'
+                ? <span className="muted small">n/a</span>
+                : row.subscriptionIncludedUsageMicroUSD === undefined
+                  ? (
+                    <span className="warn small"
+                          title={row.absences.find((a) => a.field === 'subscription allowance consumed')?.reason}>
+                      not reported — not zero
+                    </span>
+                  )
+                  : <>{money(row.subscriptionIncludedUsageMicroUSD)}<div className="muted small">list value</div></>}
+            </td>
             <td className="num">
               {row.costPerSuccessfulTaskMicroUSD === undefined
                 ? <span className="muted small" title={row.absences.find((a) => a.field === 'cost per successful task')?.reason}>no successes</span>
@@ -557,6 +649,12 @@ function MetricsTable({ rows }: { rows: FrontierMetricsRow[] }) {
         told us. <strong>estimated</strong> — derived by a stated method from something that was counted.
         <strong> unavailable</strong> — not known, and not guessed at. Cost per successful task counts the money spent on
         failed and retried attempts too: a model that fails half the time costs more per useful answer, not less.
+      </p>
+      <p className="muted small">
+        <strong>In (all)</strong> is every input token the provider processed, cached and fresh. <strong>Charge</strong> is
+        real money billed and is genuinely $0 on a subscription. <strong>Allowance</strong> is the finite monthly plan
+        allowance the run spent, at the provider&rsquo;s list value — not a charge, and not nothing. Where a provider
+        reports no allowance, this says so rather than showing $0.
       </p>
     </>
   );

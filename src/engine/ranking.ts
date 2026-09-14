@@ -41,7 +41,37 @@ export interface RankableOutcome {
    * distinguish is never absent, it is stamped.
    */
   identityState?: string;
+  /**
+   * The semantic reading of this outcome, when the case had one.
+   *
+   * Carried BESIDE `status` and never in place of it, so one set of rows produces both rankings and
+   * the two can never be computed from different evidence. Absent on a non-JSON case, where there
+   * is no second question and the semantic view simply reuses `status`.
+   */
+  semanticStatus?: string;
+  /** True when the two readings of this outcome disagree. */
+  viewsDivergent?: boolean;
 }
+
+/**
+ * WHICH QUESTION THIS TABLE ANSWERS. Pass 7 publishes two rankings of the same campaign.
+ *
+ *   strictTransport   the frozen result: every status exactly as the campaign recorded it. A JSON
+ *                     answer inside a markdown fence is a failure here, because it is one — it
+ *                     cannot be handed to a parser as it arrived.
+ *   semanticSchema    the same rows re-read with at most one enclosing fence removed. Answers
+ *                     "was the object right", which is a different question and not a softer one.
+ *
+ * Neither supersedes the other and neither may be published alone. A reader given only the first
+ * concludes that four Claude configurations cannot produce JSON; a reader given only the second
+ * cannot see that four of them cannot be parsed without preprocessing. Both were true of Pass 6.
+ */
+export type RankingView = 'strictTransport' | 'semanticSchema';
+
+export const RANKING_VIEW_LABELS: Record<RankingView, string> = {
+  strictTransport: 'strict JSON transport compliance — the frozen result: the output as it arrived, fence included',
+  semanticSchema: 'semantic JSON/schema correctness — the same answers with at most one enclosing markdown fence removed',
+};
 
 export const NO_RATE_REASON = 'no applicable, non-disqualified results — missing evidence is not a zero score';
 
@@ -86,6 +116,18 @@ export interface CandidateRanking {
 
 export interface FinalRankings {
   /**
+   * WHICH OF THE TWO READINGS THIS TABLE IS. Stated on the table rather than left to the caller,
+   * because a rankings file lifted out of its report and read on its own would otherwise be a
+   * leaderboard with no way of saying which question it answers.
+   */
+  view: RankingView;
+  viewLabel: string;
+  /**
+   * The slots whose two readings disagree, and why. Present on BOTH tables, identically, so neither
+   * can be read without seeing where the other one differs.
+   */
+  divergences: { candidate: string; caseID: string; strict: string; semantic: string; explanation: string }[];
+  /**
    * False when residency was not managed. A noncanonical ranking is internally readable — the
    * quality outcomes are what they are — but its rates and latencies must not be set beside a
    * canonical run's, and it says so here rather than leaving a reader to notice.
@@ -99,6 +141,10 @@ export interface FinalRankings {
   countingRules: string[];
   derivedAt: string;
 }
+
+export const DIVERGENCE_MEANS =
+  'strict transport compliance and the semantic schema reading disagree on this outcome. Both figures are real and '
+  + 'they answer different questions; neither replaces the other, and the strict status is the campaign result.';
 
 export const NONCANONICAL_COUNTING_RULE =
   'OBSERVE-ONLY: residency was not managed, so these latencies are not comparable with a canonical run, '
@@ -243,6 +289,12 @@ export interface RankingInputs {
   outcomes: RankableOutcome[];
   reconciliation?: Reconciliation;
   derivedAt: string;
+  /**
+   * Which reading to rank on. Defaults to `strictTransport`, which is the frozen result — so a
+   * caller written before Pass 7 gets exactly the table it got before, and a semantic ranking is
+   * only ever produced by somebody who asked for one.
+   */
+  view?: RankingView;
   /** Defaults to true. Pass false for an observe-only campaign. */
   canonical?: boolean;
   /** Why it is not canonical. Required in substance when `canonical` is false. */
@@ -250,6 +302,12 @@ export interface RankingInputs {
 }
 
 export function rankCandidates(inputs: RankingInputs): FinalRankings {
+  const view: RankingView = inputs.view ?? 'strictTransport';
+  // The status this table counts. On the strict view it is the campaign's recorded status, verbatim.
+  // On the semantic view it is the second reading where the case produced one, and the recorded
+  // status where it did not — a plain-prose case has one verdict and gets it in both tables.
+  const statusOf = (outcome: RankableOutcome): string =>
+    (view === 'semanticSchema' ? outcome.semanticStatus ?? outcome.status : outcome.status);
   const provisionalBecause: string[] = [];
   if (inputs.reconciliation) {
     if (!inputs.reconciliation.balances) provisionalBecause.push('the ledger does not balance: some slot is unaccounted for, or is both terminal and blocked');
@@ -274,10 +332,10 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
     const dimensions: DimensionRate[] = [];
     for (const dimension of [...new Set(mine.map((outcome) => outcome.dimension))].sort()) {
       const inDimension = mine.filter((outcome) => outcome.dimension === dimension && !outcome.governanceViolated);
-      const passCount = inDimension.filter((o) => o.status === 'pass').length;
-      const partialCount = inDimension.filter((o) => o.status === 'partial').length;
-      const awaiting = inDimension.filter((o) => o.status === 'requiresHumanReview').length;
-      const notApplicable = inDimension.filter((o) => o.status === 'unsupported' || o.status === 'notApplicable').length;
+      const passCount = inDimension.filter((o) => statusOf(o) === 'pass').length;
+      const partialCount = inDimension.filter((o) => statusOf(o) === 'partial').length;
+      const awaiting = inDimension.filter((o) => statusOf(o) === 'requiresHumanReview').length;
+      const notApplicable = inDimension.filter((o) => statusOf(o) === 'unsupported' || statusOf(o) === 'notApplicable').length;
       // Everything that is neither a pass, a partial, an awaited review nor inapplicable is a fail.
       const failCount = inDimension.length - passCount - partialCount - awaiting - notApplicable;
       const scoredCount = passCount + partialCount + failCount;
@@ -326,7 +384,24 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
   });
 
   const canonical = inputs.canonical !== false;
+  // Listed on both tables. A divergence is the only thing that makes the two rankings differ, and a
+  // reader holding one table is entitled to know every row on which the other disagrees.
+  const divergences = inputs.outcomes
+    .filter((outcome) => outcome.viewsDivergent === true
+      || (outcome.semanticStatus !== undefined && outcome.semanticStatus !== outcome.status))
+    .map((outcome) => ({
+      candidate: outcome.candidate,
+      caseID: outcome.caseID,
+      strict: outcome.status,
+      semantic: outcome.semanticStatus ?? outcome.status,
+      explanation: DIVERGENCE_MEANS,
+    }))
+    .sort((a, b) => (a.candidate === b.candidate ? (a.caseID < b.caseID ? -1 : 1) : (a.candidate < b.candidate ? -1 : 1)));
+
   return {
+    view,
+    viewLabel: RANKING_VIEW_LABELS[view],
+    divergences,
     canonical,
     noncanonicalBecause: canonical ? [] : (inputs.noncanonicalBecause ?? ['residency was not managed during this campaign']),
     provisional: provisionalBecause.length > 0,
@@ -355,6 +430,11 @@ export function outcomesFromLedger(results: Iterable<SlotResult>, dimensionForCa
       governanceViolated: result.governanceViolated === true,
       latencyMilliseconds: typeof result.latencyMilliseconds === 'number' ? result.latencyMilliseconds : undefined,
       identityState: typeof result.bindingIdentityState === 'string' ? result.bindingIdentityState : undefined,
+      // Absent on a non-JSON case and on every row written before Pass 7. Absent means "there is no
+      // second reading of this row", which the semantic ranking honours by using the recorded status
+      // — not by treating the row as unmeasured.
+      semanticStatus: typeof result.jsonSemanticSchemaStatus === 'string' ? result.jsonSemanticSchemaStatus : undefined,
+      viewsDivergent: result.jsonViewsDivergent === true,
     });
   }
   return out;

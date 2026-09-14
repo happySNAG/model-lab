@@ -7,7 +7,7 @@ import { Observation, TerminalStatus } from './run';
 import { ResponseFormat } from './benchmark';
 import { CapabilityDimension, EvaluationStatus, EvaluationVerdict, GovernanceOutcome, MetricResult, MissingEvidence } from './evaluation';
 import { EvaluationMethod, GovernanceRule, ScoringPolicy, conceptPresent } from './scoring-policy';
-import { parseJSONObject } from './json';
+import { FenceUnwrap, parseJSONObject, parseJSONObjectAfterSingleFence } from './json';
 
 export interface EvaluatorProfile {
   evaluatorID: string;
@@ -331,6 +331,126 @@ export const uncertaintyLanguageEvaluator: Evaluator = {
       [], [excerpt(answer)], [], allObservedText(observation));
   },
 };
+
+// MARK: - The semantic JSON view, beside the strict one and never instead of it
+
+/**
+ * THE SECOND OF TWO JSON RESULTS. Read the note on `unwrapSingleJSONFence` first.
+ *
+ * `structuredSchemaEvaluator` above answers "could this be parsed as it arrived" and is left exactly
+ * as it was: a fenced document fails it, the frozen `scoringPolicyVersion` is unchanged, and every
+ * row Pass 6 measured stays comparable. THIS evaluator answers the other question — "was the object
+ * right" — by removing at most one enclosing fence and then applying the SAME strict parse.
+ *
+ * It is deliberately NOT in `leafEvaluators` and NOT reachable through `evaluatorByID`. A scoring
+ * policy must not be able to select it by accident, because a policy that did would silently turn
+ * every strict failure into a pass, which is the exact substitution these two views exist to
+ * prevent. It is called by name, by an adjudicator that reports both verdicts together.
+ *
+ * WHAT IT STILL REFUSES, so a semantic pass cannot be mistaken for leniency:
+ *
+ *   commentary outside the fence   refused by `unwrapSingleJSONFence`, which requires the fence to
+ *                                  open and close the whole text and forbids a second fence.
+ *   malformed JSON                 refused: the parse is `parseJSONObject`, unchanged.
+ *   a missing required key         refused, on exactly the strict evaluator's rule.
+ *   an empty or null value         refused. A key present with nothing under it answers the schema
+ *                                  and not the question, and the Pass 6 case asks for a value.
+ *   a value that contradicts the   refused when the policy declares `exactExpectedText`.
+ *   policy's declared expectation
+ *
+ * WHAT IT DOES NOT ASSERT. Where a policy declares required keys and no expected values — which is
+ * true of `case:foundation-v2:json-shape`, whose prompt accepts ANY colour — a pass here means the
+ * object was well-formed and complete, not that its content was independently verified. The verdict
+ * detail says so, because a reader who takes it for more than that has been misled by this file.
+ */
+export const SEMANTIC_JSON_VIEW_LIMITATION =
+  'a pass asserts a well-formed object with every required key carrying a non-empty value, after at most one '
+  + 'enclosing markdown fence was removed. Where the policy declares no expected values, it is NOT a claim that '
+  + 'the values are correct in substance.';
+
+export const structuredSchemaSemanticProfile: EvaluatorProfile = profile(
+  'evaluator.structured-schema-semantic', 'structuredSchema',
+  'observation.structuredOutputRaw (or outputText), policy.criteria.requiredJSONKeys, and at most one enclosing markdown fence',
+  'pass iff — after removing at most one enclosing fence — the text is a JSON object with every required key carrying a non-empty value',
+  ['commentary outside the fence ⇒ fail', 'a second fence ⇒ fail', 'malformed JSON ⇒ fail',
+   'a missing key ⇒ partial or fail', 'a null or empty value ⇒ fail'],
+  SEMANTIC_JSON_VIEW_LIMITATION);
+
+/** A required key's value, judged. `undefined` means the key was absent. */
+function valuePresent(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+export const structuredSchemaSemanticEvaluator: Evaluator = {
+  profile: structuredSchemaSemanticProfile,
+  evaluate(observation, _responseFormat, policy) {
+    if (!isJudgeable(observation.terminalStatus)) return notApplicable(observation, policy);
+    const raw = primaryAnswer(observation, true);
+    const { object, unwrap } = parseJSONObjectAfterSingleFence(raw);
+    const fenceNote = fenceDetail(unwrap);
+
+    if (!object) {
+      const why = unwrap.refusedBecause !== undefined
+        ? `no single enclosing fence could be removed — ${unwrap.refusedBecause}`
+        : `the ${unwrap.fenceRemoved ? 'fenced' : 'output'} text is not a JSON object`;
+      return finalize('fail', policy, [metric('semanticJSONWellFormed', policy.dimension, 'fail', 0, why)],
+        [], [excerpt(raw)],
+        observation.terminalStatus === 'malformedOutput' ? ['executor already flagged malformed output'] : [],
+        allObservedText(observation));
+    }
+
+    const required = policy.criteria.requiredJSONKeys;
+    const present = required.filter((key) => Object.prototype.hasOwnProperty.call(object, key));
+    const missing = required.filter((key) => !Object.prototype.hasOwnProperty.call(object, key));
+    // A key with nothing under it is not an answer. Checked BEFORE the rate, so a hollow object
+    // cannot score a partial on key presence alone.
+    const hollow = present.filter((key) => !valuePresent(object[key]));
+
+    const expected = policy.criteria.exactExpectedText;
+    const contradicted = expected !== undefined && required.length === 1 && present.length === 1
+      && typeof object[required[0]] === 'string'
+      && !canonicalEquals(normalize(String(object[required[0]])), normalize(expected))
+      ? required[0] : undefined;
+
+    let status: EvaluationStatus;
+    let milli: number;
+    let detail: string;
+    if (hollow.length > 0) {
+      status = 'fail'; milli = 0;
+      detail = `required key(s) present but empty: ${hollow.join(', ')} — a key with no value answers the schema and not the question`;
+    } else if (contradicted !== undefined) {
+      status = 'fail'; milli = 0;
+      detail = `'${contradicted}' carries a value the policy contradicts; the policy expects ${expected}`;
+    } else if (required.length === 0 || present.length === required.length) {
+      status = 'pass'; milli = PASS;
+      detail = `a well-formed JSON object with every required key carrying a value${fenceNote}. ${SEMANTIC_JSON_VIEW_LIMITATION}`;
+    } else if (present.length === 0) {
+      status = 'fail'; milli = 0;
+      detail = `none of the required keys are present: ${missing.join(', ')}`;
+    } else {
+      status = 'partial'; milli = Math.floor((present.length * PASS) / Math.max(required.length, 1));
+      detail = `missing keys: ${missing.join(', ')}`;
+    }
+
+    return finalize(status, policy, [
+      metric('semanticJSONWellFormed', policy.dimension, 'pass', PASS, `a JSON object was read${fenceNote}`),
+      metric('semanticRequiredKeys', policy.dimension, status, milli, detail),
+    ], [], [excerpt(raw)], [], allObservedText(observation));
+  },
+};
+
+/** How the fence was handled, stated on every semantic verdict so the difference is never invisible. */
+function fenceDetail(unwrap: FenceUnwrap): string {
+  if (unwrap.fenceRemoved) {
+    return ` (one enclosing \`\`\`${unwrap.infoString ?? ''} fence was removed for this reading; the strict `
+      + 'transport result recorded beside it still counts that fence as a failure)';
+  }
+  return ' (the output carried no enclosing fence, so both readings saw the same text)';
+}
 
 // MARK: - Registry
 

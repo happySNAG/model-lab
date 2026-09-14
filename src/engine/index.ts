@@ -32,6 +32,7 @@ export * from './attempt-telemetry';
 export * from './isolation';
 export * from './blinded';
 export * from './ranking';
+export * from './json-views';
 export * from './retention';
 export * from './catalogue';
 export * from './campaign';

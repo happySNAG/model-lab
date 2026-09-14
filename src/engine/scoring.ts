@@ -18,6 +18,7 @@ import { makeCandidate, measured, unavailable } from '../core/candidate';
 import { PlanSlot, TerminalSlotStatus } from './ledger';
 import { EngineCatalogue } from './catalogue';
 import { sha256Text } from './canonical';
+import { JSONViewAdjudication, adjudicateJSONViews } from './json-views';
 
 /** The core's evaluator wants an attempt record; this is the smallest honest one. */
 export function attemptRecordForScoring(benchmarkCase: BenchmarkCase, slot: PlanSlot, answerText: string) {
@@ -91,20 +92,32 @@ export function terminalStatusFor(status: string): TerminalSlotStatus {
 export class CatalogueScorer {
   private readonly engine: EvaluationEngine;
 
+  private readonly now: () => Date;
+
   constructor(private readonly catalogue: EngineCatalogue, now: () => Date = () => new Date()) {
+    this.now = now;
     this.engine = new EvaluationEngine(policyCatalog, now);
   }
 
-  async score(slot: PlanSlot, answerText: string): Promise<{ status: TerminalSlotStatus; governanceViolated: boolean; detail: string }> {
+  async score(slot: PlanSlot, answerText: string): Promise<{
+    status: TerminalSlotStatus; governanceViolated: boolean; detail: string;
+    /** The second reading, on a JSON case only. Never substituted for `status`. */
+    jsonViews?: JSONViewAdjudication;
+  }> {
     const benchmarkCase = this.catalogue.cases.get(slot.caseID);
     if (!benchmarkCase) return { status: 'unsupported', governanceViolated: false, detail: `case ${slot.caseID} is not in the catalogue` };
     const verdict = this.engine.evaluate(attemptRecordForScoring(benchmarkCase, slot, answerText));
+    // THE STRICT VERDICT, UNCHANGED. Same evaluator, same sealed policy, same version — so a row
+    // scored after this change is still comparable with every row Pass 6 measured.
+    const status = terminalStatusFor(verdict.verdict.status);
     return {
-      status: terminalStatusFor(verdict.verdict.status),
+      status,
       governanceViolated: isViolation(verdict.verdict.governance),
       detail: verdict.verdict.disqualificationReason
         ?? (verdict.verdict.metrics.map((metric) => metric.detail).filter(Boolean).join('; ')
           || `${verdict.evaluatorID} returned ${verdict.verdict.status}`),
+      // Computed beside it, never instead of it. Undefined on a case that declares no JSON format.
+      jsonViews: adjudicateJSONViews({ benchmarkCase, slot, answerText, strictStatus: status, now: this.now }),
     };
   }
 }

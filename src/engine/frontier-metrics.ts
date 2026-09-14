@@ -208,8 +208,8 @@ export const SUBSCRIPTION_NOT_FREE =
   + 'What one request costs the person is a share of a flat plan fee, which cannot be derived from the request — '
   + 'it would need the plan price and the total allowance, neither of which the provider reports here.';
 
-const NOT_A_SUBSCRIPTION = 'this execution is billed per token against a key, so it consumes no plan allowance';
-const LOCAL_NO_ALLOWANCE = 'this candidate ran on local weights and consumed no provider allowance at all';
+export const NOT_A_SUBSCRIPTION = 'this execution is billed per token against a key, so it consumes no plan allowance';
+export const LOCAL_NO_ALLOWANCE = 'this candidate ran on local weights and consumed no provider allowance at all';
 
 /**
  * The three cost answers for one attempt, from the billing basis and what the provider said.
@@ -287,7 +287,22 @@ export interface FrontierAttemptRecord extends Record<string, CanonicalValue | u
    * on its own still says what it is.
    */
   bindingIdentityState?: string;
+  /**
+   * EVERY input token the provider processed, cached and fresh.
+   *
+   * Pass 6 recorded the FRESH REMAINDER here and called it the input count. On the Claude envelope
+   * that is 2 tokens for a request that processed 6,000, and on the Codex envelope it is the total
+   * minus the cached portion — so both halves of a cross-provider comparison were understated, in
+   * two different ways, by two different factors. The decomposition below is recorded beside this
+   * total rather than instead of it: a reader who has only one figure cannot tell which they hold.
+   */
   inputTokens?: number;
+  /** The fresh remainder alone — what Pass 6 put in `inputTokens`. Kept so the two are comparable. */
+  freshInputTokens?: number;
+  /** Input tokens this request WROTE into the provider's prompt cache. */
+  cacheCreationInputTokens?: number;
+  /** Input tokens this request was SERVED from the provider's prompt cache. */
+  cacheReadInputTokens?: number;
   visibleOutputTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
@@ -301,6 +316,18 @@ export interface FrontierAttemptRecord extends Record<string, CanonicalValue | u
    * `costMicroUSD`: one is a bill and the other is a budget being spent down.
    */
   subscriptionIncludedUsageMicroUSD?: number;
+  /**
+   * WHETHER THE ALLOWANCE WAS OBTAINED, stated rather than inferred from whether a number is there.
+   *
+   * An absent number and a number that is absent FOR A REASON are different records, and a surface
+   * that has only the first has to guess which. `reported` means the provider valued the request;
+   * `unavailable` means it did not, and the explanation beside it says so in the provider's own
+   * terms. Neither is ever zero.
+   */
+  subscriptionAllowanceState?: 'reported' | 'unavailable';
+  subscriptionAllowanceProvenance?: Provenance;
+  /** Why, in plain language. Populated on both states — on `reported` it says where the figure came from. */
+  subscriptionAllowanceExplanation?: string;
   /** The duration the PROVIDER said it spent generating, in milliseconds. Absent when it did not say. */
   providerReportedGenerationMilliseconds?: number;
   retryCount: number;
@@ -334,7 +361,14 @@ export interface FrontierAttemptMetrics {
   identityDisclosure: string;
   identityDisclosureRequired: boolean;
 
+  /** EVERY input token the provider processed, cached and fresh. The figure a cost rests on. */
   inputTokens: Quantity;
+  /** The fresh remainder alone. Published beside the total so neither can be mistaken for the other. */
+  freshInputTokens: Quantity;
+  /** Input tokens this request wrote into the provider's prompt cache. */
+  cacheCreationInputTokens: Quantity;
+  /** Input tokens this request was served from the provider's prompt cache. */
+  cacheReadInputTokens: Quantity;
   /** The answer the person would read. Kept apart from reasoning, always. */
   visibleOutputTokens: Quantity;
   /** Reasoning / thinking tokens, when the provider reports them at all. */
@@ -415,6 +449,10 @@ export interface FrontierCandidateMetrics {
   successfulTaskRateMilli: Quantity;
 
   inputTokens: Quantity;
+  /** The campaign's fresh-input total, beside the real one. The gap between them is the cache. */
+  freshInputTokens: Quantity;
+  cacheCreationInputTokens: Quantity;
+  cacheReadInputTokens: Quantity;
   visibleOutputTokens: Quantity;
   reasoningTokens: Quantity;
   totalTokens: Quantity;
@@ -520,6 +558,14 @@ export function aggregateCandidateMetrics(candidate: string, attempts: FrontierA
 
   const inputTokens = sumQuantities(attempts.map((a) => a.inputTokens),
     'at least one attempt has no input token count, so the campaign total would be an undercount presented as a total');
+  // Summed apart so a reader can SEE the cache rather than take the correction on trust: the gap
+  // between these two totals is exactly what Pass 6 was missing.
+  const freshInputTokens = sumQuantities(attempts.map((a) => a.freshInputTokens),
+    'at least one attempt has no fresh input token count');
+  const cacheCreationInputTokens = sumQuantities(attempts.map((a) => a.cacheCreationInputTokens),
+    'at least one attempt did not report cache-creation input tokens, which is not the same as reporting zero');
+  const cacheReadInputTokens = sumQuantities(attempts.map((a) => a.cacheReadInputTokens),
+    'at least one attempt did not report cache-read input tokens, which is not the same as reporting zero');
   const visibleOutputTokens = sumQuantities(attempts.map((a) => a.visibleOutputTokens),
     'at least one attempt has no visible output token count');
   const reasoningTokens = sumQuantities(attempts.map((a) => a.reasoningTokens),
@@ -580,6 +626,9 @@ export function aggregateCandidateMetrics(candidate: string, attempts: FrontierA
       ? unavailableQuantity(NO_ATTEMPTS)
       : measuredQuantity(Math.round((successfulTaskCount * 1000) / attempts.length)),
     inputTokens,
+    freshInputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
     visibleOutputTokens,
     reasoningTokens,
     totalTokens,
@@ -670,6 +719,9 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
     value === undefined || own === 'unavailable' ? unavailableQuantity(reason) : { provenance: own, value };
 
   const inputTokens = number(row.inputTokens);
+  const freshInputTokens = number(row.freshInputTokens);
+  const cacheCreationInputTokens = number(row.cacheCreationInputTokens);
+  const cacheReadInputTokens = number(row.cacheReadInputTokens);
   const visibleOutputTokens = number(row.visibleOutputTokens);
   const reasoningTokens = number(row.reasoningTokens);
   const totalTokens = number(row.totalTokens);
@@ -678,6 +730,16 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
   const generationDuration = number(row.providerReportedGenerationMilliseconds);
   const cost = number(row.costMicroUSD);
   const allowance = number(row.subscriptionIncludedUsageMicroUSD);
+  const allowanceExplanation = typeof row.subscriptionAllowanceExplanation === 'string'
+    && row.subscriptionAllowanceExplanation.length > 0 ? row.subscriptionAllowanceExplanation : undefined;
+  const allowanceProvenance = row.subscriptionAllowanceProvenance === undefined
+    ? undefined : provenance(row.subscriptionAllowanceProvenance);
+  // The STATE is the authority, not the presence of a number. A row that says `unavailable` and
+  // carries a figure anyway is a contradiction, and the honest reading of a contradiction is the
+  // weaker of the two claims — never the number.
+  const allowanceReported = row.subscriptionAllowanceState === undefined
+    ? allowance !== undefined
+    : row.subscriptionAllowanceState === 'reported' && allowance !== undefined;
   const wasted = number(row.wastedTokens);
 
   const estimatedTotal = inputTokens !== undefined && visibleOutputTokens !== undefined
@@ -706,6 +768,14 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
     identityDisclosure: identityDisclosureFor(rowIdentityState, rowRequestedModelID),
     identityDisclosureRequired: rowIdentityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
     inputTokens: quantity(inputTokens, usageProvenance, 'no input token count was recorded for this attempt'),
+    // Absent on every row written before Pass 7, and absent is what those rows get. Substituting the
+    // total here would make a pre-correction row look as though its cache had been measured at zero.
+    freshInputTokens: quantity(freshInputTokens, usageProvenance,
+      'this row was written before the input decomposition was recorded, so the fresh remainder is not separable from its total'),
+    cacheCreationInputTokens: quantity(cacheCreationInputTokens, usageProvenance,
+      'no cache-creation input token count was recorded for this attempt'),
+    cacheReadInputTokens: quantity(cacheReadInputTokens, usageProvenance,
+      'no cache-read input token count was recorded for this attempt'),
     visibleOutputTokens: quantity(visibleOutputTokens, usageProvenance, 'no visible output token count was recorded'),
     reasoningTokens: quantity(reasoningTokens, usageProvenance,
       'this provider did not report reasoning tokens separately, which is not the same as reporting zero'),
@@ -726,11 +796,18 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
     marginalAPIChargeMicroUSD: cost === undefined
       ? unavailableQuantity('this attempt\'s charge is not known; the provider reported no usage and this engine will not write a budget in place of a charge')
       : { provenance: costProvenance === 'unavailable' ? 'estimated' : costProvenance, value: cost },
+    // THE ROW'S OWN ACCOUNT WINS. From Pass 7 the attempt records why the allowance is or is not
+    // there, in the provider's terms — "Codex reports no cost figure at all" is a different fact
+    // from "this request was not valued", and a generic sentence reconstructed here would flatten
+    // the two. The generic sentence is the fallback for rows written before that was recorded.
     subscriptionIncludedUsageMicroUSD: billingBasisOfRow === 'subscriptionIncluded'
-      ? (allowance === undefined
-        ? unavailableQuantity('this subscription attempt reported no usage valuation, so how much plan allowance it '
+      ? (!allowanceReported
+        ? unavailableQuantity(allowanceExplanation
+          ?? 'this subscription attempt reported no usage valuation, so how much plan allowance it '
           + 'consumed is not known. It is not zero.')
-        : reportedQuantity(allowance))
+        : { provenance: allowanceProvenance === undefined || allowanceProvenance === 'unavailable'
+              ? 'providerReported' : allowanceProvenance,
+            value: allowance, note: allowanceExplanation })
       : unavailableQuantity(billingBasisOfRow === 'local' ? LOCAL_NO_ALLOWANCE : NOT_A_SUBSCRIPTION),
     effectiveUserCostMicroUSD: billingBasisOfRow === 'subscriptionIncluded'
       ? unavailableQuantity(SUBSCRIPTION_NOT_FREE)

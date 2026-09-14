@@ -30,7 +30,8 @@ import { DEFAULT_GUARD_POLICY, GuardPolicy, GuardVerdict, StoreBaseline, SystemR
 import { ResidencyController, ResidencyError, ResidencyProof, unloadAndVerify } from './residency';
 import { ModelIdentityVerification, ObservedModelIdentity, SuppliedContextVerification, identityPermitsExecution, suppliedContextIsUsable, verifyModelIdentity, verifySuppliedContext } from './verification';
 import { AttemptTelemetry, RuntimeReportedTiming, StreamEvent, explainEmptyAnswer, summariseAttempt } from './attempt-telemetry';
-import { FinalRankings, outcomesFromLedger, rankCandidates } from './ranking';
+import { FinalRankings, RankingView, outcomesFromLedger, rankCandidates } from './ranking';
+import { JSONViewAdjudication } from './json-views';
 import { RetentionReport, recommendRetention } from './retention';
 import { AdjudicableResponse, BlindedPacket, PacketAudit, PacketKey, auditPacket, buildBlindedPacket } from './blinded';
 import { CampaignLockError, CampaignLockHandle, LockOptions, LockOwnerState, LockProcessType, acquireCampaignLock, inspectCampaignLock } from './lock';
@@ -105,8 +106,16 @@ export interface CampaignHost {
   observeIdentity(candidate: PlannableCandidate): Promise<ObservedModelIdentity>;
   /** Run one attempt. */
   run(request: AttemptRequest): Promise<AttemptOutcome>;
-  /** Score one answer. Returns a terminal status and whether it broke a governance rule. */
-  score(slot: PlanSlot, answerText: string): Promise<{ status: TerminalSlotStatus; governanceViolated: boolean; detail: string }>;
+  /**
+   * Score one answer. Returns a terminal status and whether it broke a governance rule.
+   *
+   * `jsonViews` is the SECOND, separately-labelled reading of a JSON answer — see `json-views.ts`.
+   * Optional because a host that scores nothing structured has no second question to answer, and
+   * because a host written before Pass 7 must keep compiling rather than silently losing a column.
+   */
+  score(slot: PlanSlot, answerText: string): Promise<{
+    status: TerminalSlotStatus; governanceViolated: boolean; detail: string; jsonViews?: JSONViewAdjudication;
+  }>;
   /**
    * Refuse, before the request, anything that would spend money nobody authorised.
    *
@@ -278,7 +287,26 @@ export interface FinalReport {
     stoppedAtCeiling: boolean;
   };
   reconciliation: Reconciliation;
+  /**
+   * THE FROZEN RANKING: strict JSON transport compliance. The campaign result, unchanged by Pass 7.
+   */
   rankings: FinalRankings;
+  /**
+   * THE SECOND READING: semantic JSON/schema correctness, over the same rows.
+   *
+   * Present on every report from Pass 7 onward, and present even when it is identical to the table
+   * above — a reader who looks for it and does not find it cannot tell a campaign whose two
+   * readings agreed from a report written by something that did not know to produce one.
+   */
+  rankingsSemanticJSONView: FinalRankings;
+  /**
+   * Computed on the STRICT ranking only, and deliberately.
+   *
+   * Retention decides whether a model earns a role, and a role is a recommendation to send real work
+   * to something. The output that work would receive is the output as it arrives, fence and all, so
+   * the frozen transport result is the one a promotion may rest on. The semantic table explains a
+   * shortfall; it does not license a promotion.
+   */
   retention: RetentionReport;
   humanReview: { awaiting: number; packetWritten: boolean; packetPath?: string; audit?: PacketAudit };
   guardTrace: { at: string; kind: string }[];
@@ -317,6 +345,10 @@ export function campaignPaths(root: string) {
     // not part of the campaign's own evidence is an authorization nobody can audit afterwards.
     authorization: path.join(root, 'authorization.json'),
     rankings: path.join(root, 'rankings.json'),
+    // The SECOND reading, in its own file with its own name. Deliberately not merged into
+    // `rankings.json`: a file called `rankings` that silently contained two tables is a file whose
+    // readers would each pick one, and the one they picked would be whichever came first.
+    rankingsSemantic: path.join(root, 'rankings-semantic-json-view.json'),
     retention: path.join(root, 'retention.json'),
     reviewDirectory: path.join(root, 'review'),
     packet: path.join(root, 'review', 'blinded-packet.json'),
@@ -855,6 +887,10 @@ export class Campaign {
     let status: TerminalSlotStatus;
     let governanceViolated = false;
     let detail: string;
+    // The second reading of a JSON answer. Left undefined on a non-JSON case and on an attempt that
+    // was never scored at all — a runtime error has no JSON verdict of either kind, and inventing
+    // one would put a "semantic fail" on a row where nothing was measured.
+    let jsonViews: JSONViewAdjudication | undefined;
     if (outcome.failure) {
       status = 'runtimeError';
       detail = `${outcome.failure.code}: ${outcome.failure.detail}`;
@@ -868,6 +904,7 @@ export class Campaign {
       status = scored.status;
       governanceViolated = scored.governanceViolated;
       detail = scored.detail;
+      jsonViews = scored.jsonViews;
       const emptyExplanation = explainEmptyAnswer(telemetry, slot.maxOutputTokens);
       if (emptyExplanation) detail = `${detail} — ${emptyExplanation}`;
     }
@@ -916,19 +953,54 @@ export class Campaign {
       // only the first cannot tell an admitted row from an ordinary unverifiable one. So the binding
       // state travels on the row too, with its stamp already rendered, because a row read months
       // later will not have the manifest beside it.
+      // BOTH READINGS OF A JSON ANSWER, on the row, always together.
+      //
+      // `status` above is and stays the strict transport-compliance verdict — the frozen result.
+      // These columns are the second reading. `jsonViewsDivergent` is the one a reader should look
+      // at first: it is true exactly when the object was right and the transport was not, which is
+      // the fact the Pass 6 ranking could not show. Absent on a non-JSON case, and absent on an
+      // attempt that was never scored.
+      jsonStrictTransportStatus: jsonViews?.strictTransportStatus,
+      jsonSemanticSchemaStatus: jsonViews?.semanticSchemaStatus,
+      jsonSemanticDetail: jsonViews?.semanticDetail,
+      jsonFenceRemoved: jsonViews?.fenceRemoved,
+      jsonFenceInfoString: jsonViews?.fenceInfoString,
+      jsonFenceRefusedBecause: jsonViews?.fenceRefusedBecause,
+      jsonViewsDivergent: jsonViews?.divergent,
+      jsonViewsDivergenceExplanation: jsonViews?.divergenceExplanation,
+      jsonSemanticEvaluatorID: jsonViews?.semanticEvaluatorID,
+      jsonSemanticEvaluatorVersion: jsonViews?.semanticEvaluatorVersion,
       bindingIdentityState: binding?.identityState,
       identityAdmissionStamp: binding?.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
         ? `[${REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE}] ${binding.requestedModelID} (requested, effort `
           + `${binding.effort}) — the provider accepted this identifier and something answered; it named no `
           + 'model, so this row is not a claim that this model answered. Returned model: none.'
         : undefined,
+      // EVERY input token the provider processed, with the decomposition beside it.
+      //
+      // Pass 6 wrote the fresh remainder into this field. The two subscription CLIs leave different
+      // remainders — Claude's is the 2 tokens in front of a 6,000-token cached system prompt, Codex's
+      // is a total with the cached portion taken out — so one column understated Claude by ~1,650x
+      // and Codex by ~1.75x while looking like a like-for-like comparison. The three fields under it
+      // are what make the correction checkable from the row itself.
       inputTokens: outcome.frontier?.inputTokens,
+      freshInputTokens: outcome.frontier?.freshInputTokens,
+      cacheCreationInputTokens: outcome.frontier?.cacheCreationInputTokens,
+      cacheReadInputTokens: outcome.frontier?.cacheReadInputTokens,
       visibleOutputTokens: outcome.frontier?.visibleOutputTokens,
       reasoningTokens: outcome.frontier?.reasoningTokens,
       totalTokens: outcome.frontier?.totalTokens,
       usageProvenance: outcome.frontier?.usageProvenance,
       costMicroUSD: outcome.frontier?.costMicroUSD,
       costProvenance: outcome.frontier?.costProvenance,
+      // THE PLAN ALLOWANCE, which Pass 6 computed and then dropped exactly here. `costMicroUSD` is
+      // the marginal charge and is a true zero on a subscription; writing only that is how a report
+      // tells somebody a Max plan is free. The state and the explanation travel with the figure so
+      // an unreported allowance stays unreported instead of arriving somewhere as a zero.
+      subscriptionIncludedUsageMicroUSD: outcome.frontier?.subscriptionIncludedUsageMicroUSD,
+      subscriptionAllowanceState: outcome.frontier?.subscriptionAllowanceState,
+      subscriptionAllowanceProvenance: outcome.frontier?.subscriptionAllowanceProvenance,
+      subscriptionAllowanceExplanation: outcome.frontier?.subscriptionAllowanceExplanation,
       retryCount: outcome.frontier?.retryCount,
       wastedTokens: outcome.frontier?.wastedTokens,
       timedOut: outcome.frontier?.timedOut,
@@ -1028,13 +1100,19 @@ export class Campaign {
     const reconciliation = this.ledger.reconcile();
     const producedAt = this.host.now().toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-    const rankings = rankCandidates({
-      outcomes: outcomesFromLedger(this.ledger.results.values(), (caseID) => this.catalogue.dimensions.get(caseID)),
+    // ONE SET OF OUTCOMES, TWO TABLES. Read once and ranked twice, so the two views can never be
+    // computed from different evidence or from two reads of a ledger that changed in between.
+    const outcomes = outcomesFromLedger(this.ledger.results.values(), (caseID) => this.catalogue.dimensions.get(caseID));
+    const rankingInputs = {
+      outcomes,
       reconciliation,
       derivedAt: producedAt,
       canonical: this.canonical,
       noncanonicalBecause: this.canonical ? [] : NONCANONICAL_REASONS,
-    });
+    };
+    const rankings = rankCandidates({ ...rankingInputs, view: 'strictTransport' as RankingView });
+    const rankingsSemanticJSONView = rankCandidates({ ...rankingInputs, view: 'semanticSchema' as RankingView });
+    // On the strict table only. See the note on `FinalReport.retention`.
     const retention = recommendRetention(rankings);
 
     const awaiting = [...this.ledger.results.values()].filter((result) => result.status === 'requiresHumanReview');
@@ -1104,6 +1182,7 @@ export class Campaign {
       spending,
       reconciliation,
       rankings,
+      rankingsSemanticJSONView,
       retention,
       humanReview: { awaiting: awaiting.length, packetWritten, packetPath: packetWritten ? paths.packet : undefined, audit },
       guardTrace: this.ledger.events().filter((event) => event.kind === 'guardBreach' || event.kind === 'residencyVerified'
@@ -1121,9 +1200,16 @@ export class Campaign {
       producedAt,
     };
     atomicWriteJSON(paths.rankings, rankings as unknown as CanonicalValue);
+    atomicWriteJSON(paths.rankingsSemantic, rankingsSemanticJSONView as unknown as CanonicalValue);
     atomicWriteJSON(paths.retention, retention as unknown as CanonicalValue);
     atomicWriteJSON(paths.report, report as unknown as CanonicalValue);
-    this.ledger.event('finalized', { complete: reconciliation.complete, provisional: rankings.provisional });
+    this.ledger.event('finalized', {
+      complete: reconciliation.complete,
+      provisional: rankings.provisional,
+      // Traced on the ledger, so the existence of a divergence is part of the campaign's own record
+      // and not only of a report somebody has to open.
+      jsonViewDivergences: rankings.divergences.length,
+    });
     return report;
   }
 

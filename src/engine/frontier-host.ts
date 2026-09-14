@@ -41,8 +41,10 @@ import { readMachine } from './machine';
 import {
   OperationalEnvelope, ProviderBinding, ProviderID, bindingFor, isLocal, isMetered,
 } from './provider';
-import { FrontierAdapter, FrontierResponse, withRetry } from './frontier-adapter';
-import { FrontierAttemptRecord, Provenance } from './frontier-metrics';
+import { FrontierAdapter, FrontierResponse, totalInputTokens, withRetry } from './frontier-adapter';
+import {
+  FrontierAttemptRecord, LOCAL_NO_ALLOWANCE, NOT_A_SUBSCRIPTION, Provenance,
+} from './frontier-metrics';
 import { SpendTracker, SpendingError, attemptCostMicroUSD, worstCaseAttemptMicroUSD } from './spending';
 import { redactError } from './redaction';
 
@@ -90,6 +92,52 @@ export class RoutingHostError extends Error {
     super(message);
     this.name = 'RoutingHostError';
   }
+}
+
+/**
+ * THE ALLOWANCE, AND WHY IT IS OR IS NOT THERE.
+ *
+ * Pass 6's adapters parsed Claude Code's `total_cost_usd` correctly and the value died at this
+ * boundary: the record carried `costMicroUSD` — the marginal charge, always zero on a subscription —
+ * and no allowance field at all. So a completed 48-attempt pilot could report a zero charge and not
+ * one figure for the plan it actually spent, and Pass 5C's measured $0.035257 became unmeasurable.
+ *
+ * Three fields rather than one, because a missing number and a number missing FOR A REASON are
+ * different records and a surface that has only the first has to guess. Zero is never written for
+ * either: a zero allowance is a claim that a Max plan is free.
+ */
+function allowanceRecord(binding: ProviderBinding, response: FrontierResponse): {
+  subscriptionIncludedUsageMicroUSD?: number;
+  subscriptionAllowanceState: 'reported' | 'unavailable';
+  subscriptionAllowanceProvenance: Provenance;
+  subscriptionAllowanceExplanation: string;
+} {
+  if (binding.billingBasis !== 'subscriptionIncluded') {
+    return {
+      subscriptionAllowanceState: 'unavailable',
+      subscriptionAllowanceProvenance: 'unavailable',
+      subscriptionAllowanceExplanation: isLocal(binding) ? LOCAL_NO_ALLOWANCE : NOT_A_SUBSCRIPTION,
+    };
+  }
+  const value = response.subscriptionIncludedUsageMicroUSD;
+  if (value === undefined) {
+    return {
+      subscriptionAllowanceState: 'unavailable',
+      subscriptionAllowanceProvenance: 'unavailable',
+      subscriptionAllowanceExplanation:
+        `${binding.provider} returned no usage valuation for this request, so how much of the plan allowance it `
+        + 'consumed is not known. It is NOT zero: the request was answered, and answering it spent allowance. '
+        + 'Nothing here may be summed as though the unreported attempts consumed nothing.',
+    };
+  }
+  return {
+    subscriptionIncludedUsageMicroUSD: value,
+    subscriptionAllowanceState: 'reported',
+    subscriptionAllowanceProvenance: 'providerReported',
+    subscriptionAllowanceExplanation:
+      `${binding.provider} valued this request at the provider's own list price. This is the plan allowance it `
+      + 'consumed, NOT a charge: no card was billed, and the marginal API charge recorded beside it is a true zero.',
+  };
 }
 
 export class RoutingHost implements CampaignHost {
@@ -235,6 +283,11 @@ export class RoutingHost implements CampaignHost {
       usageProvenance: input !== undefined || output !== undefined ? 'providerReported' : 'unavailable',
       costMicroUSD: 0,
       costProvenance: 'measured',
+      // Stated, not omitted. A local candidate consumed no provider allowance, and that is a fact
+      // about local execution rather than an absence of evidence.
+      subscriptionAllowanceState: 'unavailable',
+      subscriptionAllowanceProvenance: 'unavailable',
+      subscriptionAllowanceExplanation: LOCAL_NO_ALLOWANCE,
       retryCount: 0,
       wastedTokens: 0,
       timedOut: false,
@@ -249,7 +302,22 @@ export class RoutingHost implements CampaignHost {
       ? [{ channel: 'visible', atMilliseconds: response.firstVisibleTokenMilliseconds }]
       : [];
 
-    const input = response.usage.inputTokens;
+    // EVERY input token the provider processed, not the fresh remainder.
+    //
+    // Pass 6 read `usage.inputTokens` here and recorded it as the attempt's input count. That field
+    // is the fresh remainder, and the two tools leave a different remainder: Claude reports 2 fresh
+    // tokens beside 6,000 cached ones, Codex reports a total from which the adapter derives the
+    // remainder. So the Pass 6 ledger understated Claude by ~1,650x AND Codex by ~1.75x, in one
+    // column, which is worse than either alone — the column looked comparable and was not.
+    //
+    // `totalInputTokens()` was written for exactly this and, until now, was reached only as a
+    // presence check. The decomposition travels with the total so the correction is auditable from
+    // the row rather than taken on trust.
+    const totalInput = totalInputTokens(response.usage);
+    const freshInput = response.usage.inputTokens;
+    const cacheCreation = response.usage.cacheCreationInputTokens;
+    const cacheRead = response.usage.cacheReadInputTokens;
+    const input = totalInput;
     const output = response.usage.visibleOutputTokens;
     const reasoning = response.usage.reasoningTokens;
     const counted = input !== undefined || output !== undefined;
@@ -262,6 +330,11 @@ export class RoutingHost implements CampaignHost {
       costMicroUSD = 0;
       costProvenance = 'measured';
     } else if (counted) {
+      // Priced on the TOTAL input, which is the direction in which an imprecise pricing model is
+      // safe: the snapshot carries one input rate and no cache tier, so charging cached tokens at
+      // the full rate can overstate a charge and can never understate one. A ceiling that guards
+      // against the overstatement still guards; one built on the fresh remainder would have let a
+      // metered run spend orders of magnitude past it.
       costMicroUSD = attemptCostMicroUSD(binding, {
         inputTokens: input, outputTokens: output, reasoningTokens: reasoning,
       });
@@ -279,6 +352,8 @@ export class RoutingHost implements CampaignHost {
       this.options.spend.record(costMicroUSD ?? 0, costProvenance === 'providerReported' ? 'providerReported' : 'estimated');
     }
 
+    const allowance = allowanceRecord(binding, response);
+
     const frontier: FrontierAttemptRecord = {
       provider: binding.provider,
       executionClass: binding.executionClass,
@@ -286,12 +361,16 @@ export class RoutingHost implements CampaignHost {
       requestedModelID: binding.requestedModelID,
       reportedModelID: response.reportedModelID,
       inputTokens: input,
+      freshInputTokens: freshInput,
+      cacheCreationInputTokens: cacheCreation,
+      cacheReadInputTokens: cacheRead,
       visibleOutputTokens: output,
       reasoningTokens: reasoning,
       totalTokens: counted ? (input ?? 0) + (output ?? 0) + (reasoning ?? 0) : undefined,
       usageProvenance: counted ? response.usageProvenance : 'unavailable',
       costMicroUSD,
       costProvenance,
+      ...allowance,
       retryCount: response.retryCount,
       wastedTokens: response.wastedTokens,
       timedOut: response.failure?.kind === 'timeout',
@@ -306,6 +385,8 @@ export class RoutingHost implements CampaignHost {
       streamEvents,
       runtime: {
         evalTokenCount: output,
+        // The corrected total, so the telemetry summariser and the ledger row cannot disagree about
+        // how large the request was.
         promptTokenCount: input,
         // Deliberately absent. The provider's own generation duration is not something these APIs
         // report, and deriving one from the client's wall clock would turn a network round trip into
