@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Shell } from '../App';
-import type { ProviderStatusRow, FrontierModelRow } from '../../shared/ipc';
+import type { ProviderStatusRow, FrontierModelRow, CohortReconciliationRow } from '../../shared/ipc';
 import { Card, Modal, Pill, when } from '../components';
 
 // Who can answer a benchmark, how they are reached, and what has actually been established about
@@ -71,9 +71,13 @@ export function ProvidersView({ shell }: { shell: Shell }) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [confirming, setConfirming] = useState<ProviderStatusRow>();
+  const [cohort, setCohort] = useState<CohortReconciliationRow>();
 
   const refresh = useCallback(async () => {
-    try { setRows(await api.providerStatuses()); }
+    try {
+      setRows(await api.providerStatuses());
+      setCohort(await api.requestedCohort());
+    }
     catch (e) { setError(readableError(e)); }
   }, []);
 
@@ -112,6 +116,8 @@ export function ProvidersView({ shell }: { shell: Shell }) {
         command is installed, and whether a key is configured. Whether a subscription is signed in, and which models your
         account may call, can only be learned by running something — so nothing here has, and nothing will until you ask.
       </div>
+
+      {cohort && <RequestedCohort cohort={cohort} />}
 
       {rows === undefined ? <Card><p className="muted">Loading…</p></Card> : rows.map((row) => (
         <Card key={row.provider} title={<>
@@ -215,6 +221,62 @@ export function ProvidersView({ shell }: { shell: Shell }) {
         </Modal>
       )}
     </div>
+  );
+}
+
+/**
+ * What this project ASKED FOR, and whether it is all still there.
+ *
+ * EVERY OTHER TABLE ON THIS SCREEN RENDERS WHAT WAS FOUND. This one renders what was requested, which
+ * is the only way a screen can show something that went missing: a list built from discovery results
+ * has no row for a model nobody looked for. Pass 5B shipped a candidate list missing two explicitly
+ * required models — `claude-opus-5` and `claude-fable-5-1` — and no screen, report or test showed a
+ * gap, because every one of them was rendering findings.
+ *
+ * A configuration that leaves the candidate ladder shows up here as MISSING, in red, by name.
+ */
+function RequestedCohort({ cohort }: { cohort: CohortReconciliationRow }) {
+  return (
+    <Card title={`The requested cohort — ${cohort.requestedCount} configurations asked for, ${cohort.provenCount} proven`}>
+      {cohort.complete ? (
+        <div className="note ok" data-testid="cohort-complete">
+          <strong>All {cohort.requestedCount} requested configurations are still on the testing ladder.</strong>{' '}
+          Being requested is not being available — each row below carries what has actually been established about it.
+        </div>
+      ) : (
+        <div className="note bad" data-testid="cohort-incomplete">
+          <strong>{cohort.missingCount} requested configuration(s) are no longer on the testing ladder.</strong>{' '}
+          They were asked for and something dropped them. Restore them, or record why they were withdrawn — do not
+          substitute a neighbouring model for one of them.
+        </div>
+      )}
+      <div className="table-wrap"><table className="table" data-testid="requested-cohort-table">
+        <thead><tr><th>Requested</th><th>Effort</th><th>Still requested</th><th>Established</th></tr></thead>
+        <tbody>{cohort.requested.map((row) => (
+          <tr key={`${row.provider}:${row.modelID}:${row.effort}`}>
+            <td>
+              <strong>{row.displayName}</strong>
+              <div className="mono small muted">{row.modelID}</div>
+            </td>
+            <td className="small">{row.effort === 'none' ? <span className="muted">no effort flag</span> : row.effort}</td>
+            <td>
+              {row.inLadder
+                ? <Pill tone="ok">on the ladder</Pill>
+                : <Pill tone="bad">MISSING</Pill>}
+            </td>
+            <td className="small">
+              {row.availability === 'proven' && row.verifiedModelID
+                ? <span className="mono">{row.verifiedModelID}</span>
+                : row.availability === 'unproven'
+                  ? <span className="muted">answered, but named no model — unverifiable</span>
+                  : row.availability === 'refused'
+                    ? <span className="muted">refused</span>
+                    : <span className="muted">nothing has asked yet</span>}
+            </td>
+          </tr>
+        ))}</tbody>
+      </table></div>
+    </Card>
   );
 }
 

@@ -23,6 +23,7 @@ import {
   describeBinding, describeExecutionPolicy, discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI,
   estimateSpending, inspectCampaignLock, leasedEndpoints, modelCanThink, modelStoreBaseline, offlineProviderStatuses,
   openaiBaseURL, plannedWorkFor, privacyDisclosure, quantityValue, residencyDisclosure,
+  REQUESTED_COHORT, configurationKey, ladderConfigurations,
 } from '../engine/index';
 import type { FrontierCandidateMetrics } from '../engine/frontier-metrics';
 import type { FinalReport } from '../engine/campaign';
@@ -30,7 +31,7 @@ import type { VerificationReport } from '../engine/manifest';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
 import type {
   CampaignRow, CampaignDetail, CampaignCreateRequest, CampaignExecutionRow, CampaignStartDisclosure,
-  CostPreviewRow, FrontierMetricsRow, ProviderStatusRow, TerminalCommandRow,
+  CohortReconciliationRow, CostPreviewRow, FrontierMetricsRow, ProviderStatusRow, TerminalCommandRow,
 } from '../shared/ipc';
 import { installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
@@ -436,6 +437,41 @@ export class CampaignService extends EventEmitter {
       ...status,
       models: cached.filter((model) => model.provider === status.provider),
     }));
+  }
+
+  /**
+   * The 12 configurations this project asked for, each next to what is currently known about it.
+   *
+   * READS THE REQUEST, NOT THE RESULTS. Every other provider view on this screen starts from what
+   * discovery found and renders that; this one starts from what was ASKED FOR and reports anything
+   * that is no longer there. Pass 5B shipped a cohort missing two explicitly required models and
+   * nothing anywhere went red, because a screen showing found-models cannot show a missing question.
+   *
+   * Contacts nothing: the request is a constant and the availability comes from the same cached
+   * discovery file the rest of the screen reads.
+   */
+  requestedCohort(): CohortReconciliationRow {
+    const cached = this.readDiscovered();
+    const ladder = new Set(ladderConfigurations().map(configurationKey));
+    const requested = REQUESTED_COHORT.map((entry) => {
+      const found = cached.find((model) => model.provider === entry.provider && model.modelID === entry.modelID);
+      return {
+        provider: entry.provider,
+        modelID: entry.modelID,
+        displayName: entry.displayName,
+        effort: entry.effort,
+        inLadder: ladder.has(configurationKey(entry)),
+        availability: found?.availability ?? ('unknown' as const),
+        verifiedModelID: found?.verifiedModelID ?? '',
+      };
+    });
+    return {
+      requested,
+      complete: requested.every((row) => row.inLadder),
+      missingCount: requested.filter((row) => !row.inLadder).length,
+      provenCount: requested.filter((row) => row.availability === 'proven').length,
+      requestedCount: requested.length,
+    };
   }
 
   /** Where discovery's findings are kept. Beside the campaigns, so the terminal reads the same file. */

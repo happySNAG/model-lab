@@ -409,6 +409,36 @@ export interface FrontierModelRow {
   desiredEfforts: string[];
 }
 
+/**
+ * One configuration this project REQUESTED, next to whatever is currently known about it.
+ *
+ * Sent to the UI as its own list rather than derived from the provider rows, for the same reason
+ * `reconciliation.ts` declares it separately from the ladder: a screen that renders only what was
+ * FOUND cannot show what went MISSING, and a cohort that quietly loses a model is exactly the defect
+ * Pass 5C exists to correct.
+ */
+export interface RequestedConfigurationRow {
+  provider: string;
+  modelID: string;
+  displayName: string;
+  effort: string;
+  /** Whether the candidate ladder still plans to ask for this. `false` means the cohort has shrunk. */
+  inLadder: boolean;
+  /** What the discovery store currently says. `unknown` means nothing has asked yet. */
+  availability: 'proven' | 'unproven' | 'refused' | 'unknown';
+  /** The identifier the provider itself returned. Empty means it named none. */
+  verifiedModelID: string;
+}
+
+export interface CohortReconciliationRow {
+  requested: RequestedConfigurationRow[];
+  /** Every requested configuration is still in the ladder. */
+  complete: boolean;
+  missingCount: number;
+  provenCount: number;
+  requestedCount: number;
+}
+
 export interface ProviderStatusRow {
   provider: string;
   label: string;
@@ -623,6 +653,7 @@ export interface ModelLabAPI {
    * which is the property the `probe: 'offline'` field on every row exists to state.
    */
   providerStatuses(): Promise<ProviderStatusRow[]>;
+  requestedCohort(): Promise<CohortReconciliationRow>;
   /** Ask one provider what it is and what this account may call. THIS INVOKES SOMETHING. */
   discoverProvider(provider: string): Promise<ProviderStatusRow>;
   /** What this selection would cost, before anything is created. */
@@ -685,6 +716,7 @@ export const IPC = {
   campaignDisclosure: 'lab:campaign:disclosure',
   leasedEndpoints: 'lab:campaign:endpoints',
   providerStatuses: 'lab:provider:statuses',
+  requestedCohort: 'lab:provider:requested-cohort',
   discoverProvider: 'lab:provider:discover',
   previewCampaignCost: 'lab:campaign:costPreview',
   campaignCost: 'lab:campaign:cost',

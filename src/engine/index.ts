@@ -12,6 +12,8 @@ export * from './credentials';
 export * from './cli-process';
 export * from './discovery';
 export * from './discovery-store';
+export * from './reconciliation';
+export * from './identity-admission';
 export * from './identity-smoke';
 export * from './spending';
 export * from './frontier-metrics';

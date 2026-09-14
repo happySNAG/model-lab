@@ -532,14 +532,29 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       return this.completeCodex(request, text, startedAt, now, notEnforceable);
     }
 
-    const result = await this.run({
-      executable: this.executablePath,
-      args,
-      input: text,
-      timeoutMilliseconds: request.binding.timeoutMilliseconds,
-      shouldCancel: request.shouldCancel,
-      onFirstOutput: (at) => { firstVisibleTokenMilliseconds = at; },
-    });
+    // THE CLAUDE PATH GETS AN EMPTY WORKING DIRECTORY TOO, for the reason `completeCodex` already
+    // documents: a CLI run inside a real directory can read what is in it, and nothing found that way
+    // is in the manifest. `--setting-sources ''` and `--tools ''` already shut off settings, skills and
+    // MCP, so this closes the remaining door rather than being the only lock on it — but "the request
+    // ran somewhere with nothing in it" should be a fact about the ENGINE, not a fact about wherever
+    // the operator happened to be standing when they typed the command.
+    //
+    // Created empty, removed afterwards, and never the repository.
+    const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-claude-'));
+    let result;
+    try {
+      result = await this.run({
+        executable: this.executablePath,
+        args,
+        input: text,
+        timeoutMilliseconds: request.binding.timeoutMilliseconds,
+        shouldCancel: request.shouldCancel,
+        workingDirectory,
+        onFirstOutput: (at) => { firstVisibleTokenMilliseconds = at; },
+      });
+    } finally {
+      try { fs.rmSync(workingDirectory, { recursive: true, force: true }); } catch { /* already gone */ }
+    }
 
     // A REFUSED MODEL EXITS NON-ZERO AND STILL PRINTS ITS DOCUMENTED ENVELOPE. Reading the exit code
     // first would classify a clean, machine-readable 404 as an opaque transport failure and lose the

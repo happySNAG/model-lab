@@ -131,6 +131,28 @@ const CLI_EXECUTABLE: Partial<Record<ProviderID, string>> = {
  * this list can therefore never make a model runnable — only discovery can.
  */
 export const DESIRED_CANDIDATE_LADDER: { provider: ProviderID; modelID: string; displayName: string; desiredEfforts: string[] }[] = [
+  // OPUS 5 AND FABLE 5.1 ARE REQUIRED COHORT MEMBERS, AND NEITHER IS THE MODEL BELOW IT.
+  //
+  // Pass 5B tested what it had and reported what it tested, honestly. But its combined candidate
+  // list contained neither `claude-opus-5` nor `claude-fable-5-1`, and both had been explicitly
+  // required. Nothing refused them and nothing recorded them as missing — they were simply never
+  // asked for, so no row ever said they were absent. THAT is the failure mode this block exists to
+  // prevent: not a wrong answer, but a question that quietly stopped being asked.
+  //
+  // The two nearest names are NOT substitutes, and the resemblance is exactly what makes the
+  // substitution tempting:
+  //   `claude-opus-4-8`  is a DIFFERENT MODEL from `claude-opus-5`.  Not an alias, not a build of it.
+  //   `claude-sonnet-5`  is a DIFFERENT MODEL from `claude-fable-5-1`. A shared `5` is not a lineage.
+  // Either swap would produce a cohort that looked complete while measuring something nobody asked
+  // about — the same class of error as reading a model's prose self-description as its identity.
+  //
+  // Both carry historical identity evidence, preserved unchanged and NOT treated as current proof
+  // (see `reconciliation.ts`): Opus 5 verified over 108 stored attempts on 2026-08-19, and Fable 5.1
+  // verified by a single authorized probe on 2026-09-02 whose STRUCTURED stream self-named
+  // `claude-fable-5-1` while its prose said "Claude Fable 5". History earns a model its place in the
+  // plan. It never earns it a place in a cohort: these rows are born `unproven` like every other.
+  { provider: 'claudeCLI', modelID: 'claude-opus-5', displayName: 'Claude Opus 5', desiredEfforts: ['none'] },
+  { provider: 'claudeCLI', modelID: 'claude-fable-5-1', displayName: 'Claude Fable 5.1', desiredEfforts: ['high'] },
   { provider: 'claudeCLI', modelID: 'claude-haiku-4-5', displayName: 'Claude Haiku 4.5', desiredEfforts: ['none'] },
   { provider: 'claudeCLI', modelID: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', desiredEfforts: ['high', 'max'] },
   { provider: 'claudeCLI', modelID: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', desiredEfforts: ['none'] },

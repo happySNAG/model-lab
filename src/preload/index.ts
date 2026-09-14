@@ -52,6 +52,7 @@ const api: ModelLabAPI = {
   campaignDisclosure: (name) => ipcRenderer.invoke(IPC.campaignDisclosure, name),
   leasedEndpoints: () => ipcRenderer.invoke(IPC.leasedEndpoints),
   providerStatuses: () => ipcRenderer.invoke(IPC.providerStatuses),
+  requestedCohort: () => ipcRenderer.invoke(IPC.requestedCohort),
   discoverProvider: (provider) => ipcRenderer.invoke(IPC.discoverProvider, provider),
   previewCampaignCost: (request) => ipcRenderer.invoke(IPC.previewCampaignCost, request),
   campaignCost: (name) => ipcRenderer.invoke(IPC.campaignCost, name),

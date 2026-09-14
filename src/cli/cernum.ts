@@ -19,7 +19,8 @@ import {
   Campaign, CampaignBuildError, CampaignConfiguration, CampaignError, CampaignLockError, CampaignStatus,
   DEFAULT_EXECUTION_POLICY, DiscoveredFrontierModel, EffortLevel, ExecutionPolicy, FrontierCandidateRequest,
   Ledger, LiveHost, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS, PRICING_FILE_NOTE, PROVIDER_LABELS, PricingSnapshot,
-  DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, ProviderID, ProviderStatus, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
+  DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, ProviderID, ProviderStatus, REQUESTED_COHORT, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
+  configurationKey, ladderConfigurations, reconcileCohort,
   ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure, authorizeSpending,
   breakCampaignLock, breakRuntimeLease, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths,
   SubscriptionCLIAdapter, credentialStatus, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
@@ -239,6 +240,44 @@ function wrap(text: string, width: number): string[] {
  * This command makes no provider request of any kind. It is a PATH lookup and an environment read,
  * which is why it is safe to run constantly and why its answers are mostly `unknown`.
  */
+/**
+ * What was ASKED FOR, printed next to what is known about it.
+ *
+ * The rest of this command prints what discovery FOUND. This prints the request, which is the only
+ * way a terminal can show something that went missing: a list built from results has no line for a
+ * model nobody looked for. Pass 5B published a candidate list missing `claude-opus-5` and
+ * `claude-fable-5-1` — both explicitly required — and nothing went red anywhere, because every
+ * surface was rendering findings.
+ *
+ * A configuration that leaves the ladder is printed as MISSING, by name, and the command says so in
+ * its first line rather than leaving it to be noticed.
+ */
+function renderRequestedCohort(cached: DiscoveredFrontierModel[]): void {
+  const reconciliation = reconcileCohort();
+  const ladder = new Set(ladderConfigurations().map(configurationKey));
+  const proven = REQUESTED_COHORT.filter((entry) => cached.some((model) =>
+    model.provider === entry.provider && model.modelID === entry.modelID && model.availability === 'proven'));
+
+  say(`THE REQUESTED COHORT — ${reconciliation.requestedCount} configurations asked for, `
+    + `${proven.length} proven.`);
+  if (!reconciliation.complete) {
+    say(`  !! ${reconciliation.missingFromLadder.length} REQUESTED CONFIGURATION(S) ARE NO LONGER ON THE LADDER.`);
+    say('     They were asked for and something dropped them. Restore them, or record why they were');
+    say('     withdrawn — do NOT substitute a neighbouring model for one of them.');
+  }
+  for (const entry of REQUESTED_COHORT) {
+    const present = ladder.has(configurationKey(entry));
+    const found = cached.find((model) => model.provider === entry.provider && model.modelID === entry.modelID);
+    const state = !present ? 'MISSING  '
+      : found === undefined ? 'not asked'
+        : found.availability === 'proven' ? 'proven   '
+          : found.availability === 'refused' ? 'refused  ' : 'unverif. ';
+    const effort = entry.effort === 'none' ? '-' : entry.effort;
+    say(`  ${state} ${entry.modelID.padEnd(18)} effort ${effort.padEnd(7)} ${entry.displayName}`);
+  }
+  say('');
+}
+
 async function commandProviders(options: Options): Promise<void> {
   const root = String(options.root ?? defaultCampaignRoot());
   const statuses = offlineProviderStatuses();
@@ -249,6 +288,7 @@ async function commandProviders(options: Options): Promise<void> {
     renderProviderStatus({ ...status, models: known });
   }
   say('');
+  renderRequestedCohort(cached);
   // An expired proof is REPORTED, not silently dropped. A candidate that quietly disappeared from a
   // list is a mystery; a candidate that says its proof aged out is an instruction.
   const { selectable, expired } = selectableFromStore({ writtenAt: '', models: cached });

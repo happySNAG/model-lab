@@ -231,6 +231,7 @@ async function bootstrap(): Promise<void> {
   // Reaches nothing. A PATH lookup and a credential check, which is why the Providers screen may
   // call it on every refresh and why opening the application sends zero provider requests.
   ipcMain.handle(IPC.providerStatuses, () => campaigns.providerStatuses());
+  ipcMain.handle(IPC.requestedCohort, () => campaigns.requestedCohort());
   // THIS ONE INVOKES SOMETHING, and only ever because a person pressed a button that says so.
   ipcMain.handle(IPC.discoverProvider, (_e, provider: string) => campaigns.discoverProvider(provider));
   ipcMain.handle(IPC.previewCampaignCost, (_e, request: CampaignCreateRequest) => campaigns.previewCost(request));
