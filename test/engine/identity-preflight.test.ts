@@ -30,6 +30,7 @@ import {
 } from '../../src/engine/frontier-metrics';
 import { ProviderBinding } from '../../src/engine/provider';
 import { subscriptionBinding, writeFakeCLI } from './frontier-harness';
+import { FIXTURE_ANTHROPIC_KEY } from '../secret-fixtures';
 
 /**
  * A shell fragment that prints a fixture verbatim.
@@ -351,8 +352,10 @@ describe('nothing private leaves the preflight', () => {
   });
 
   it('writes no credential into a smoke result, even when the tool echoes one back', async () => {
+    // Assembled at run time from `test/secret-fixtures`, so no file in this repository contains a
+    // credential-shaped literal and any hit from a secret scan is a genuine one.
     const leaked = JSON.stringify({
-      result: 'ok sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH',
+      result: `ok ${FIXTURE_ANTHROPIC_KEY}`,
       modelUsage: { 'claude-haiku-4-5': { canonicalModel: 'claude-haiku-4-5' } },
       usage: { input_tokens: 2, output_tokens: 4 }, is_error: false,
     });
@@ -360,7 +363,7 @@ describe('nothing private leaves the preflight', () => {
     try {
       const adapter = new SubscriptionCLIAdapter({ provider: 'claudeCLI', executablePath: fake.executablePath });
       const result = await identitySmokeTest(smokeBinding('claude-haiku-4-5'), adapter);
-      expect(JSON.stringify(result)).not.toContain('sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH');
+      expect(JSON.stringify(result)).not.toContain(FIXTURE_ANTHROPIC_KEY);
     } finally { fake.cleanup(); }
   });
 
