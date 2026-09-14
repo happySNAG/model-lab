@@ -155,7 +155,7 @@ function allowanceRecord(binding: ProviderBinding, response: FrontierResponse): 
  *      benchmark whose numbers nobody could reconcile.
  */
 function otlpRecord(binding: ProviderBinding, response: FrontierResponse): {
-  otlpObserved?: boolean; otlpCorrelated?: boolean;
+  otlpObserved?: boolean; otlpCorrelated?: boolean; otlpCorrelationKey?: string;
   otlpTurnReasoningEffort?: string; otlpRequestReasoningEffort?: string;
   otlpInputTokens?: number; otlpNonCachedInputTokens?: number; otlpCachedInputTokens?: number;
   otlpCacheWriteInputTokens?: number; otlpOutputTokens?: number; otlpReasoningOutputTokens?: number;
@@ -175,6 +175,7 @@ function otlpRecord(binding: ProviderBinding, response: FrontierResponse): {
   return {
     otlpObserved: true,
     otlpCorrelated: turn.correlated,
+    otlpCorrelationKey: turn.correlationKey,
     otlpTurnReasoningEffort: turn.turnReasoningEffort,
     otlpRequestReasoningEffort: turn.requestReasoningEffort,
     otlpInputTokens: turn.inputTokens,

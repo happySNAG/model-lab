@@ -955,6 +955,13 @@ async function commandRun(positional: string[], options: Options, resuming: bool
     evidenceFile: path.join(otlpDirectory, `${name}-otlp-payloads.redacted.jsonl`),
   });
   if (observer) {
+    // Said before the run, because a reader of the log should not have to infer it from a column of
+    // `otlpCorrelated: false`. The spans this reads arrive seconds AFTER each attempt closes, so the
+    // join happens after the campaign rather than during it.
+    say('  Spans arrive a few seconds after each attempt closes, so effort and token figures are');
+    say('  joined AFTER the run, on the correlation key recorded on every row.');
+  }
+  if (observer) {
     say(`OTLP observer on ${observer.endpoint} — loopback only, no outbound connection.`);
     say('  Reading: the reasoning effort the tool says it applied, and its token decomposition.');
     say('  NOT reading identity: the telemetry names the model this client REQUESTED, which is not');
@@ -1050,9 +1057,10 @@ async function commandRun(positional: string[], options: Options, resuming: bool
       say('');
       say('OTLP observer stopped.');
       say(`  payloads ${summary.payloadCount} · conversations ${summary.conversationCount} · `
-        + `correlated ${summary.correlatedCount} · identifiers redacted ${summary.redactionCount} `
+        + `observed in-flight ${summary.correlatedCount} · identifiers redacted ${summary.redactionCount} `
         + `(${summary.distinctIdentifiers} distinct)`);
       say(`  evidence: ${summary.evidenceFile}`);
+      say(`  join table: ${summary.indexFile} — keyed by the correlation key on each ledger row`);
       say(`  leak audit: ${summary.leakAuditClean ? 'clean — nothing email-shaped survived redaction'
         : `FAILED — ${summary.leaks.length} identifier(s) reached the file`}`);
       if (!summary.leakAuditClean) {

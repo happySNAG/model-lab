@@ -92,8 +92,8 @@ afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
 
 describe('the collector binds loopback and keeps what arrives', () => {
   it('listens on 127.0.0.1 with an ephemeral port, so two campaigns cannot collide', async () => {
-    const first = await OTLPObserver.start({ evidenceFile: path.join(directory, 'a.jsonl') });
-    const second = await OTLPObserver.start({ evidenceFile: path.join(directory, 'b.jsonl') });
+    const first = await OTLPObserver.start({ evidenceFile: path.join(directory, 'a.jsonl'), shutdownGraceMilliseconds: 0 });
+    const second = await OTLPObserver.start({ evidenceFile: path.join(directory, 'b.jsonl'), shutdownGraceMilliseconds: 0 });
     expect(first.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(second.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(first.endpoint).not.toBe(second.endpoint);
@@ -102,7 +102,7 @@ describe('the collector binds loopback and keeps what arrives', () => {
   });
 
   it('reads the effort and the token decomposition out of the TRACE payload', async () => {
-    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'c.jsonl'), observeTimeoutMilliseconds: 200 });
+    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'c.jsonl'), observeTimeoutMilliseconds: 200, shutdownGraceMilliseconds: 0 });
     await post(observer.endpoint, logPayload());
     await post(observer.endpoint, tracePayload());
     const turn = await observer.observe(THREAD);
@@ -119,7 +119,7 @@ describe('the collector binds loopback and keeps what arrives', () => {
   });
 
   it('returns UNCORRELATED rather than waiting forever when no turn span arrives', async () => {
-    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'd.jsonl'), observeTimeoutMilliseconds: 120 });
+    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'd.jsonl'), observeTimeoutMilliseconds: 120, shutdownGraceMilliseconds: 0 });
     await post(observer.endpoint, logPayload());
     const turn = await observer.observe(THREAD);
     // Logs arrived, so the conversation is known; no turn span, so nothing is claimed about effort.
@@ -129,15 +129,23 @@ describe('the collector binds loopback and keeps what arrives', () => {
     await observer.stop();
   });
 
-  it('returns undefined for a thread it never saw, and never throws', async () => {
-    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'e.jsonl'), observeTimeoutMilliseconds: 80 });
-    expect(await observer.observe('a-thread-that-never-ran')).toBeUndefined();
+  it('returns a PENDING observation for a thread it has not seen, and undefined for no thread at all', async () => {
+    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'e.jsonl'), observeTimeoutMilliseconds: 80, shutdownGraceMilliseconds: 0 });
+    // Not undefined, and the difference matters: this tool's spans arrive after the attempt closes,
+    // so "nothing yet" is the ordinary case and it still needs a key to be joined on later.
+    const pending = await observer.observe('a-thread-that-never-ran');
+    expect(pending).toBeDefined();
+    expect(pending!.correlated).toBe(false);
+    expect(pending!.recordCount).toBe(0);
+    expect(pending!.correlationKey).toMatch(/^\[REDACTED:conversation\.id:\d+\]$/);
+    // An empty thread id is a different thing entirely: there is nothing to key on, and nothing is
+    // invented for it.
     expect(await observer.observe('')).toBeUndefined();
     await observer.stop();
   });
 
   it('keeps conversations apart, so one attempt cannot read another\'s effort', async () => {
-    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'f.jsonl'), observeTimeoutMilliseconds: 150 });
+    const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'f.jsonl'), observeTimeoutMilliseconds: 150, shutdownGraceMilliseconds: 0 });
     await post(observer.endpoint, tracePayload('conversation-one', 'medium'));
     await post(observer.endpoint, tracePayload('conversation-two', 'max'));
     expect((await observer.observe('conversation-one'))?.turnReasoningEffort).toBe('medium');
@@ -151,7 +159,7 @@ describe('the collector binds loopback and keeps what arrives', () => {
 describe('no identifier reaches the evidence file', () => {
   it('redacts user.email, user.account_id, conversation.id and host.name AT INGEST', async () => {
     const evidenceFile = path.join(directory, 'g.jsonl');
-    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 150 });
+    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 150, shutdownGraceMilliseconds: 0 });
     await post(observer.endpoint, logPayload());
     await post(observer.endpoint, tracePayload());
     const summary = await observer.stop();
@@ -170,7 +178,7 @@ describe('no identifier reaches the evidence file', () => {
 
   it('keeps the non-identifying attributes, so the file is still evidence', async () => {
     const evidenceFile = path.join(directory, 'h.jsonl');
-    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 150 });
+    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 150, shutdownGraceMilliseconds: 0 });
     await post(observer.endpoint, tracePayload(THREAD, 'max'));
     await observer.stop();
     const written = fs.readFileSync(evidenceFile, 'utf8');
@@ -181,7 +189,7 @@ describe('no identifier reaches the evidence file', () => {
 
   it('gives one identifier ONE placeholder, so two records stay correlatable without it', async () => {
     const evidenceFile = path.join(directory, 'i.jsonl');
-    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 150 });
+    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 150, shutdownGraceMilliseconds: 0 });
     await post(observer.endpoint, logPayload());
     await post(observer.endpoint, tracePayload());
     const summary = await observer.stop();
@@ -193,7 +201,7 @@ describe('no identifier reaches the evidence file', () => {
 
   it('refuses to keep the bytes of a payload it cannot parse, because it cannot redact one', async () => {
     const evidenceFile = path.join(directory, 'j.jsonl');
-    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 80 });
+    const observer = await OTLPObserver.start({ evidenceFile, observeTimeoutMilliseconds: 80, shutdownGraceMilliseconds: 0 });
     await fetch(observer.endpoint, {
       method: 'POST', headers: { 'content-type': 'application/x-protobuf' }, body: `binary ${EMAIL} payload`,
     });
@@ -208,7 +216,7 @@ describe('no identifier reaches the evidence file', () => {
   it('truncates the file on start, so a resumed run is not two runs merged', async () => {
     const evidenceFile = path.join(directory, 'k.jsonl');
     fs.writeFileSync(evidenceFile, '{"stale":true}\n', 'utf8');
-    const observer = await OTLPObserver.start({ evidenceFile });
+    const observer = await OTLPObserver.start({ evidenceFile, shutdownGraceMilliseconds: 0 });
     await observer.stop();
     expect(fs.readFileSync(evidenceFile, 'utf8')).not.toContain('stale');
   });
@@ -290,7 +298,7 @@ describe('telemetry NEVER establishes identity', () => {
           reportedModelID: '',
           usage: { inputTokens: 3_471, cacheReadInputTokens: 10_624, cacheCreationInputTokens: 0, visibleOutputTokens: 5 },
           otlpTurn: {
-            correlated: true, recordCount: 9,
+            correlated: true, recordCount: 9, correlationKey: '[REDACTED:conversation.id:1]',
             turnReasoningEffort: 'medium', requestReasoningEffort: 'medium',
             inputTokens: 14_095, nonCachedInputTokens: 3_471, cachedInputTokens: 10_624,
             cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 14_100,
@@ -340,7 +348,8 @@ describe('telemetry NEVER establishes identity', () => {
           usage: { inputTokens: 100, visibleOutputTokens: 5 },
           // The tool says it applied `medium` to a binding that froze `max`. That is the whole
           // reason this figure is worth recording.
-          otlpTurn: { correlated: true, recordCount: 4, turnReasoningEffort: 'medium', outputTokens: 5, nonCachedInputTokens: 100 },
+          otlpTurn: { correlated: true, recordCount: 4, correlationKey: '[REDACTED:conversation.id:1]',
+            turnReasoningEffort: 'medium', outputTokens: 5, nonCachedInputTokens: 100 },
         }),
       },
     });
@@ -500,6 +509,94 @@ describe('provider throttling is never a model-quality failure', () => {
     // Each blocked slot still names the candidate that was planned for it.
     for (const key of abort.blockedSlotKeys) {
       expect(campaign.ledger.slot(key)!.candidate).toBe(key.split('|')[0]);
+    }
+  });
+});
+
+// MARK: - The join that replaces waiting
+
+describe('joining a row to a span that arrives after the attempt closed', () => {
+  it('mints a correlation key even when NOTHING has arrived yet', async () => {
+    const observer = await OTLPObserver.start({
+      evidenceFile: path.join(directory, 'join-a.jsonl'), observeTimeoutMilliseconds: 40, shutdownGraceMilliseconds: 0,
+    });
+    // The ordinary case on this tool: the attempt finishes before any span arrives.
+    const turn = await observer.observe(THREAD);
+    expect(turn).toBeDefined();
+    expect(turn!.correlated).toBe(false);
+    expect(turn!.correlationKey).toMatch(/^\[REDACTED:conversation\.id:\d+\]$/);
+    await observer.stop();
+  });
+
+  it('gives the same key to the row and to the span that turns up later', async () => {
+    const evidenceFile = path.join(directory, 'join-b.jsonl');
+    const observer = await OTLPObserver.start({
+      evidenceFile, observeTimeoutMilliseconds: 40, shutdownGraceMilliseconds: 0,
+    });
+    // The attempt closes first and takes a key with it.
+    const atAttemptTime = await observer.observe(THREAD);
+    expect(atAttemptTime!.correlated).toBe(false);
+
+    // Seconds later, in life, the span lands.
+    await post(observer.endpoint, tracePayload(THREAD, 'max'));
+    const summary = await observer.stop();
+
+    // The join table is keyed by exactly what the row recorded.
+    const index = JSON.parse(fs.readFileSync(summary.indexFile, 'utf8')) as Record<string, {
+      correlated: boolean; turnReasoningEffort?: string; nonCachedInputTokens?: number;
+    }>;
+    const joined = index[atAttemptTime!.correlationKey];
+    expect(joined).toBeDefined();
+    expect(joined.correlated).toBe(true);
+    expect(joined.turnReasoningEffort).toBe('max');
+    expect(joined.nonCachedInputTokens).toBe(3_471);
+    // And the key is still not an identifier.
+    expect(fs.readFileSync(evidenceFile, 'utf8')).not.toContain(THREAD);
+    expect(JSON.stringify(index)).not.toContain(THREAD);
+  });
+
+  it('keys the join table by placeholder, never by the conversation id', async () => {
+    const observer = await OTLPObserver.start({
+      evidenceFile: path.join(directory, 'join-c.jsonl'), observeTimeoutMilliseconds: 40, shutdownGraceMilliseconds: 0,
+    });
+    await post(observer.endpoint, tracePayload('conversation-alpha', 'medium'));
+    await post(observer.endpoint, tracePayload('conversation-beta', 'max'));
+    const summary = await observer.stop();
+    const index = JSON.parse(fs.readFileSync(summary.indexFile, 'utf8')) as Record<string, unknown>;
+    expect(Object.keys(index)).toHaveLength(2);
+    for (const key of Object.keys(index)) expect(key).toMatch(/^\[REDACTED:conversation\.id:\d+\]$/);
+    expect(Object.keys(index)).not.toContain('conversation-alpha');
+  });
+
+  it('records the key on the ledger row, so the row is joinable without the id', async () => {
+    const campaignRoot = temporaryRoot('otlp-join-');
+    try {
+      const envelope = envelopeOf(subscriptionBinding('codexCLI:gpt-5.6-sol@medium', 'codexCLI', {
+        effort: 'medium', identityState: REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, verifiedModelID: '',
+      }));
+      const { host } = routingHost({
+        envelope,
+        adapters: {
+          codexCLI: scriptedAdapter('codexCLI', {}, {
+            reportedModelID: '',
+            usage: { inputTokens: 3_471, cacheReadInputTokens: 10_624, visibleOutputTokens: 5 },
+            // What the adapter actually gets back at attempt time: a key, and nothing else yet.
+            otlpTurn: { correlated: false, recordCount: 0, correlationKey: '[REDACTED:conversation.id:7]' },
+          }),
+        },
+      });
+      const campaign = Campaign.create(path.join(campaignRoot, 'run'), configurationFor(envelope), host);
+      await campaign.run({ campaignRootDirectory: campaignRoot });
+      for (const row of campaign.ledger.results.values()) {
+        expect(row.otlpObserved).toBe(true);
+        expect(row.otlpCorrelated).toBe(false);
+        expect(row.otlpCorrelationKey).toBe('[REDACTED:conversation.id:7]');
+        // Still no identity, still no allowance, still the counted tokens.
+        expect(row.reportedModelID).toBe('');
+        expect(row.inputTokens).toBe(3_471 + 10_624);
+      }
+    } finally {
+      fs.rmSync(campaignRoot, { recursive: true, force: true });
     }
   });
 });

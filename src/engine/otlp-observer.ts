@@ -56,7 +56,27 @@ export const OTLP_SENSITIVE_ATTRIBUTES = [
 
 /** What one Codex turn said about itself. Every field optional: the tool may say nothing. */
 export interface OTLPTurnObservation {
-  /** True when a turn span for this conversation actually arrived. False means nothing was observed. */
+  /**
+   * THE DURABLE LINK BETWEEN A LEDGER ROW AND THIS TOOL'S TELEMETRY, and it is not an identifier.
+   *
+   * Measured on a live campaign: the Codex CLI flushes its LOG records promptly but its TRACE spans
+   * arrive 3.8-10.8 seconds AFTER the attempt has finished and been recorded — the exporter shuts
+   * down on its own schedule, well after the adapter has read stdout and returned. The effort and
+   * the token decomposition are on those spans. So the attempt cannot wait for them: blocking long
+   * enough to catch one would have added roughly 48 minutes to a 264-attempt campaign, to learn
+   * something that arrives on its own a few seconds later.
+   *
+   * Instead the row carries this key, the evidence file carries the same key, and the two are joined
+   * AFTER the run. It is the placeholder the redactor assigned to this conversation — stable for the
+   * length of the campaign, meaningless outside it, and already the only form of the conversation id
+   * that is allowed to reach a file.
+   */
+  correlationKey: string;
+  /**
+   * True when a turn span had ALREADY arrived while the attempt was still open. Usually FALSE, and
+   * false is not a failure: it means the observation is pending, and `correlationKey` is how it is
+   * collected. A row is never told that nothing was observed when something was merely late.
+   */
   correlated: boolean;
   /** `codex.turn.reasoning_effort` — the effort the CLI says it applied to the turn. */
   turnReasoningEffort?: string;
@@ -84,8 +104,10 @@ export interface OTLPTurnSource {
 export interface OTLPObserverOptions {
   /** Where the redacted payloads are written. One file per campaign. */
   evidenceFile: string;
-  /** How long `observe` waits for a turn span after the child has exited. */
+  /** How long `observe` waits for a turn span. Short by design — see `correlationKey`. */
   observeTimeoutMilliseconds?: number;
+  /** How long `stop` waits for spans still in the exporter's queue before closing the socket. */
+  shutdownGraceMilliseconds?: number;
   /** Fixed port, for a test that needs one. Life uses an ephemeral port. */
   port?: number;
 }
@@ -156,7 +178,9 @@ export class OTLPObserver implements OTLPTurnSource {
       const conversationID = attributes['conversation.id'];
       if (typeof conversationID !== 'string' || conversationID.length === 0) continue;
       const entry = this.byConversation.get(conversationID)
-        ?? { correlated: false, recordCount: 0 } as OTLPTurnObservation;
+        // The key is minted on first sight, by the SAME function the redactor uses, so a row written
+        // now and a span written ten seconds from now carry the same one.
+        ?? { correlated: false, recordCount: 0, correlationKey: this.placeholderFor('conversation.id', conversationID) } as OTLPTurnObservation;
       entry.recordCount += 1;
       const text = (key: string): string | undefined =>
         (typeof attributes[key] === 'string' ? attributes[key] as string : undefined);
@@ -207,7 +231,10 @@ export class OTLPObserver implements OTLPTurnSource {
     if (threadID.length === 0) return undefined;
     const existing = this.byConversation.get(threadID);
     if (existing?.correlated) return existing;
-    const timeout = this.options.observeTimeoutMilliseconds ?? 2_000;
+    // A SHORT wait, and deliberately short. See the note on `correlationKey`: the span this would be
+    // waiting for arrives seconds after the attempt closes, so waiting for it stalls the campaign
+    // without catching it. The wait is kept only for the case where it has very nearly arrived.
+    const timeout = this.options.observeTimeoutMilliseconds ?? 250;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         const list = (this.waiting.get(threadID) ?? []).filter((entry) => entry.timer !== timer);
@@ -216,7 +243,16 @@ export class OTLPObserver implements OTLPTurnSource {
       }, timeout);
       this.waiting.set(threadID, [...(this.waiting.get(threadID) ?? []), { resolve, timer }]);
     });
-    return this.byConversation.get(threadID);
+    const found = this.byConversation.get(threadID);
+    if (found) return found;
+    // Nothing has arrived for this thread yet — which on this tool is the ordinary case. The key is
+    // minted anyway, so the row can be joined to whatever arrives later. An observation with no
+    // figures and a key is honest; one with no key would be unrecoverable.
+    const pending: OTLPTurnObservation = {
+      correlated: false, recordCount: 0, correlationKey: this.placeholderFor('conversation.id', threadID),
+    };
+    this.byConversation.set(threadID, pending);
+    return pending;
   }
 
   // MARK: - Redaction, at ingest
@@ -255,17 +291,28 @@ export class OTLPObserver implements OTLPTurnSource {
 
   async stop(): Promise<{
     payloadCount: number; redactionCount: number; distinctIdentifiers: number;
-    conversationCount: number; correlatedCount: number;
+    conversationCount: number; correlatedCount: number; indexFile: string;
     leakAuditClean: boolean; leaks: string[]; evidenceFile: string; endpoint: string;
   }> {
     for (const [conversationID] of this.waiting) this.wake(conversationID);
+    // A grace period before the socket closes, so the spans still in the exporter's queue are not
+    // thrown away by shutting down the thing they are being sent to. Measured at 3.8-10.8s per turn
+    // on a live campaign; this covers the last few attempts' worth.
+    await new Promise<void>((resolve) => setTimeout(resolve, this.options.shutdownGraceMilliseconds ?? 15_000));
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
     // PROOF, NOT ASSERTION. The file is re-read and searched for the shape a surviving email address
     // would have. A redactor whose own output nobody checked is a claim.
     const file = path.resolve(this.options.evidenceFile);
     const written = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     const leaks = [...written.matchAll(EMAIL_SHAPE)].map((match) => match[0]);
+    // THE JOIN TABLE, keyed by the placeholder and never by the identifier. This is what turns a
+    // late-arriving span into a figure a report can attach to an attempt.
+    const indexFile = `${file.replace(/\.jsonl$/, '')}.index.json`;
+    const index: Record<string, OTLPTurnObservation> = {};
+    for (const observation of this.byConversation.values()) index[observation.correlationKey] = observation;
+    fs.writeFileSync(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
     return {
+      indexFile,
       payloadCount: this.payloadCount,
       redactionCount: this.redactionCount,
       distinctIdentifiers: this.placeholders.size,

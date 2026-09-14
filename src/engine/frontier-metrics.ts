@@ -347,7 +347,17 @@ export interface FrontierAttemptRecord extends Record<string, CanonicalValue | u
    * carrying every field below is still `requestAcceptedIdentityUnverifiable`.
    */
   otlpObserved?: boolean;
+  /**
+   * True only when a turn span had arrived while the attempt was still open. Usually FALSE, because
+   * this tool's spans arrive seconds after the attempt closes — see `otlpCorrelationKey`.
+   */
   otlpCorrelated?: boolean;
+  /**
+   * The key that joins this row to the campaign's OTLP evidence AFTER the run. Not an identifier:
+   * it is the placeholder the redactor assigned to the conversation, and it is the only form of that
+   * conversation id permitted to reach a file.
+   */
+  otlpCorrelationKey?: string;
   otlpTurnReasoningEffort?: string;
   otlpRequestReasoningEffort?: string;
   otlpInputTokens?: number;

@@ -1067,6 +1067,7 @@ export class Campaign {
       // carrying all of these is still `requestAcceptedIdentityUnverifiable`.
       otlpObserved: outcome.frontier?.otlpObserved,
       otlpCorrelated: outcome.frontier?.otlpCorrelated,
+      otlpCorrelationKey: outcome.frontier?.otlpCorrelationKey,
       otlpTurnReasoningEffort: outcome.frontier?.otlpTurnReasoningEffort,
       otlpRequestReasoningEffort: outcome.frontier?.otlpRequestReasoningEffort,
       otlpInputTokens: outcome.frontier?.otlpInputTokens,
