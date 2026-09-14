@@ -30,6 +30,7 @@
 import { CanonicalValue } from './canonical';
 import { EffortLevel, ProviderBinding } from './provider';
 import { FrontierUsage } from './frontier-adapter';
+import { codexOTLPConfigArgument } from './otlp-observer';
 import { redactSecrets } from './redaction';
 
 /**
@@ -83,6 +84,16 @@ export const CODEX_ULTRA_IS_NOT_A_REASONING_EFFORT =
 export interface CodexIsolation {
   /** A freshly created empty directory, so there is no AGENTS.md and no project content to read. */
   workingDirectory: string;
+  /**
+   * A LOOPBACK OTLP collector to point this invocation's telemetry at, when the campaign asked for
+   * one. Absent by default: a benchmark that exported telemetry nobody requested would be a
+   * benchmark that decided on its own to send something somewhere.
+   *
+   * `--ignore-user-config` is already among the isolation flags, so the operator's own `[otel]`
+   * block cannot reach the request either way — this override is the only route, which is what makes
+   * the destination auditable from the argument list.
+   */
+  otlpEndpoint?: string;
 }
 
 /**
@@ -131,6 +142,10 @@ export function buildCodexExecArguments(binding: ProviderBinding, isolation: Cod
   args.push('--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules');
   args.push('-s', 'read-only');
   args.push('-c', 'tools.web_search=false');
+  // Telemetry to a collector this machine owns, and only when one was asked for. Appended here
+  // rather than in the adapter so it appears in `activeIsolation` below and in the recorded
+  // argument list: where a tool's telemetry goes is part of what a reader has to be able to check.
+  if (isolation.otlpEndpoint !== undefined) args.push('-c', codexOTLPConfigArgument(isolation.otlpEndpoint));
 
   if (binding.requestedModelID.length > 0) args.push('-m', binding.requestedModelID);
 
@@ -167,6 +182,12 @@ export function buildCodexExecArguments(binding: ProviderBinding, isolation: Cod
   activeIsolation.push('prompt delivered on stdin — never in argv, where the process table would expose it');
   activeIsolation.push('OPENAI_API_KEY and CODEX_API_KEY removed from the child environment — both are read by this '
     + 'binary, and either one present could turn a run authorised as subscription-included into a metered charge');
+  if (isolation.otlpEndpoint !== undefined) {
+    activeIsolation.push(`-c otel=… — this turn's OpenTelemetry export is directed at ${isolation.otlpEndpoint}, a `
+      + 'collector on this machine\'s loopback interface that makes no outbound connection. It is read for the '
+      + 'reasoning effort the tool says it applied and the token decomposition it reports, and for nothing else: '
+      + 'the identifiers in it are redacted at ingest, and NOTHING in it establishes which model answered');
+  }
 
   return { args, unexpressed, notEnforceable, activeIsolation };
 }
@@ -174,6 +195,8 @@ export function buildCodexExecArguments(binding: ProviderBinding, isolation: Cod
 /** One event from `codex exec --json`, as far as anything here is willing to assume. */
 interface CodexEvent {
   type: string;
+  /** On `thread.started`. Byte-identical to `conversation.id` in this tool's own telemetry. */
+  thread_id?: string;
   item?: { id?: string; type?: string; text?: string; message?: string };
   usage?: Record<string, unknown>;
   error?: { message?: string };
@@ -182,6 +205,11 @@ interface CodexEvent {
 
 export interface ParsedCodexResponse {
   answerText: string;
+  /**
+   * The `thread.started` id. Kept ONLY to match this turn to its own telemetry, which names the same
+   * value `conversation.id`. Never an identity, never written to an evidence file.
+   */
+  threadID?: string;
   usage: FrontierUsage;
   raw?: CanonicalValue;
   /** True when the stream ended in `turn.failed`. */
@@ -227,13 +255,19 @@ export function parseCodexExecJSONL(stdout: string): ParsedCodexResponse | undef
   if (events.length === 0) return undefined;
 
   let answerText = '';
+  let threadID: string | undefined;
   let usageBlock: Record<string, unknown> | undefined;
   let isError = false;
   let errorMessage: string | undefined;
   const toolInvocations: string[] = [];
 
   for (const event of events) {
-    if (event.type === 'item.completed' && event.item) {
+    if (event.type === 'thread.started') {
+      // Kept for ONE purpose: matching this turn to its own telemetry, which keys on the same value
+      // under the name `conversation.id`. It is not an identity, not recorded as one, and never
+      // written to an evidence file — see `otlp-observer.ts`.
+      threadID = typeof event.thread_id === 'string' ? event.thread_id : threadID;
+    } else if (event.type === 'item.completed' && event.item) {
       const kind = event.item.type ?? '';
       if (kind === 'agent_message') {
         answerText = typeof event.item.text === 'string' ? event.item.text : answerText;
@@ -257,6 +291,7 @@ export function parseCodexExecJSONL(stdout: string): ParsedCodexResponse | undef
 
   return {
     answerText,
+    threadID,
     usage: readCodexUsage(usageBlock),
     raw: (usageBlock ?? null) as CanonicalValue,
     isError,

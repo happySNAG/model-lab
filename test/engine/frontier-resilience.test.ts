@@ -31,7 +31,22 @@ afterEach(() => fs.rmSync(campaignRoot, { recursive: true, force: true }));
 const SUBSCRIPTION = envelopeOf(subscriptionBinding('claudeCLI:sonnet'));
 
 describe('a provider failure is a recorded outcome, not a crash', () => {
-  it('records a rate limit as a runtimeError and keeps going', async () => {
+  /**
+   * SUPERSEDED IN PASS 8, DELIBERATELY. This case previously asserted that a rate limit was
+   * recorded as a `runtimeError` row and the campaign carried on — "records a rate limit as a
+   * runtimeError and keeps going".
+   *
+   * That was wrong, and a 440-attempt campaign is what made it obvious. The ranking's counting rule
+   * treats everything that is not a pass, a partial, an awaited review or inapplicable as a FAIL, so
+   * a `runtimeError` row became a quality failure for a model that was never allowed to answer. A
+   * subscription that throttles halfway through a long run would have handed every remaining
+   * candidate a wall of zeroes and inverted the leaderboard.
+   *
+   * So a throttle now aborts and records nothing. The behaviour the old assertion described is kept
+   * in the name of this test, because a reader who finds the old expectation somewhere else deserves
+   * to know it was replaced on purpose rather than lost.
+   */
+  it('ABORTS on a rate limit rather than recording a runtimeError that would count as a failure', async () => {
     const adapter = scriptedAdapter('claudeCLI', {}, {
       failure: { kind: 'rateLimited', detail: '429 slow down' },
     });
@@ -39,12 +54,15 @@ describe('a provider failure is a recorded outcome, not a crash', () => {
     const campaign = Campaign.create(root, configurationFor(SUBSCRIPTION), host);
     const status = await campaign.run({ campaignRootDirectory: campaignRoot });
 
-    expect(status.state).toBe('complete');
+    expect(status.state).toBe('aborted');
+    // The property this file exists to protect still holds: no slot has two outcomes or none it
+    // cannot account for. It has NO outcome, and the abort says which slots are still runnable.
     expect(status.reconciliation.balances).toBe(true);
-    for (const row of campaign.ledger.results.values()) {
-      expect(row.status).toBe('runtimeError');
-      expect(String(row.detail)).toMatch(/claudeCLI\.rateLimited/);
-    }
+    expect(campaign.ledger.results.size).toBe(0);
+    const abort = campaign.ledger.standingAbort()!;
+    expect(abort.stage).toBe('providerThrottling');
+    expect(abort.reason).toMatch(/claudeCLI\.rateLimited/);
+    expect(abort.blockedSlotCount).toBe(campaign.ledger.plan.length);
   });
 
   it('records a timeout as a timeout, and marks the row so a metrics table can count it', async () => {

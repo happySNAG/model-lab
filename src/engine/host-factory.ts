@@ -28,6 +28,7 @@ import { FrontierAdapter, MeteredAPIAdapter, SubscriptionCLIAdapter } from './fr
 import { OperationalEnvelope, ProviderID, isLocal } from './provider';
 import { SpendTracker, SpendingAuthorization, restoreSpendFromRows } from './spending';
 import { CredentialLookupOptions } from './credentials';
+import { OTLPTurnSource } from './otlp-observer';
 import { operationalEnvelopeDigest } from './provider';
 
 /** The published endpoints. Overridable ONLY through the environment, and only for a mock server. */
@@ -44,6 +45,13 @@ export interface AdapterOptions {
   credentials?: CredentialLookupOptions;
   /** Supplied by the tests to drive a fake executable; never set in life. */
   overrides?: Partial<Record<ProviderID, FrontierAdapter>>;
+  /**
+   * A loopback OTLP collector for this campaign, when the operator asked for one.
+   *
+   * Reaches the Codex adapter only — the adapter itself drops it for any other provider — and is
+   * absent in the ordinary case. A campaign exports a tool's telemetry nowhere unless it was asked.
+   */
+  otlp?: OTLPTurnSource;
 }
 
 /**
@@ -63,7 +71,7 @@ export function adaptersFor(envelope: OperationalEnvelope, options: AdapterOptio
     if (override) { adapters[binding.provider] = override; continue; }
     switch (binding.provider) {
       case 'claudeCLI': case 'codexCLI':
-        adapters[binding.provider] = new SubscriptionCLIAdapter({ provider: binding.provider });
+        adapters[binding.provider] = new SubscriptionCLIAdapter({ provider: binding.provider, otlp: options.otlp });
         break;
       case 'anthropicAPI':
         adapters[binding.provider] = new MeteredAPIAdapter({

@@ -47,6 +47,7 @@ import { EffortLevel, ProviderBinding, ProviderID } from './provider';
 import { Provenance, Quantity, estimatedQuantity, measuredQuantity, reportedQuantity, unavailableQuantity } from './frontier-metrics';
 import { redactError, redactSecrets } from './redaction';
 import { requireCredential, CredentialLookupOptions } from './credentials';
+import { OTLPTurnObservation, OTLPTurnSource } from './otlp-observer';
 
 export type FrontierFailureKind =
   | 'notInstalled' | 'notAuthenticated' | 'timeout' | 'cancelled' | 'rateLimited'
@@ -111,6 +112,18 @@ export interface FrontierResponse {
    * Distinct from the settings that would have been silently ignored, which refuse the request.
    */
   notEnforceable?: string[];
+  /**
+   * WHAT THE TOOL'S OWN TELEMETRY SAID ABOUT THIS TURN, when a campaign asked for a collector.
+   *
+   * Present only for Codex, and only under a per-campaign opt-in. It is read for the reasoning
+   * effort the tool says it applied — which `codex exec --json` never echoes — and for the token
+   * decomposition it reports, which is checked AGAINST stdout rather than trusted over it.
+   *
+   * IT ESTABLISHES NO IDENTITY. `reportedModelID` above is never written from it. The `model`
+   * attribute in that telemetry is the identifier this client SENT, and a client naming its own
+   * request is not a model naming itself in a reply.
+   */
+  otlpTurn?: OTLPTurnObservation;
 }
 
 export interface FrontierRequest {
@@ -207,6 +220,13 @@ export interface SubscriptionCLIOptions {
   executablePath?: string;
   run?: (options: Parameters<typeof runCLI>[0]) => Promise<CLIResult>;
   findExecutable?: (name: string) => string | undefined;
+  /**
+   * A loopback OTLP collector for this campaign, when one was asked for. Codex only.
+   *
+   * Absent by default, and absent is the ordinary case: a benchmark does not export a tool's
+   * telemetry anywhere unless the campaign that froze it said to.
+   */
+  otlp?: OTLPTurnSource;
 }
 
 const CLI_NAME: Partial<Record<ProviderID, string>> = { claudeCLI: 'claude', codexCLI: 'codex' };
@@ -487,6 +507,7 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
   readonly provider: ProviderID;
   private readonly executablePath?: string;
   private readonly run: (options: Parameters<typeof runCLI>[0]) => Promise<CLIResult>;
+  private readonly otlp?: OTLPTurnSource;
 
   constructor(options: SubscriptionCLIOptions) {
     this.provider = options.provider;
@@ -494,6 +515,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
     const locate = options.findExecutable ?? ((n: string) => findExecutable(n));
     this.executablePath = options.executablePath ?? (name ? locate(name) : undefined);
     this.run = options.run ?? runCLI;
+    // Codex only, whatever was passed. The Claude CLI has no OTLP exporter this engine reads, and
+    // silently accepting a collector for it would imply a capability that does not exist.
+    this.otlp = options.provider === 'codexCLI' ? options.otlp : undefined;
   }
 
   async complete(request: FrontierRequest): Promise<FrontierResponse> {
@@ -678,7 +702,10 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
     const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-codex-'));
     let firstVisibleTokenMilliseconds: number | undefined;
     try {
-      const built = buildCodexExecArguments(request.binding, { workingDirectory });
+      const built = buildCodexExecArguments(request.binding, {
+        workingDirectory,
+        otlpEndpoint: this.otlp?.endpoint,
+      });
       if (built.unexpressed.length > 0) {
         return empty('budgetRefused',
           `${request.binding.candidate} froze settings this CLI cannot express, so the request was not sent: `
@@ -753,6 +780,11 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       }
 
       const reported = totalInputTokens(parsed.usage) !== undefined || parsed.usage.visibleOutputTokens !== undefined;
+      // Matched on the `thread.started` id, which this tool's telemetry names `conversation.id` and
+      // which is byte-identical. A bounded wait, and a miss is recorded as a miss: a campaign must
+      // never stall on telemetry, because telemetry is not what it is measuring.
+      const otlpTurn = this.otlp === undefined || parsed.threadID === undefined
+        ? undefined : await this.otlp.observe(parsed.threadID);
       return {
         answerText: parsed.answerText,
         // ALWAYS EMPTY, AND THAT IS THE FINDING. `codex exec --json` names no model in any event, so
@@ -775,6 +807,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         subscriptionIncludedUsageMicroUSD: undefined,
         participatingModelIDs: [],
         notEnforceable: [...notEnforceable, ...built.notEnforceable],
+        // Carried beside `reportedModelID: ''` above, deliberately adjacent: whatever this says, the
+        // identity of what answered is still unestablished.
+        otlpTurn,
       };
     } finally {
       // Removed whether the request succeeded, failed, timed out or threw. A preflight that left a
@@ -1076,6 +1111,8 @@ export interface ScriptedFrontierAnswer {
   usageProvenance?: Provenance;
   /** The provider's own list valuation of the request, so the allowance path is testable end to end. */
   subscriptionIncludedUsageMicroUSD?: number;
+  /** A telemetry observation, so the OTLP path is testable without a collector or a real CLI. */
+  otlpTurn?: OTLPTurnObservation;
   firstVisibleTokenMilliseconds?: number;
   totalElapsedMilliseconds?: number;
   failure?: { kind: FrontierFailureKind; detail: string };
@@ -1132,6 +1169,8 @@ export class ScriptedFrontierAdapter implements FrontierAdapter {
       // Left UNDEFINED unless a test sets it, which is the Codex case in life: a provider that
       // reports no valuation must not acquire one by default.
       subscriptionIncludedUsageMicroUSD: answer.subscriptionIncludedUsageMicroUSD,
+      // Undefined unless a test sets it — the ordinary case is a campaign with no collector.
+      otlpTurn: answer.otlpTurn,
       firstVisibleTokenMilliseconds: answer.firstVisibleTokenMilliseconds ?? 25,
       totalElapsedMilliseconds: answer.totalElapsedMilliseconds ?? 90,
       retryCount: 0,

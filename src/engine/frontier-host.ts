@@ -140,6 +140,63 @@ function allowanceRecord(binding: ProviderBinding, response: FrontierResponse): 
   };
 }
 
+/**
+ * The tool's own account of the turn, folded onto the record — and NOTHING ELSE folded with it.
+ *
+ * Read the note on `FrontierAttemptRecord.otlpObserved` first. Two properties of this function are
+ * load-bearing and are the reason it is a function rather than a spread at the call site:
+ *
+ *   1  IT NEVER WRITES `reportedModelID`. The telemetry's `model` attribute is the identifier the
+ *      client sent, so using it would turn a self-report into a provider's answer. A Codex row with
+ *      a full observation is still `requestAcceptedIdentityUnverifiable`.
+ *   2  IT NEVER REPLACES A COUNTED TOKEN. The stdout figures stay the record's token columns; these
+ *      sit beside them and are CHECKED against them. Where they disagree, both are kept and the
+ *      disagreement is recorded, because a benchmark that silently preferred one source would be a
+ *      benchmark whose numbers nobody could reconcile.
+ */
+function otlpRecord(binding: ProviderBinding, response: FrontierResponse): {
+  otlpObserved?: boolean; otlpCorrelated?: boolean;
+  otlpTurnReasoningEffort?: string; otlpRequestReasoningEffort?: string;
+  otlpInputTokens?: number; otlpNonCachedInputTokens?: number; otlpCachedInputTokens?: number;
+  otlpCacheWriteInputTokens?: number; otlpOutputTokens?: number; otlpReasoningOutputTokens?: number;
+  otlpTotalTokens?: number; otlpMCPServers?: string;
+  otlpTokensAgreeWithStdout?: boolean; otlpEffortMatchesBinding?: boolean;
+} {
+  const turn = response.otlpTurn;
+  if (turn === undefined) {
+    // No collector ran for this attempt. Recorded as an absence rather than as a miss: "nobody
+    // asked" and "we asked and nothing came" are different facts about a row.
+    return {};
+  }
+  const stdoutInput = response.usage.inputTokens;
+  const stdoutOutput = response.usage.visibleOutputTokens;
+  const checkable = turn.nonCachedInputTokens !== undefined && stdoutInput !== undefined
+    && turn.outputTokens !== undefined && stdoutOutput !== undefined;
+  return {
+    otlpObserved: true,
+    otlpCorrelated: turn.correlated,
+    otlpTurnReasoningEffort: turn.turnReasoningEffort,
+    otlpRequestReasoningEffort: turn.requestReasoningEffort,
+    otlpInputTokens: turn.inputTokens,
+    otlpNonCachedInputTokens: turn.nonCachedInputTokens,
+    otlpCachedInputTokens: turn.cachedInputTokens,
+    otlpCacheWriteInputTokens: turn.cacheWriteInputTokens,
+    otlpOutputTokens: turn.outputTokens,
+    otlpReasoningOutputTokens: turn.reasoningOutputTokens,
+    otlpTotalTokens: turn.totalTokens,
+    otlpMCPServers: turn.mcpServers,
+    // The Codex adapter derives the fresh remainder from the total, and the telemetry reports that
+    // remainder directly as `non_cached_input_tokens`. Two independent routes to one figure is
+    // exactly the kind of agreement worth recording — and exactly the kind of disagreement worth
+    // shouting about if it ever appears.
+    otlpTokensAgreeWithStdout: checkable
+      ? turn.nonCachedInputTokens === stdoutInput && turn.outputTokens === stdoutOutput
+      : undefined,
+    otlpEffortMatchesBinding: turn.turnReasoningEffort === undefined
+      ? undefined : turn.turnReasoningEffort === binding.effort,
+  };
+}
+
 export class RoutingHost implements CampaignHost {
   readonly residency: ResidencyController;
   readonly now: () => Date;
@@ -353,6 +410,7 @@ export class RoutingHost implements CampaignHost {
     }
 
     const allowance = allowanceRecord(binding, response);
+    const otlp = otlpRecord(binding, response);
 
     const frontier: FrontierAttemptRecord = {
       provider: binding.provider,
@@ -371,6 +429,7 @@ export class RoutingHost implements CampaignHost {
       costMicroUSD,
       costProvenance,
       ...allowance,
+      ...otlp,
       retryCount: response.retryCount,
       wastedTokens: response.wastedTokens,
       timedOut: response.failure?.kind === 'timeout',

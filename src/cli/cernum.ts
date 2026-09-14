@@ -21,7 +21,7 @@ import {
   Ledger, LiveHost, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS, PRICING_FILE_NOTE, PROVIDER_LABELS, PricingSnapshot,
   DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, ProviderID, ProviderStatus, REQUESTED_COHORT, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
   configurationKey, ladderConfigurations, reconcileCohort,
-  DIVERGENCE_MEANS, FinalRankings,
+  DIVERGENCE_MEANS, FinalRankings, OTLPObserver, OTLPTurnSource,
   ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure, authorizeSpending,
   breakCampaignLock, breakRuntimeLease, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths,
   SubscriptionCLIAdapter, credentialStatus, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
@@ -167,6 +167,7 @@ async function hostFor(configuration: CampaignConfiguration, options: Options, c
   authorization?: ReturnType<Campaign['readAuthorization']>;
   priorRows?: Record<string, unknown>[];
   shouldCancel?: () => boolean;
+  otlp?: OTLPTurnSource;
 } = {}) {
   if (options.synthetic) {
     const pinned = Object.fromEntries(configuration.candidates.map((candidate) => [candidate.name, candidate]));
@@ -177,6 +178,7 @@ async function hostFor(configuration: CampaignConfiguration, options: Options, c
     authorization: context.authorization,
     priorRows: context.priorRows,
     shouldCancel: context.shouldCancel,
+    otlp: context.otlp,
   }).host;
 }
 
@@ -931,6 +933,36 @@ async function commandRun(positional: string[], options: Options, resuming: bool
 
   let stopping = false;
 
+  // THE TELEMETRY COLLECTOR IS OPT-IN, PER CAMPAIGN, AND ONLY FOR CODEX.
+  //
+  // `codex exec --json` echoes no reasoning effort, so Pass 6 and Pass 7 could only ever record a
+  // Codex candidate's effort as accepted and never as applied. The tool's own OTLP exporter does
+  // carry it. This starts a collector on loopback, with an ephemeral port and no outbound
+  // connection, and points each `codex exec` invocation at it through a per-invocation override —
+  // the operator's `~/.codex/config.toml` is never touched, and `--ignore-user-config` means it
+  // could not have reached the request anyway.
+  //
+  // It is a flag rather than a default because exporting a tool's telemetry anywhere is a decision,
+  // and because every record `codex` emits carries the operator's email address. Those identifiers
+  // are redacted at ingest, before a byte is written, and the file is audited on shutdown.
+  const otlpDirectory = options['otlp-observer'] === undefined ? undefined : String(options['otlp-observer']);
+  const usesCodex = (configuration.operationalEnvelope?.bindings ?? []).some((binding) => binding.provider === 'codexCLI');
+  if (otlpDirectory !== undefined && !usesCodex) {
+    fail('--otlp-observer was given for a campaign with no codexCLI candidate. Nothing would export telemetry to it, '
+      + 'so the collector was not started and nothing was run. Only the Codex CLI exposes an exporter this engine reads.', 2);
+  }
+  const observer = otlpDirectory === undefined ? undefined : await OTLPObserver.start({
+    evidenceFile: path.join(otlpDirectory, `${name}-otlp-payloads.redacted.jsonl`),
+  });
+  if (observer) {
+    say(`OTLP observer on ${observer.endpoint} — loopback only, no outbound connection.`);
+    say('  Reading: the reasoning effort the tool says it applied, and its token decomposition.');
+    say('  NOT reading identity: the telemetry names the model this client REQUESTED, which is not');
+    say('  a model naming itself. Every Codex row stays requestAcceptedIdentityUnverifiable.');
+    say('  Identifiers (user.email, user.account_id, conversation.id) are redacted at ingest.');
+    say('');
+  }
+
   // Opened twice on purpose. The first open reads the ledger and the authorization off disk; the
   // second builds the host WITH them, so a spending ceiling is enforced against everything this
   // campaign has already spent rather than restarting at zero on every resume.
@@ -938,7 +970,7 @@ async function commandRun(positional: string[], options: Options, resuming: bool
   const authorization = reading.readAuthorization();
   const priorRows = reading.ledgerRows();
   const campaign = Campaign.open(directory, configuration, await hostFor(configuration, options, {
-    authorization, priorRows, shouldCancel: () => stopping,
+    authorization, priorRows, shouldCancel: () => stopping, otlp: observer,
   }));
 
   const verification = campaign.verify();
@@ -1010,6 +1042,23 @@ async function commandRun(positional: string[], options: Options, resuming: bool
   } finally {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
+    // Closed whether the run completed, paused, aborted or threw — and its own output audited
+    // before anything else is printed. A collector left listening would outlive the campaign it
+    // was isolated to.
+    if (observer) {
+      const summary = await observer.stop();
+      say('');
+      say('OTLP observer stopped.');
+      say(`  payloads ${summary.payloadCount} · conversations ${summary.conversationCount} · `
+        + `correlated ${summary.correlatedCount} · identifiers redacted ${summary.redactionCount} `
+        + `(${summary.distinctIdentifiers} distinct)`);
+      say(`  evidence: ${summary.evidenceFile}`);
+      say(`  leak audit: ${summary.leakAuditClean ? 'clean — nothing email-shaped survived redaction'
+        : `FAILED — ${summary.leaks.length} identifier(s) reached the file`}`);
+      if (!summary.leakAuditClean) {
+        say('  *** The evidence file must not be shared until that is resolved. ***');
+      }
+    }
   }
 
   say('');
@@ -1380,6 +1429,19 @@ function commandHelp(): void {
   say('  --suites a,b        suite ids (default: every ranked suite)');
   say('  --repeats n         passes per case (default: 1)');
   say('  --max-attempts n    stop after n attempts — how a small smoke run is kept small');
+  say('  --otlp-observer <dir>');
+  say('                      run a loopback OTLP collector for this campaign and read the Codex');
+  say('                      CLI\'s own telemetry: the reasoning effort it says it APPLIED, which');
+  say('                      `codex exec --json` never echoes, and its token decomposition, checked');
+  say('                      against stdout rather than trusted over it. Codex candidates only.');
+  say('                      The collector binds 127.0.0.1 on an ephemeral port and makes no');
+  say('                      outbound connection; each invocation is pointed at it by a');
+  say('                      per-invocation override, so ~/.codex/config.toml is never touched.');
+  say('                      NOTHING in that telemetry establishes model identity — it names the');
+  say('                      model this client REQUESTED — so every Codex row stays');
+  say('                      requestAcceptedIdentityUnverifiable. Every record `codex` exports');
+  say('                      carries the operator\'s email address and account id; both are');
+  say('                      redacted at ingest, and the file is audited on shutdown.');
   say('  --synthetic         drive the deterministic host; no request reaches any server');
   say('');
   say('  Execution mode, chosen at CREATE and frozen into the manifest:');

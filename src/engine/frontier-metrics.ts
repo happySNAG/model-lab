@@ -335,6 +335,33 @@ export interface FrontierAttemptRecord extends Record<string, CanonicalValue | u
   timedOut: boolean;
   /** The provider's own usage block, verbatim, so a cost here can be reconciled against a bill. */
   rawUsage?: CanonicalValue;
+  /**
+   * WHAT THE TOOL'S OWN TELEMETRY SAID, when a campaign ran a collector. Codex only.
+   *
+   * `otlpTurnReasoningEffort` is the first effort figure this engine has ever been able to record
+   * for a Codex candidate: `codex exec --json` echoes none, so Pass 6 and Pass 7 both had to record
+   * effort as accepted-but-unapplied. The token fields are recorded to be CHECKED against the
+   * stdout figures beside them, not to replace them — `otlpTokensAgreeWithStdout` is that check.
+   *
+   * NONE OF IT IS AN IDENTITY. `reportedModelID` is never written from telemetry, and a row
+   * carrying every field below is still `requestAcceptedIdentityUnverifiable`.
+   */
+  otlpObserved?: boolean;
+  otlpCorrelated?: boolean;
+  otlpTurnReasoningEffort?: string;
+  otlpRequestReasoningEffort?: string;
+  otlpInputTokens?: number;
+  otlpNonCachedInputTokens?: number;
+  otlpCachedInputTokens?: number;
+  otlpCacheWriteInputTokens?: number;
+  otlpOutputTokens?: number;
+  otlpReasoningOutputTokens?: number;
+  otlpTotalTokens?: number;
+  otlpMCPServers?: string;
+  /** True when the telemetry's input/output counts match what stdout reported. Absent when uncheckable. */
+  otlpTokensAgreeWithStdout?: boolean;
+  /** True when the frozen effort equals the effort the telemetry says the tool applied. */
+  otlpEffortMatchesBinding?: boolean;
 }
 
 /** Everything one frontier attempt produced, with provenance on every figure. */

@@ -101,6 +101,23 @@ export interface AttemptRequest {
  * by fakes and a campaign driven by a live runtime differ only in what is passed here — which is
  * why the synthetic campaign is a genuine test of the same code path and not a parallel one.
  */
+/**
+ * A failure that is the PROVIDER declining, not the model answering badly.
+ *
+ * Deliberately narrow. A timeout could be a slow model or a slow network and is genuinely
+ * ambiguous, so it stays a recorded outcome; a rate limit and an exhausted allowance are neither
+ * ambiguous nor anything to do with the candidate's quality. `notAuthenticated` is here because a
+ * session that expired mid-campaign is the same class of thing: the remaining slots were never
+ * attempted, and recording them as failures would blame a model for a login.
+ */
+export const PROVIDER_THROTTLE_FAILURES = ['rateLimited', 'notAuthenticated'] as const;
+
+export function isProviderThrottle(failureCode: string): boolean {
+  // The code is `${provider}.${kind}`, so the kind is what is matched.
+  const kind = failureCode.includes('.') ? failureCode.slice(failureCode.lastIndexOf('.') + 1) : failureCode;
+  return (PROVIDER_THROTTLE_FAILURES as readonly string[]).includes(kind);
+}
+
 export interface CampaignHost {
   /** Ask the runtime what it currently has loaded for this model. */
   observeIdentity(candidate: PlannableCandidate): Promise<ObservedModelIdentity>;
@@ -856,11 +873,45 @@ export class Campaign {
       maxOutputTokens: slot.maxOutputTokens,
     });
 
+    const binding = this.bindingFor(slot.candidate);
+
+    // 3a. PROVIDER THROTTLING IS NOT A MODEL-QUALITY FAILURE, and it must never be written as one.
+    //
+    // A subscription that has hit its rate limit or exhausted its allowance produced no answer. If
+    // the slot were recorded terminal, the ranking's own counting rule would turn it into a `fail`
+    // — "everything that is neither a pass, a partial, an awaited review nor inapplicable" — and a
+    // candidate would carry a quality score for an answer a provider declined to let it give. On a
+    // long campaign that hits a limit halfway through, that single mistake is enough to invert the
+    // leaderboard.
+    //
+    // So a throttle ABORTS instead. The slot is left runnable, every remaining slot is blocked, and
+    // the record says the campaign stopped rather than that a model failed. `cernum resume` picks it
+    // up after the allowance resets and re-verifies the manifest first, and the abort is superseded
+    // rather than deleted. No other model is substituted: this candidate's remaining work is
+    // this candidate's, and answering it with a different one would silently change the experiment.
+    if (outcome.failure && isProviderThrottle(outcome.failure.code)) {
+      const blocked = this.ledger.pending().map((pending) => pending.slotKey);
+      this.ledger.event('providerThrottled', {
+        candidate: slot.candidate,
+        provider: binding?.provider ?? 'unknown',
+        code: outcome.failure.code,
+        detail: outcome.failure.detail,
+        slotKey: slot.slotKey,
+      });
+      this.ledger.recordAbort(
+        `${outcome.failure.code}: the provider is throttling this subscription, so this attempt produced no answer. `
+        + 'It is NOT recorded as a result and NOT counted as a failure of the model. '
+        + `${blocked.length} slot(s) remain runnable; resume after the allowance resets.`,
+        { code: outcome.failure.code, detail: outcome.failure.detail, candidate: slot.candidate,
+          throttledSlotKey: slot.slotKey } as CanonicalValue,
+        'providerThrottling', blocked);
+      throw new CampaignAbort();
+    }
+
     // 3b. WHO ACTUALLY ANSWERED. A local candidate was identified by its weights before the request;
     // a frontier candidate can only be identified by what the provider says afterwards. A provider
     // that names a different model has answered a question about a different model, and recording
     // that under this manifest would put one model's answers under another model's name.
-    const binding = this.bindingFor(slot.candidate);
     let providerIdentity: ProviderIdentityVerification | undefined;
     if (binding !== undefined && !isLocal(binding) && outcome.failure === undefined) {
       providerIdentity = verifyProviderIdentity(binding.requestedModelID, outcome.frontier?.reportedModelID ?? '');
@@ -1005,6 +1056,29 @@ export class Campaign {
       wastedTokens: outcome.frontier?.wastedTokens,
       timedOut: outcome.frontier?.timedOut,
       providerReportedUsage: outcome.frontier?.rawUsage,
+      // WHAT THE TOOL'S OWN TELEMETRY SAID, when a campaign ran a collector. Codex only, opt-in.
+      //
+      // `otlpTurnReasoningEffort` is the first effort figure this engine can record for a Codex
+      // candidate at all. The token columns are here to be CHECKED against the stdout figures above
+      // them, never to stand in for them — `otlpTokensAgreeWithStdout` is that check, and a row
+      // where it is false is a row to investigate rather than to average.
+      //
+      // None of this touches `reportedModelID`, which stays empty on every Codex row. A row
+      // carrying all of these is still `requestAcceptedIdentityUnverifiable`.
+      otlpObserved: outcome.frontier?.otlpObserved,
+      otlpCorrelated: outcome.frontier?.otlpCorrelated,
+      otlpTurnReasoningEffort: outcome.frontier?.otlpTurnReasoningEffort,
+      otlpRequestReasoningEffort: outcome.frontier?.otlpRequestReasoningEffort,
+      otlpInputTokens: outcome.frontier?.otlpInputTokens,
+      otlpNonCachedInputTokens: outcome.frontier?.otlpNonCachedInputTokens,
+      otlpCachedInputTokens: outcome.frontier?.otlpCachedInputTokens,
+      otlpCacheWriteInputTokens: outcome.frontier?.otlpCacheWriteInputTokens,
+      otlpOutputTokens: outcome.frontier?.otlpOutputTokens,
+      otlpReasoningOutputTokens: outcome.frontier?.otlpReasoningOutputTokens,
+      otlpTotalTokens: outcome.frontier?.otlpTotalTokens,
+      otlpMCPServers: outcome.frontier?.otlpMCPServers,
+      otlpTokensAgreeWithStdout: outcome.frontier?.otlpTokensAgreeWithStdout,
+      otlpEffortMatchesBinding: outcome.frontier?.otlpEffortMatchesBinding,
     });
 
     return {
