@@ -175,12 +175,18 @@ export function ProvidersView({ shell }: { shell: Shell }) {
             <>
               <p>
                 This runs <code>{confirming.executablePath ?? confirming.provider}</code> twice: once to read its
-                version, once to list the models your signed-in account may call.
+                version, once to read whether it is signed in.
               </p>
               <p className="muted small">
                 Neither asks a model anything, so no tokens are generated and nothing is charged. It does use your
                 own authenticated session — the one you set up yourself — and if that session has expired, the command
                 will say so and nothing further happens.
+              </p>
+              <p className="muted small">
+                It will <strong>not</strong> tell you which models your account may call: this tool has no
+                model-listing command, so there is no free way to find out. Proving a model takes an identity smoke
+                test — one minimal request per candidate — which does consume your plan allowance and is run from the
+                terminal with <code>cernum smoke {confirming.provider}</code>.
               </p>
             </>
           ) : (

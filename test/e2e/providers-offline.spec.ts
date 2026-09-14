@@ -30,14 +30,22 @@ let providerServer: http.Server;
 let providerBaseURL: string;
 let providerRequests: string[];
 
-/** A fake CLI that logs every invocation before answering. Executable, on PATH, never a stub. */
-function writeFakeCLI(name: string, listing: string): void {
+/**
+ * A fake CLI that logs every invocation before answering. Executable, on PATH, never a stub.
+ *
+ * It answers `auth status` the way the real `claude` does — a JSON document with `loggedIn` — and
+ * has NO `models` subcommand, because the real one has none either. That is the correction this
+ * fixture carries: the previous version answered a model listing that does not exist, so the test
+ * proved a code path that could never run on a real machine.
+ */
+function writeFakeCLI(name: string, authStatus: string): void {
   const file = path.join(fakeBin, name);
   fs.writeFileSync(file, [
     '#!/bin/sh',
     `printf '%s %s\\n' "${name}" "$*" >> '${cliLog}'`,
     'if [ "$1" = "--version" ]; then echo "9.9.9 (fixture)"; exit 0; fi',
-    `echo '${listing}'`,
+    `if [ "$1" = "auth" ] || [ "$1" = "login" ]; then echo '${authStatus}'; exit 0; fi`,
+    'echo "unknown command" >&2; exit 1',
   ].join('\n') + '\n', 'utf8');
   fs.chmodSync(file, 0o755);
 }
@@ -74,8 +82,9 @@ test.beforeAll(async () => {
   campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-provider-campaigns-'));
   fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-bin-'));
   cliLog = path.join(fakeBin, 'invocations.log');
-  writeFakeCLI('claude', '{"models":[{"id":"claude-sonnet-5","display_name":"Claude Sonnet 5"}]}');
-  writeFakeCLI('codex', '{"models":[{"id":"a-codex-model"}]}');
+  const SIGNED_IN = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}';
+  writeFakeCLI('claude', SIGNED_IN);
+  writeFakeCLI('codex', SIGNED_IN);
 
   providerRequests = [];
   providerServer = http.createServer((request, response) => {
@@ -131,7 +140,7 @@ test('opening the application, and the Providers screen, contacts no provider at
   await app.close();
 });
 
-test('asking a subscription CLI what it can call runs it, and only then', async () => {
+test('asking a subscription CLI what it is runs it — and still proves no model, because it lists none', async () => {
   const { app, page } = await launch();
   await page.click('[data-nav="providers"]');
   expect(cliInvocations()).toEqual([]);
@@ -141,30 +150,32 @@ test('asking a subscription CLI what it can call runs it, and only then', async 
   await expect(page.locator('.modal')).toContainText('no tokens are generated and nothing is charged');
   await page.locator('[data-testid="confirm-discover"]').click();
 
-  // The model listing appears, and only the listed model is selectable.
+  // Signed in, and NOTHING PROVEN. The tool has no model listing, so discovery cannot make a
+  // candidate selectable — only an identity smoke test can, and that spends allowance.
   const card = page.locator('.card', { hasText: 'Claude Subscription' });
-  await expect(card.locator('[data-testid="frontier-model-table"]')).toContainText('Claude Sonnet 5', { timeout: 20_000 });
-  await expect(card.locator('tr', { hasText: 'Claude Sonnet 5' })).toContainText('proven');
-  // A ladder entry the tool did not list is shown as refused, not quietly dropped.
-  await expect(card.locator('[data-testid="frontier-model-table"]')).toContainText('Luna Max');
-  await expect(card.locator('tr', { hasText: 'Luna Max' })).toContainText('refused');
+  await expect(card).toContainText('signed in', { timeout: 20_000 });
+  await expect(card.locator('[data-testid="frontier-model-table"]')).toContainText('Claude Sonnet 5');
+  await expect(card.locator('tr', { hasText: 'Claude Sonnet 5' })).toContainText('unproven');
+  await expect(card.locator('tr', { hasText: 'Luna Max' })).toContainText('unproven');
 
-  // It ran `claude`, and it did not touch anything else.
+  // It ran `claude --version` and `claude auth status`, and it did not touch anything else. There
+  // is no `models list` invocation, because there is no such command to invoke.
   const invocations = cliInvocations();
   expect(invocations.some((line) => line.startsWith('claude --version'))).toBe(true);
-  expect(invocations.some((line) => line.startsWith('claude models list'))).toBe(true);
+  expect(invocations.some((line) => line.startsWith('claude auth status'))).toBe(true);
+  expect(invocations.some((line) => line.includes('models list'))).toBe(false);
   expect(invocations.some((line) => line.startsWith('codex'))).toBe(false);
   expect(providerRequests).toEqual([]);
 
-  // And a proven model is now offered in the New campaign dialog, where an unproven one is not.
+  // And the New campaign dialog offers nothing, saying WHY and what would change it.
   await page.click('[data-nav="campaigns"]');
   await page.getByRole('button', { name: 'New campaign' }).first().click();
-  const picker = page.locator('[data-testid="frontier-claudeCLI"]');
-  await expect(picker).toContainText('Claude Sonnet 5', { timeout: 20_000 });
-  // Two effort levels, because the same model at two efforts is two candidates.
-  await expect(picker.locator('input[type=checkbox]:not([disabled])')).toHaveCount(2);
-  // Luna Max is present but cannot be chosen.
-  await expect(picker.locator('label', { hasText: 'Luna Max' }).locator('input')).toBeDisabled();
+  const modal = page.locator('.modal');
+  await expect(modal).toContainText('No frontier model has been proven callable', { timeout: 20_000 });
+  await expect(modal).toContainText('has no model-listing command');
+  await expect(modal).toContainText('cernum smoke claudeCLI');
+  // Not one selectable frontier checkbox exists, rather than a disabled one somebody might enable.
+  await expect(page.locator('[data-testid="frontier-claudeCLI"]')).toHaveCount(0);
 
   await app.close();
 });

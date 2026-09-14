@@ -474,9 +474,19 @@ export interface FrontierMetricsRow {
   visibleOutputTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
-  medianTokensPerSecondMilli?: number;
+  /** The provider's OWN generation speed. Absent unless the provider reported a generation duration. */
+  medianProviderReportedGenerationTokensPerSecondMilli?: number;
+  /** What this client watched, first visible output to completion. Includes transport and overhead. */
+  medianClientObservedOutputTokensPerSecondMilli?: number;
+  /** Visible output over TOTAL wall time. Includes the provider's queue as well. */
+  medianEndToEndOutputTokensPerSecondMilli?: number;
   medianTimeToFirstVisibleTokenMilliseconds?: number;
+  /** The marginal API charge. Genuinely zero for subscription execution — which is not "free". */
   costPerRunMicroUSD?: number;
+  /** Plan allowance consumed, at list value. Absent is not zero. */
+  subscriptionIncludedUsageMicroUSD?: number;
+  /** What the campaign cost the person at the margin. Absent for subscription, with a stated reason. */
+  effectiveUserCostMicroUSD?: number;
   costPerSuccessfulTaskMicroUSD?: number;
   tokensPerCompletedPass?: number;
   wastedTokens?: number;

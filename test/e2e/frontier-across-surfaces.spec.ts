@@ -80,14 +80,24 @@ test.beforeAll(async () => {
   campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-campaigns-'));
   fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-bin-'));
 
-  // A fake `claude` that lists one model and answers every prompt with the same string.
+  // A fake `claude` shaped like the real one: it reports authentication as JSON, has NO `models`
+  // subcommand, and names the answering model in `modelUsage` rather than in a `model` field. It
+  // echoes back whichever `--model` it was given, so a substitution would be visible if one
+  // happened, and it refuses `luna-max` with the real 404 signature.
   const claude = path.join(fakeBin, 'claude');
   fs.writeFileSync(claude, [
     '#!/bin/sh',
     'if [ "$1" = "--version" ]; then echo "9.9.9 (fixture)"; exit 0; fi',
-    'if [ "$1" = "models" ]; then echo \'{"models":[{"id":"a-subscription-model"}]}\'; exit 0; fi',
+    'if [ "$1" = "auth" ]; then echo \'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}\'; exit 0; fi',
+    'MODEL=""',
+    'while [ $# -gt 0 ]; do if [ "$1" = "--model" ]; then MODEL="$2"; fi; shift; done',
     'cat > /dev/null',
-    'echo \'{"result":"acknowledged","model":"a-subscription-model","usage":{"input_tokens":42,"output_tokens":7}}\'',
+    'if [ "$MODEL" = "luna-max" ]; then',
+    // `subtype` says "success" even here, exactly as the real tool does.
+    '  echo \'{"result":"There is an issue with the selected model.","modelUsage":{},"usage":{},"is_error":true,"api_error_status":404,"terminal_reason":"api_error","subtype":"success","total_cost_usd":0}\'',
+    '  exit 1',
+    'fi',
+    'printf \'{"result":"acknowledged","modelUsage":{"%s":{"canonicalModel":"%s","inputTokens":42,"outputTokens":7,"costUSD":0.0012}},"usage":{"input_tokens":42,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens_details":{"thinking_tokens":0}},"total_cost_usd":0.0012,"is_error":false,"ttft_ms":11,"duration_ms":20}\\n\' "$MODEL" "$MODEL"',
   ].join('\n') + '\n', 'utf8');
   fs.chmodSync(claude, 0o755);
 
@@ -145,13 +155,28 @@ test('an unproven model cannot be put in a campaign', async () => {
   expect(refused.stderr).toMatch(/A model identifier is a plan, not a capability/);
 });
 
-test('discovery proves a model, and then a subscription campaign runs end to end', async () => {
+test('an identity smoke proves a model — discovery alone cannot — and then a campaign runs end to end', async () => {
+  // DISCOVERY IS NOT ENOUGH FOR A SUBSCRIPTION CLI. It establishes that the tool is installed and
+  // signed in, and it stops there, because the tool has no model listing to read.
   const discovered = await cernum('discover', 'claudeCLI');
-  expect(discovered).toContain('a-subscription-model');
-  expect(discovered).toContain('proven');
+  expect(discovered).toContain('signed in');
+  expect(discovered).toContain('offers NO model-listing command');
+  expect(discovered).toContain('0 model(s) are now selectable');
   expect(providerRequests).toEqual([]);
 
-  const created = await cernum('create', 'sub-run', '--frontier', 'claudeCLI:a-subscription-model', '--suites', SUITE, '--repeats', '1');
+  // The smoke test is what proves one, by asking it who it is. It says out loud that it spends.
+  const smoked = await cernum('smoke', 'claudeCLI');
+  expect(smoked).toContain('consumes subscription allowance');
+  expect(smoked).toContain('proven       claude-haiku-4-5');
+  // And the model that does not exist is recorded as refused, from the tool's own 404.
+  expect(smoked).toContain('refused      luna-max');
+  expect(smoked).toContain('No campaign was created');
+  // A zero marginal charge is never presented as a zero cost.
+  expect(smoked).toContain('marginal API charge $0.000000');
+  expect(smoked).toContain('a zero charge is not a zero cost');
+  expect(providerRequests).toEqual([]);
+
+  const created = await cernum('create', 'sub-run', '--frontier', 'claudeCLI:claude-haiku-4-5', '--suites', SUITE, '--repeats', '1');
   expect(created).toContain('Claude Subscription');
   expect(created).toContain('subscription-included');
   expect(created).toContain('This campaign sends prompts to an external provider');
@@ -162,6 +187,7 @@ test('discovery proves a model, and then a subscription campaign runs end to end
   const manifest = JSON.parse(fs.readFileSync(path.join(campaignRoot, 'sub-run/manifest.json'), 'utf8')) as Record<string, any>;
   expect(manifest.manifestFormatVersion).toBe(4);
   expect(manifest.operationalEnvelope.bindings[0].provider).toBe('claudeCLI');
+  expect(manifest.operationalEnvelope.bindings[0].requestedModelID).toBe('claude-haiku-4-5');
   expect(manifest.operationalEnvelope.bindings[0].billingBasis).toBe('subscriptionIncluded');
 
   const ran = await cernum('run', 'sub-run');
@@ -179,7 +205,7 @@ test('discovery proves a model, and then a subscription campaign runs end to end
   await page.locator('[data-testid="campaign-table"] tr', { hasText: 'sub-run' }).first().click();
   await expect(page.locator('.modal')).toBeVisible();
   await expect(page.locator('[data-testid="binding-table"]')).toContainText('Claude Subscription');
-  await expect(page.locator('[data-testid="binding-table"]')).toContainText('a-subscription-model');
+  await expect(page.locator('[data-testid="binding-table"]')).toContainText('claude-haiku-4-5');
   await expect(page.locator('[data-testid="metrics-table"]')).toContainText('subscription');
   await app.close();
 

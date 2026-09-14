@@ -19,10 +19,14 @@ function attempt(overrides: Partial<FrontierAttemptMetrics> = {}): FrontierAttem
     visibleOutputTokens: reportedQuantity(20),
     reasoningTokens: unavailableQuantity('not reported separately'),
     totalTokens: reportedQuantity(120),
-    tokensPerSecondMilli: measuredQuantity(40_000),
+    providerReportedGenerationTokensPerSecondMilli: unavailableQuantity('this provider reports no generation duration'),
+    clientObservedOutputTokensPerSecondMilli: measuredQuantity(40_000),
+    endToEndOutputTokensPerSecondMilli: measuredQuantity(22_000),
     timeToFirstVisibleTokenMilliseconds: measuredQuantity(120),
     totalWallClockMilliseconds: measuredQuantity(900),
-    costMicroUSD: reportedQuantity(600),
+    marginalAPIChargeMicroUSD: reportedQuantity(600),
+    subscriptionIncludedUsageMicroUSD: unavailableQuantity('this execution is billed per token and consumes no allowance'),
+    effectiveUserCostMicroUSD: reportedQuantity(600),
     retryCount: 0,
     timedOut: false,
     wastedTokens: measuredQuantity(0),
@@ -104,7 +108,7 @@ describe('aggregating a candidate', () => {
   });
 
   it('reports the campaign\'s worst provenance as the row\'s honest quality', () => {
-    const unknownCost = aggregateCandidateMetrics('a', [attempt({ costMicroUSD: unavailableQuantity('no usage reported') })], 1);
+    const unknownCost = aggregateCandidateMetrics('a', [attempt({ marginalAPIChargeMicroUSD: unavailableQuantity('no usage reported') })], 1);
     expect(unknownCost.measurementQuality).toBe('unavailable');
     const allReported = aggregateCandidateMetrics('a', [attempt()], 1);
     expect(allReported.measurementQuality).toBe('providerReported');
@@ -114,7 +118,8 @@ describe('aggregating a candidate', () => {
     const metrics = aggregateCandidateMetrics('a', [], 0);
     expect(metrics.successfulTaskRateMilli.provenance).toBe('unavailable');
     expect(metrics.successfulTaskRateMilli.note).toMatch(/nothing to average/);
-    expect(metrics.medianTokensPerSecondMilli.provenance).toBe('unavailable');
+    expect(metrics.medianClientObservedOutputTokensPerSecondMilli.provenance).toBe('unavailable');
+    expect(metrics.medianProviderReportedGenerationTokensPerSecondMilli.provenance).toBe('unavailable');
   });
 
   it('prints the provenance in its one-line summary rather than hiding it', () => {
@@ -135,7 +140,7 @@ describe('reading metrics back out of ledger rows', () => {
   it('preserves the provenance the row recorded', () => {
     const metrics = attemptMetricsFromRow(row)!;
     expect(metrics.inputTokens.provenance).toBe('providerReported');
-    expect(metrics.costMicroUSD.provenance).toBe('providerReported');
+    expect(metrics.marginalAPIChargeMicroUSD.provenance).toBe('providerReported');
     expect(metrics.timeToFirstVisibleTokenMilliseconds.provenance).toBe('measured');
   });
 
@@ -143,13 +148,16 @@ describe('reading metrics back out of ledger rows', () => {
     const metrics = attemptMetricsFromRow({ ...row, inputTokens: undefined, usageProvenance: 'unavailable' })!;
     expect(metrics.inputTokens.provenance).toBe('unavailable');
     expect(metrics.inputTokens.note).toMatch(/no input token count was recorded/);
-    expect(metrics.costMicroUSD.provenance).toBe('providerReported');
+    expect(metrics.marginalAPIChargeMicroUSD.provenance).toBe('providerReported');
   });
 
-  it('says why there is no throughput for a provider that reports no generation duration', () => {
-    const metrics = attemptMetricsFromRow({ ...row, throughputTokensPerSecondMilli: undefined })!;
-    expect(metrics.tokensPerSecondMilli.provenance).toBe('unavailable');
-    expect(metrics.tokensPerSecondMilli.note).toMatch(/report the second of those not at all/);
+  it('says why there is no PROVIDER-REPORTED throughput, while still deriving the client-observed one', () => {
+    const metrics = attemptMetricsFromRow({ ...row, providerReportedGenerationMilliseconds: undefined })!;
+    expect(metrics.providerReportedGenerationTokensPerSecondMilli.provenance).toBe('unavailable');
+    expect(metrics.providerReportedGenerationTokensPerSecondMilli.note).toMatch(/reported no generation duration/);
+    // The client watched bytes arrive, so THAT figure exists — under its own name, with its caveat.
+    expect(metrics.clientObservedOutputTokensPerSecondMilli.provenance).toBe('measured');
+    expect(metrics.clientObservedOutputTokensPerSecondMilli.note).toMatch(/NOT the provider's internal/);
   });
 
   it('ignores a row that binds no provider, rather than inventing one for it', () => {

@@ -49,11 +49,27 @@ export type FrontierFailureKind =
 export const RETRYABLE_FAILURES: FrontierFailureKind[] = ['timeout', 'rateLimited', 'transport'];
 
 export interface FrontierUsage {
+  /** FRESH input tokens only. Cached input is counted apart, below, and is not included here. */
   inputTokens?: number;
+  /**
+   * Input tokens written into the provider's prompt cache by this request, and input tokens served
+   * from it. Counted apart because they are priced apart — and because leaving them out, as Pass 4B
+   * did, understates a Claude Code request's input by two orders of magnitude: a nine-token prompt
+   * arrives with a six-thousand-token system prompt behind it.
+   */
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
   /** The answer a person would read. */
   visibleOutputTokens?: number;
   /** Reasoning tokens, when the provider bills or reports them apart. Undefined means it did not say. */
   reasoningTokens?: number;
+}
+
+/** Every input token the provider processed, cached and fresh. Unknown when nothing was reported. */
+export function totalInputTokens(usage: FrontierUsage): number | undefined {
+  const parts = [usage.inputTokens, usage.cacheCreationInputTokens, usage.cacheReadInputTokens];
+  if (parts.every((part) => part === undefined)) return undefined;
+  return parts.reduce<number>((sum, part) => sum + (part ?? 0), 0);
 }
 
 export interface FrontierResponse {
@@ -75,6 +91,19 @@ export interface FrontierResponse {
   failure?: { kind: FrontierFailureKind; detail: string };
   /** What the provider reported about the effort or thinking it actually applied, when it said. */
   reportedEffort?: string;
+  /**
+   * The provider's own list valuation of what this request consumed, in integer microUSD, when it
+   * reports one. On a subscription this is NOT a charge: it is the plan allowance spent. Recorded
+   * so subscription execution is never reported as free.
+   */
+  subscriptionIncludedUsageMicroUSD?: number;
+  /** Every model identifier the tool said took part in the request, for substitution detection. */
+  participatingModelIDs?: string[];
+  /**
+   * Frozen settings the tool could not ENFORCE, though it was still honest about what it was asked.
+   * Distinct from the settings that would have been silently ignored, which refuse the request.
+   */
+  notEnforceable?: string[];
 }
 
 export interface FrontierRequest {
@@ -176,6 +205,14 @@ export interface SubscriptionCLIOptions {
 const CLI_NAME: Partial<Record<ProviderID, string>> = { claudeCLI: 'claude', codexCLI: 'codex' };
 
 /**
+ * The effort levels the installed `claude` CLI documents, read from its own `--help`.
+ *
+ * Verified against 2.1.251. Anything outside this set is NOT rejected by the tool — it warns and
+ * uses the default — so the refusal has to happen here, before the request is sent.
+ */
+export const CLAUDE_CLI_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
  * The arguments the official tool documents for a single non-interactive request.
  *
  * The prompt is NOT among them. It goes on stdin, because anything in argv is visible in the process
@@ -187,18 +224,42 @@ const CLI_NAME: Partial<Record<ProviderID, string>> = { claudeCLI: 'claude', cod
  * be expressed. Sending a request that quietly ignores a frozen setting is the substitution this
  * whole engine refuses.
  */
-export function buildCLIArguments(binding: ProviderBinding): { args: string[]; unexpressed: string[] } {
+export function buildCLIArguments(binding: ProviderBinding): { args: string[]; unexpressed: string[]; notEnforceable: string[] } {
   const unexpressed: string[] = [];
+  const notEnforceable: string[] = [];
   const args: string[] = [];
 
   if (binding.provider === 'claudeCLI') {
     args.push('-p', '--output-format', 'json');
+    // A benchmark request must not be shaped by whatever happens to be configured on this machine.
+    // Settings files, skills, MCP servers and tools all change what the model is asked and what it
+    // may do, and none of them are in the manifest — so they are all switched off, explicitly.
+    args.push('--tools', '', '--disable-slash-commands', '--strict-mcp-config',
+      '--setting-sources', '', '--no-session-persistence');
     if (binding.requestedModelID.length > 0) args.push('--model', binding.requestedModelID);
     if (binding.effort !== 'none') {
-      // Effort is expressed where the tool has a flag for it. If a future tool version drops the
-      // flag, this is where it is noticed rather than where it is ignored.
-      args.push('--effort', binding.effort);
+      if (!CLAUDE_CLI_EFFORT_LEVELS.includes(binding.effort)) {
+        // Refused here rather than sent, because the tool does NOT refuse it: it warns on stderr and
+        // answers at its default effort with exit 0. See `detectEffortSubstitution`.
+        unexpressed.push(`effort '${binding.effort}': this CLI documents only `
+          + `${CLAUDE_CLI_EFFORT_LEVELS.join(', ')}, and silently falls back to its default for anything else`);
+      } else {
+        args.push('--effort', binding.effort);
+      }
     }
+    // CORRECTION TO PASS 4B: there is no output-budget flag. `--max-budget-usd` caps DOLLARS and
+    // applies to API-key users, not to a subscription session, so a frozen `maxOutputTokens` cannot
+    // be applied to the request at all.
+    //
+    // This is NOT in `unexpressed`, and the difference is deliberate. An unexpressed sampling
+    // setting or effort level SILENTLY CHANGES WHAT WAS MEASURED while the manifest claims
+    // otherwise, so the request must not be sent. An unenforceable output ceiling changes nothing
+    // about what the model was asked; it removes a limit on how much allowance the answer may
+    // spend. That is a real risk and it is recorded on every attempt — but refusing on it would
+    // make subscription execution impossible rather than honest.
+    notEnforceable.push(`maxOutputTokens (${binding.maxOutputTokens}): this CLI has no output-token budget flag, so `
+      + 'nothing caps this answer\'s length. The allowance an over-long answer consumes is real and is recorded, but '
+      + 'it was not bounded. Use the metered API for this candidate if the ceiling has to hold.');
   } else if (binding.provider === 'codexCLI') {
     args.push('exec', '--json');
     if (binding.requestedModelID.length > 0) args.push('--model', binding.requestedModelID);
@@ -217,19 +278,67 @@ export function buildCLIArguments(binding: ProviderBinding): { args: string[]; u
     unexpressed.push('thinking: this CLI expresses reasoning as an effort level, and this binding froze thinking on '
       + 'without one, so there is no flag that means what the manifest says');
   }
-  return { args, unexpressed };
+  return { args, unexpressed, notEnforceable };
+}
+
+/**
+ * What one subscription CLI invocation reported, read out of its documented JSON envelope.
+ *
+ * PASS 4B GUESSED THIS SHAPE AND GOT IT WRONG IN FIVE PLACES. The corrections, each verified
+ * against `claude --output-format json` 2.1.251 rather than assumed:
+ *
+ *   `model`                   DOES NOT EXIST. Identity is in `modelUsage`, an OBJECT KEYED BY MODEL
+ *                             IDENTIFIER, each entry carrying its own `canonicalModel`. Reading
+ *                             `parsed.model` yields undefined, which Pass 4B recorded as "the
+ *                             provider named no model" — turning a verifiable identity into a
+ *                             permanent `unverifiable`.
+ *   thinking tokens           are at `usage.output_tokens_details.thinking_tokens`, NOT at
+ *                             `usage.reasoning_tokens` or `usage.thinking_tokens`.
+ *   cached input              `cache_creation_input_tokens` and `cache_read_input_tokens` exist and
+ *                             dominate: a nine-token prompt carried 6,551 cache-creation tokens.
+ *                             Pass 4B read neither.
+ *   `total_cost_usd`          EXISTS ON SUBSCRIPTION RUNS. Pass 4B assumed subscription execution
+ *                             reports no cost at all. It reports a list valuation of the allowance
+ *                             consumed, which is not a charge and is not zero.
+ *   `subtype`                 is `"success"` EVEN ON A REFUSAL. A 404 for an unknown model returns
+ *                             `subtype: "success"`, `is_error: true`, `api_error_status: 404`,
+ *                             `terminal_reason: "api_error"`, an EMPTY `modelUsage` — and a `result`
+ *                             string containing the error prose. Pass 4B would have scored that
+ *                             prose as the model's answer.
+ */
+export interface ParsedSubscriptionCLIResponse {
+  answerText: string;
+  /** Every model the tool said took part, in the order the envelope listed them. */
+  participants: { modelID: string; canonicalModel: string; outputTokens?: number }[];
+  usage: FrontierUsage;
+  raw?: CanonicalValue;
+  reportedEffort?: string;
+  /** The tool's own list valuation of the whole invocation, in integer microUSD, when it gave one. */
+  subscriptionIncludedUsageMicroUSD?: number;
+  /** The tool's own time to first token, in milliseconds. Its observation, not this process's. */
+  providerReportedTimeToFirstTokenMilliseconds?: number;
+  /** The tool's own wall clock for the turn. Not a generation duration — see the note below. */
+  providerReportedDurationMilliseconds?: number;
+  /**
+   * `duration_api_ms`. NOT a generation duration and NEVER a divisor for tokens per second: it is a
+   * SUM ACROSS CONCURRENT API CALLS and was observed at 1,790 ms inside a 926 ms turn. A throughput
+   * computed from it would exceed the speed of the thing it claimed to measure.
+   */
+  providerReportedAPIDurationMilliseconds?: number;
+  /** True when the envelope's own error flags say this invocation did not produce a model answer. */
+  isError: boolean;
+  apiErrorStatus?: number;
+  terminalReason?: string;
 }
 
 /**
  * Read a subscription CLI's JSON answer.
  *
- * Accepts the documented envelope and NOTHING else. A tool whose output does not parse yields a
- * `malformedResponse` failure rather than a best guess: a benchmark that scrapes an unrecognised
- * format is a benchmark whose results change when the tool changes its prose.
+ * Accepts the documented envelope and NOTHING else. A tool whose output does not parse yields
+ * `undefined` and the caller raises `malformedResponse` rather than a best guess: a benchmark that
+ * scrapes an unrecognised format is a benchmark whose results change when the tool changes its prose.
  */
-export function parseCLIResponse(stdout: string): {
-  answerText: string; reportedModelID: string; usage: FrontierUsage; raw?: CanonicalValue; reportedEffort?: string;
-} | undefined {
+export function parseCLIResponse(stdout: string): ParsedSubscriptionCLIResponse | undefined {
   const trimmed = stdout.trim();
   if (trimmed.length === 0) return undefined;
   let parsed: Record<string, unknown>;
@@ -259,20 +368,101 @@ export function parseCLIResponse(stdout: string): {
   if (answerText === undefined) return undefined;
 
   const usageBlock = (parsed.usage ?? {}) as Record<string, unknown>;
-  const asNumber = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : undefined);
+  const outputDetails = (usageBlock.output_tokens_details ?? {}) as Record<string, unknown>;
+  const asNumber = (value: unknown): number | undefined =>
+    (typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : undefined);
+
+  // `modelUsage` is an object keyed by model identifier. Every key is recorded, because the tool
+  // routes some of its own housekeeping to a second model and a reader must be able to see that the
+  // model under test was one of several rather than the only one.
+  const participants: { modelID: string; canonicalModel: string; outputTokens?: number }[] = [];
+  const modelUsage = parsed.modelUsage;
+  if (typeof modelUsage === 'object' && modelUsage !== null && !Array.isArray(modelUsage)) {
+    for (const [modelID, entry] of Object.entries(modelUsage as Record<string, unknown>)) {
+      const row = (entry ?? {}) as Record<string, unknown>;
+      participants.push({
+        modelID,
+        canonicalModel: typeof row.canonicalModel === 'string' ? row.canonicalModel : modelID,
+        outputTokens: asNumber(row.outputTokens),
+      });
+    }
+  }
+
+  const costUSD = asNumber2(parsed.total_cost_usd);
 
   return {
     answerText,
-    // `model` is the tool's own statement of which model answered. Absent means absent.
-    reportedModelID: typeof parsed.model === 'string' ? parsed.model : '',
+    participants,
     usage: {
       inputTokens: asNumber(usageBlock.input_tokens) ?? asNumber(usageBlock.prompt_tokens),
+      cacheCreationInputTokens: asNumber(usageBlock.cache_creation_input_tokens),
+      cacheReadInputTokens: asNumber(usageBlock.cache_read_input_tokens),
       visibleOutputTokens: asNumber(usageBlock.output_tokens) ?? asNumber(usageBlock.completion_tokens),
-      reasoningTokens: asNumber(usageBlock.reasoning_tokens) ?? asNumber(usageBlock.thinking_tokens),
+      // The nested path is the real one. The two flat paths are kept only because another tool may
+      // use them; neither exists in Claude Code's envelope.
+      reasoningTokens: asNumber(outputDetails.thinking_tokens) ?? asNumber(outputDetails.reasoning_tokens)
+        ?? asNumber(usageBlock.reasoning_tokens) ?? asNumber(usageBlock.thinking_tokens),
     },
     raw: (parsed.usage ?? null) as CanonicalValue,
     reportedEffort: typeof parsed.effort === 'string' ? parsed.effort : undefined,
+    subscriptionIncludedUsageMicroUSD: costUSD === undefined ? undefined : Math.round(costUSD * 1_000_000),
+    providerReportedTimeToFirstTokenMilliseconds: asNumber(parsed.ttft_ms) ?? asNumber(parsed.ttft_stream_ms),
+    providerReportedDurationMilliseconds: asNumber(parsed.duration_ms),
+    providerReportedAPIDurationMilliseconds: asNumber(parsed.duration_api_ms),
+    // `is_error` is the flag that matters. `subtype` says "success" on a 404 and cannot be trusted.
+    isError: parsed.is_error === true,
+    apiErrorStatus: asNumber(parsed.api_error_status),
+    terminalReason: typeof parsed.terminal_reason === 'string' ? parsed.terminal_reason : undefined,
   };
+}
+
+/** A dollar figure, kept as a float only long enough to be scaled to an integer. */
+function asNumber2(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Which model actually answered, decided against what was asked for.
+ *
+ * The tool names every model that took part, including one it uses for its own housekeeping. A
+ * request is honoured when the requested identifier appears among them, by key OR by the
+ * `canonicalModel` an entry declares — `claude-haiku-4-5-20251001` and `claude-haiku-4-5` are the
+ * same model named two ways, and refusing that would report a substitution that did not happen.
+ */
+export function resolveAnsweringModel(requestedModelID: string,
+                                      participants: { modelID: string; canonicalModel: string; outputTokens?: number }[]):
+  { state: 'verified' | 'substituted' | 'unverifiable'; reportedModelID: string; participantIDs: string[] } {
+  const participantIDs = participants.map((entry) => entry.modelID);
+  if (participants.length === 0) {
+    return { state: 'unverifiable', reportedModelID: '', participantIDs };
+  }
+  // An exact identifier wins over a canonical alias, so `claude-haiku-4-5` is reported back as
+  // itself rather than as the dated build that happens to canonicalise to it.
+  const match = participants.find((entry) => entry.modelID === requestedModelID)
+    ?? participants.find((entry) => entry.canonicalModel === requestedModelID);
+  if (match) return { state: 'verified', reportedModelID: match.modelID, participantIDs };
+  // Something answered, and it was not what was asked for. The one that produced the most output is
+  // named as the answering model; the full list travels with it so nothing is hidden by the choice.
+  const loudest = [...participants].sort((a, b) => (b.outputTokens ?? 0) - (a.outputTokens ?? 0))[0];
+  return { state: 'substituted', reportedModelID: loudest.modelID, participantIDs };
+}
+
+/**
+ * The effort level the tool actually applied, read from what it said on stderr.
+ *
+ * THIS IS A CORRECTION TO A SILENT SUBSTITUTION. `claude --effort <unsupported>` does not fail. It
+ * writes `Warning: Unknown --effort value '<x>' — ignoring it and using the default effort.` to
+ * stderr, exits 0, and answers at an effort the manifest does not describe. An engine that froze an
+ * effort level and did not check for this would record real results under a setting that was never
+ * applied — the exact substitution the identity checks exist to catch, arriving through a different
+ * door.
+ */
+export function detectEffortSubstitution(stderr: string): string | undefined {
+  const match = /Unknown\s+--effort\s+value\s+'([^']*)'/i.exec(stderr);
+  if (!match) return undefined;
+  return `the CLI rejected the frozen effort level '${match[1]}' and answered at its DEFAULT effort instead, `
+    + 'without failing. The answer is real but it is not an answer at the effort this binding froze, so it is not '
+    + 'recorded as one.';
 }
 
 export class SubscriptionCLIAdapter implements FrontierAdapter {
@@ -303,7 +493,7 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         + 'reach the service any other way.');
     }
 
-    const { args, unexpressed } = buildCLIArguments(request.binding);
+    const { args, unexpressed, notEnforceable } = buildCLIArguments(request.binding);
     if (unexpressed.length > 0) {
       // Refused BEFORE the request. A run that sent this would produce real answers under settings
       // the manifest does not describe, which is worse than no answers.
@@ -324,6 +514,31 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       shouldCancel: request.shouldCancel,
       onFirstOutput: (at) => { firstVisibleTokenMilliseconds = at; },
     });
+
+    // A REFUSED MODEL EXITS NON-ZERO AND STILL PRINTS ITS DOCUMENTED ENVELOPE. Reading the exit code
+    // first would classify a clean, machine-readable 404 as an opaque transport failure and lose the
+    // one field that says what actually happened. So the envelope is consulted before the shell's
+    // verdict — but only when the process actually got far enough to write one, which a timeout and
+    // a cancellation do not.
+    if (result.failure && result.failure.kind !== 'timeout' && result.failure.kind !== 'cancelled') {
+      const errored = parseCLIResponse(result.stdout);
+      if (errored?.isError) {
+        const status = errored.apiErrorStatus;
+        const kind: FrontierFailureKind = status === 404 || status === 403 ? 'refused'
+          : status === 401 ? 'notAuthenticated'
+            : status === 429 ? 'rateLimited'
+              : 'transport';
+        return {
+          ...empty(kind, `the CLI reported a failed turn (${errored.terminalReason ?? 'no terminal reason'}`
+            + `${status === undefined ? '' : `, HTTP ${status}`}): ${redactSecrets(errored.answerText).slice(0, 400)}`),
+          totalElapsedMilliseconds: result.elapsedMilliseconds,
+          firstVisibleTokenMilliseconds,
+          // A refusal still reports what it consumed — usually nothing. Carrying the reported zero
+          // is different from reporting nothing at all, and only one of them is what happened.
+          subscriptionIncludedUsageMicroUSD: errored.subscriptionIncludedUsageMicroUSD,
+        };
+      }
+    }
 
     if (result.failure) {
       const unauthenticated = /not (?:logged|signed) in|unauthenticated|please (?:log|sign) in|no active session/i
@@ -353,10 +568,41 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       };
     }
 
-    const reported = parsed.usage.inputTokens !== undefined || parsed.usage.visibleOutputTokens !== undefined;
+    // THE ENVELOPE'S OWN ERROR FLAGS COME FIRST, before the answer text is looked at. A refused
+    // model returns exit 1, `is_error: true`, an empty `modelUsage`, and a `result` string that
+    // reads like prose; scoring that prose as the model's answer is the failure this ordering
+    // prevents. `subtype` is deliberately not consulted: it says "success" on a 404.
+    if (parsed.isError) {
+      const status = parsed.apiErrorStatus;
+      const kind: FrontierFailureKind = status === 404 || status === 403 ? 'refused'
+        : status === 401 ? 'notAuthenticated'
+          : status === 429 ? 'rateLimited'
+            : 'transport';
+      return {
+        ...empty(kind, `the CLI reported a failed turn (${parsed.terminalReason ?? 'no terminal reason'}`
+          + `${status === undefined ? '' : `, HTTP ${status}`}): ${redactSecrets(parsed.answerText).slice(0, 400)}`),
+        totalElapsedMilliseconds: result.elapsedMilliseconds,
+        firstVisibleTokenMilliseconds,
+        subscriptionIncludedUsageMicroUSD: parsed.subscriptionIncludedUsageMicroUSD,
+      };
+    }
+
+    // An effort level the tool warned it was ignoring makes the answer real and the BINDING false.
+    const effortSubstituted = detectEffortSubstitution(result.stderr);
+    if (effortSubstituted) {
+      return {
+        ...empty('budgetRefused', `${request.binding.candidate}: ${effortSubstituted}`),
+        totalElapsedMilliseconds: result.elapsedMilliseconds,
+        firstVisibleTokenMilliseconds,
+      };
+    }
+
+    const identity = resolveAnsweringModel(request.binding.requestedModelID, parsed.participants);
+    const reported = totalInputTokens(parsed.usage) !== undefined || parsed.usage.visibleOutputTokens !== undefined;
     return {
       answerText: parsed.answerText,
-      reportedModelID: parsed.reportedModelID,
+      // Empty when the tool named nothing, which is `unverifiable` — never a copy of the request.
+      reportedModelID: identity.state === 'unverifiable' ? '' : identity.reportedModelID,
       usage: parsed.usage,
       usageProvenance: reported ? 'providerReported' : 'unavailable',
       rawUsage: parsed.raw,
@@ -365,6 +611,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       retryCount: 0,
       wastedTokens: 0,
       reportedEffort: parsed.reportedEffort,
+      subscriptionIncludedUsageMicroUSD: parsed.subscriptionIncludedUsageMicroUSD,
+      participatingModelIDs: identity.participantIDs,
+      notEnforceable,
     };
   }
 }
@@ -419,7 +668,8 @@ export function buildAPIBody(binding: ProviderBinding, text: string, stream: boo
  * the empty-reply failure Pass 3 already learned to name.
  */
 export function thinkingBudgetFor(effort: EffortLevel, maxOutputTokens: number): number {
-  const fraction = effort === 'max' ? 0.75 : effort === 'high' ? 0.6 : effort === 'medium' ? 0.4 : effort === 'low' ? 0.25 : 0.5;
+  const fraction = effort === 'max' ? 0.75 : effort === 'xhigh' ? 0.7 : effort === 'high' ? 0.6
+    : effort === 'medium' ? 0.4 : effort === 'low' ? 0.25 : 0.5;
   // Always leave at least a quarter of the budget for the answer itself.
   return Math.max(1_024, Math.min(Math.floor(maxOutputTokens * fraction), Math.floor(maxOutputTokens * 0.75)));
 }

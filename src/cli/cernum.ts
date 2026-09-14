@@ -19,10 +19,12 @@ import {
   Campaign, CampaignBuildError, CampaignConfiguration, CampaignError, CampaignLockError, CampaignStatus,
   DEFAULT_EXECUTION_POLICY, DiscoveredFrontierModel, EffortLevel, ExecutionPolicy, FrontierCandidateRequest,
   Ledger, LiveHost, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS, PRICING_FILE_NOTE, PROVIDER_LABELS, PricingSnapshot,
-  ProviderID, ProviderStatus, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
+  DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, ProviderID, ProviderStatus, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
   ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure, authorizeSpending,
   breakCampaignLock, breakRuntimeLease, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths,
-  credentialStatus, desiredCandidates, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
+  SubscriptionCLIAdapter, credentialStatus, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
+  describeExpiry, describeSmoke, desiredCandidates, discoveryStorePath, identitySmokeTest, modelsFromSmokes,
+  readDiscoveryStore, selectableFromStore, writeDiscoveryStore,
   discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI, estimateSpending, formatMicroUSD,
   guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink,
   modelStoreBaseline, normalizeEndpoint, offlineProviderStatuses, openaiBaseURL, parseCeilingToMicroUSD,
@@ -182,26 +184,19 @@ async function commandModels(options: Options): Promise<void> {
 
 // MARK: - Providers, credentials and discovery
 
-/** The discovery cache. Written by `discover`, read by `create`. Never a source of availability by itself. */
-function discoveryCachePath(root: string): string {
-  return path.join(root, '.providers', 'discovered.json');
-}
-
+/**
+ * The discovery evidence, read through the engine's store rather than a copy kept here.
+ *
+ * This used to be three private functions in this file. They are in the engine now, because the
+ * desktop application has to read the same evidence — and because two readers of one file that each
+ * decide for themselves what a stale proof means is two answers to a question that has one.
+ */
 function readDiscovered(root: string): DiscoveredFrontierModel[] {
-  const file = discoveryCachePath(root);
-  if (!fs.existsSync(file)) return [];
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { models?: DiscoveredFrontierModel[] };
-    return Array.isArray(parsed.models) ? parsed.models : [];
-  } catch {
-    return [];
-  }
+  return readDiscoveryStore(root).models;
 }
 
 function writeDiscovered(root: string, models: DiscoveredFrontierModel[]): void {
-  const file = discoveryCachePath(root);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ writtenAt: new Date().toISOString(), models }, null, 2) + '\n', 'utf8');
+  writeDiscoveryStore(root, models);
 }
 
 function renderProviderStatus(status: ProviderStatus): void {
@@ -211,6 +206,12 @@ function renderProviderStatus(status: ProviderStatus): void {
   if (status.executablePath) say(`    command      ${status.executablePath}`);
   if (status.version) say(`    version      ${status.version}`);
   if (status.credential) say(`    credential   ${status.credential.masked} (${status.credential.environmentVariable})`);
+  if (status.session) {
+    // Plan and method, never identity. The tool also reports an email address, an organisation id
+    // and an organisation name; none of them are read, so none of them can be printed here.
+    say(`    session      signed in: ${status.session.loggedIn ? 'yes' : 'no'} · ${status.session.authMethod}`
+      + ` · ${status.session.apiProvider}${status.session.subscriptionType ? ` · ${status.session.subscriptionType} plan` : ''}`);
+  }
   say(`    probe        ${status.probe === 'offline' ? 'nothing was contacted to produce this' : 'this provider was invoked'}`);
   for (const line of wrap(status.detail, 76)) say(`    ${line}`);
   for (const model of status.models) {
@@ -247,6 +248,18 @@ async function commandProviders(options: Options): Promise<void> {
     renderProviderStatus({ ...status, models: known });
   }
   say('');
+  // An expired proof is REPORTED, not silently dropped. A candidate that quietly disappeared from a
+  // list is a mystery; a candidate that says its proof aged out is an instruction.
+  const { selectable, expired } = selectableFromStore({ writtenAt: '', models: cached });
+  if (expired.length > 0) {
+    say(`${expired.length} proof(s) have expired and are no longer selectable:`);
+    for (const model of expired) for (const line of wrap(describeExpiry(model), 76)) say(`  ${line}`);
+    say('');
+  }
+  if (selectable.length > 0) {
+    say(`${selectable.length} model(s) are proven, unexpired and selectable.`);
+    say('');
+  }
   if (cached.length === 0) {
     say('No provider discovery has been run, so no frontier model is selectable yet.');
     say('The intended testing ladder, none of it confirmed:');
@@ -256,6 +269,7 @@ async function commandProviders(options: Options): Promise<void> {
     say('');
   }
   say(`Run discovery explicitly: ${TERMINAL_COMMAND} discover [claudeCLI|codexCLI|anthropicAPI|openaiAPI]`);
+  say(`Prove a subscription model by asking it once:  ${TERMINAL_COMMAND} smoke claudeCLI   (spends allowance)`);
 }
 
 /** Credential configuration, masked. Shows that something is set and how long it is, and nothing else. */
@@ -307,7 +321,125 @@ async function commandDiscover(positional: string[], options: Options): Promise<
   const proven = discovered.filter((model) => model.availability === 'proven');
   say('');
   say(`${proven.length} model(s) are now selectable. Anything not listed as 'proven' cannot be put in a campaign.`);
-  say(`Recorded in ${discoveryCachePath(root)}`);
+  say(`Recorded in ${discoveryStorePath(root)}`);
+}
+
+/**
+ * Prove — or fail to prove — that this account can call a model, by asking it once who it is.
+ *
+ * THIS SPENDS ALLOWANCE. One request per candidate and effort level, carrying a nine-word prompt.
+ * It is a separate command from `discover` for exactly that reason: `discover` runs a tool's own
+ * read-only subcommands and costs nothing, and this one talks to a model.
+ *
+ * It exists because the `claude` CLI has NO model-listing command. There is no free way to learn
+ * which models a subscription may call, so the only honest route is to ask, once, and write down
+ * what came back.
+ */
+async function commandSmoke(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const wanted = positional.length > 0 ? positional as ProviderID[] : ['claudeCLI'] as ProviderID[];
+
+  for (const provider of wanted) {
+    if (provider !== 'claudeCLI' && provider !== 'codexCLI') {
+      fail(`'${provider}' is not a subscription CLI. An identity smoke test drives your own signed-in `
+        + '`claude` or `codex`; metered API identity is established by `discover`, which lists models directly.');
+    }
+  }
+
+  // The ladder is the PLAN, and the plan is the only thing that decides what is asked for. No
+  // spelling is invented here and no variant is tried: one request per named identifier, as named.
+  const requested = DESIRED_CANDIDATE_LADDER
+    .filter((entry) => wanted.includes(entry.provider) && entry.modelID.length > 0);
+  if (requested.length === 0) {
+    fail('nothing on the intended testing ladder names a model for that provider, so there is nothing to ask for. '
+      + 'A smoke test never invents an identifier.');
+  }
+
+  const budget = Number(options['max-attempts'] ?? 0);
+  const pairs = requested.flatMap((entry) => entry.desiredEfforts.map((effort) => ({ entry, effort })));
+  const planned = budget > 0 ? pairs.slice(0, budget) : pairs;
+
+  say(`${planned.length} identity smoke test(s). Each one sends a single minimal prompt to a real model and`);
+  say('consumes subscription allowance. Nothing here is a benchmark and no campaign is created.');
+  say('');
+
+  const results: IdentitySmokeResult[] = [];
+  for (const { entry, effort } of planned) {
+    if (!EFFORT_LEVELS.includes(effort as EffortLevel)) {
+      fail(`'${effort}' is not an effort level this engine models. Valid: ${EFFORT_LEVELS.join(', ')}.`);
+    }
+    const binding = smokeBinding(entry.provider, entry.modelID, effort as EffortLevel);
+    const adapter = new SubscriptionCLIAdapter({ provider: entry.provider });
+    const result = await identitySmokeTest(binding, adapter);
+    results.push(result);
+    say(`  ${describeSmoke(result)}`);
+    for (const line of wrap(result.evidence, 74)) say(`      ${line}`);
+    say(`      tokens in ${renderQuantity(result.inputTokens)} · visible out ${renderQuantity(result.visibleOutputTokens)}`
+      + ` · reasoning ${renderQuantity(result.reasoningTokens)}`);
+    say(`      wall ${renderQuantity(result.totalWallClockMilliseconds)}ms · first visible output `
+      + `${renderQuantity(result.timeToFirstVisibleTokenMilliseconds)}ms`);
+    say(`      marginal API charge ${renderMoney(result.marginalAPIChargeMicroUSD)} (no card is billed)`);
+    say(`      plan allowance consumed, at list value: ${renderMoney(result.subscriptionIncludedUsageMicroUSD)}`
+      + (result.subscriptionIncludedUsageMicroUSD.provenance === 'unavailable' ? '' : ' — a zero charge is not a zero cost'));
+    for (const note of result.notEnforceable) for (const line of wrap(note, 70)) say(`      ! ${line}`);
+    say('');
+  }
+
+  // Written through the store, with the timestamp a later campaign checks for staleness. Nothing
+  // about a successful model is written into source: the file is the evidence, and it expires.
+  const names = new Map(DESIRED_CANDIDATE_LADDER.map((entry) => [entry.modelID, entry.displayName]));
+  const fresh = modelsFromSmokes(results, names);
+  const kept = readDiscovered(root).filter((model) => !fresh.some(
+    (entry) => entry.provider === model.provider && entry.modelID === model.modelID));
+  writeDiscovered(root, [...kept, ...fresh]);
+
+  const proven = fresh.filter((model) => model.availability === 'proven');
+  say(`${proven.length} of ${fresh.length} candidate(s) are now proven and selectable.`);
+  say(`Recorded in ${discoveryStorePath(root)}`);
+  say('No campaign was created. A preflight establishes who answers; it does not measure anything.');
+}
+
+/** A binding for one smoke test: the smallest honest request this engine can describe. */
+function smokeBinding(provider: ProviderID, modelID: string, effort: EffortLevel) {
+  return {
+    candidate: `${provider}:${modelID}:${effort}`,
+    provider,
+    executionClass: 'subscriptionCLI' as const,
+    requestedModelID: modelID,
+    // UNVERIFIABLE IS THE HONEST STARTING STATE, and the whole point of the exercise is to change it.
+    // A smoke binding that claimed a verified identity before asking would be assuming its answer.
+    identityState: 'unverifiable' as const,
+    verifiedModelID: '',
+    identityEvidence: 'nothing has established this identity yet; that is what this request is for',
+    effort,
+    thinkingMode: 'runtimeDefault' as ThinkingMode,
+    sampling: { temperatureMilli: null, topPMilli: null, seed: null },
+    maxInputTokens: 1_024,
+    // The smallest budget worth naming. This CLI cannot enforce it — recorded on every attempt
+    // rather than pretended otherwise — but the prompt asks for one word.
+    maxOutputTokens: 16,
+    timeoutMilliseconds: 120_000,
+    retry: { maxRetries: 0, backoffMilliseconds: 0, retryOn: [] },
+    billingBasis: 'subscriptionIncluded' as const,
+    pricing: null,
+    authorizationMode: 'subscriptionCLISession' as const,
+  };
+}
+
+function renderQuantity(quantity: { provenance: string; value?: number }): string {
+  return quantity.provenance === 'unavailable' ? 'not reported' : String(quantity.value);
+}
+
+/**
+ * Money, to six decimal places, always.
+ *
+ * `formatMicroUSD` rounds anything above a cent to two places, which is right for a campaign total
+ * and wrong here: one identity smoke consumes about $0.014 of allowance, and rounding a column of
+ * those to $0.01 each loses a third of the figure before it is ever summed.
+ */
+function renderMoney(quantity: { provenance: string; value?: number }): string {
+  if (quantity.provenance === 'unavailable') return 'not reported — which is not zero';
+  return `$${((quantity.value ?? 0) / 1_000_000).toFixed(6)}`;
 }
 
 // MARK: - Money
@@ -977,6 +1109,7 @@ function commandHelp(): void {
   say('');
   say('  providers                       every provider\'s status, WITHOUT contacting any of them');
   say('  discover [<provider>]           ask a provider what it is and what this account may call');
+  say('  smoke [<provider>]              prove a model by asking it once who it is — SPENDS ALLOWANCE');
   say('  credentials                     which API keys are configured (masked; never printed)');
   say('  models                          list the models installed locally (read-only)');
   say('  suites                          list the benchmark suites this engine can plan');
@@ -1049,6 +1182,7 @@ export async function main(argv: string[]): Promise<void> {
   switch (command) {
     case 'providers': return commandProviders(options);
     case 'discover': return commandDiscover(positional, options);
+    case 'smoke': return commandSmoke(positional, options);
     case 'credentials': return commandCredentials();
     case 'cost': return commandCost(positional, options);
     case 'authorize': return commandAuthorize(positional, options);

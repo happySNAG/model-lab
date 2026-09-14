@@ -104,30 +104,51 @@ describe('discovering a subscription CLI', () => {
     expect(status.probe).toBe('offline');
   });
 
-  it('reads the version and the model listing, and marks only the listed models proven', async () => {
+  it('reads the version and the AUTH STATUS, and still proves no model — because the tool lists none', async () => {
+    // The real `claude` 2.1.251 shape, with the account identifiers removed. Pass 4B asked this tool
+    // for `models list --json`; it has no `models` command at all, and this is what it does have.
     const fake = writeFakeCLI('claude', `
-      if [ "$1" = "--version" ]; then echo "claude 9.9.9 (fixture)"; exit 0; fi
-      echo '{"models":[{"id":"claude-sonnet-5","display_name":"Claude Sonnet 5"},{"id":"claude-haiku-4-5"}]}'
+      if [ "$1" = "--version" ]; then echo "2.1.251 (Claude Code)"; exit 0; fi
+      if [ "$1" = "auth" ]; then
+        echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}'
+        exit 0
+      fi
+      echo "unknown command" >&2; exit 1
     `);
     try {
       const status = await discoverSubscriptionCLI('claudeCLI', { findExecutable: () => fake.executablePath });
       expect(status.reachability).toBe('ready');
       expect(status.probe).toBe('invoked');
-      expect(status.version).toBe('claude 9.9.9 (fixture)');
-      const proven = status.models.filter((model) => model.availability === 'proven').map((model) => model.modelID);
-      expect(proven).toEqual(['claude-haiku-4-5', 'claude-sonnet-5']);
-      // A ladder entry the tool did NOT list is reported as refused, not silently dropped.
-      const refused = status.models.filter((model) => model.availability === 'refused').map((model) => model.modelID);
-      expect(refused).toContain('luna-max');
-      expect(refused).toContain('claude-opus-4-8');
+      expect(status.version).toBe('2.1.251 (Claude Code)');
+      expect(status.session).toEqual({
+        loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: 'max',
+      });
+      // SIGNED IN IS NOT PROVEN. The tool cannot list models, so nothing here may claim one works.
+      expect(status.models.every((model) => model.availability === 'unproven')).toBe(true);
+      expect(status.detail).toMatch(/offers NO model-listing command/);
+      expect(status.detail).toMatch(/identity smoke test/);
     } finally { fake.cleanup(); }
   });
 
-  it('reports "not signed in" as exactly that, and proves nothing', async () => {
+  it('keeps no account identifier out of a status, even when the tool volunteers one', async () => {
     const fake = writeFakeCLI('claude', `
-      if [ "$1" = "--version" ]; then echo "claude 9.9.9"; exit 0; fi
-      echo "You are not logged in. Run claude login." >&2
-      exit 1
+      if [ "$1" = "--version" ]; then echo "2.1.251 (Claude Code)"; exit 0; fi
+      echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max","email":"someone@example.test","orgId":"00000000-0000-0000-0000-000000000000","orgName":"Someone Org","projectsDirectory":"/somewhere/projects"}'
+    `);
+    try {
+      const status = await discoverSubscriptionCLI('claudeCLI', { findExecutable: () => fake.executablePath });
+      const serialised = JSON.stringify(status);
+      for (const leak of ['someone@example.test', '00000000-0000-0000-0000-000000000000', 'Someone Org', '/somewhere/projects']) {
+        expect(serialised).not.toContain(leak);
+      }
+      expect(status.session?.subscriptionType).toBe('max');
+    } finally { fake.cleanup(); }
+  });
+
+  it('reports "not signed in" from the tool\'s own boolean, not from its prose', async () => {
+    const fake = writeFakeCLI('claude', `
+      if [ "$1" = "--version" ]; then echo "2.1.251 (Claude Code)"; exit 0; fi
+      echo '{"loggedIn":false,"authMethod":"","apiProvider":"","subscriptionType":""}'
     `);
     try {
       const status = await discoverSubscriptionCLI('claudeCLI', { findExecutable: () => fake.executablePath });
@@ -137,16 +158,20 @@ describe('discovering a subscription CLI', () => {
     } finally { fake.cleanup(); }
   });
 
-  it('leaves everything unproven when the tool offers no machine-readable listing', async () => {
+  it('refuses to guess from prose when the status is not machine-readable', async () => {
+    // Pass 4B matched phrases like "not logged in" against stdout and stderr. A tool that prints
+    // prose now gets `unknown`, because a benchmark that reads sentences changes its mind whenever
+    // somebody edits one.
     const fake = writeFakeCLI('claude', `
       if [ "$1" = "--version" ]; then echo "claude 1.0"; exit 0; fi
-      echo "unknown command: models" >&2
+      echo "You are not logged in. Run claude login." >&2
       exit 2
     `);
     try {
       const status = await discoverSubscriptionCLI('claudeCLI', { findExecutable: () => fake.executablePath });
       expect(status.reachability).toBe('unknown');
-      expect(status.detail).toMatch(/offers no machine-readable model listing/);
+      expect(status.detail).toMatch(/could not be read in a machine-readable form/);
+      expect(status.detail).toMatch(/will not guess from prose|Nothing here will guess from prose/);
       expect(status.models.every((model) => model.availability === 'unproven')).toBe(true);
     } finally { fake.cleanup(); }
   });

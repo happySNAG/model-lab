@@ -9,7 +9,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   MeteredAPIAdapter, RETRYABLE_FAILURES, ScriptedFrontierAdapter, SubscriptionCLIAdapter,
-  buildAPIBody, buildCLIArguments, parseAPIResponse, parseCLIResponse, thinkingBudgetFor, withRetry,
+  buildAPIBody, buildCLIArguments, detectEffortSubstitution, parseAPIResponse, parseCLIResponse,
+  resolveAnsweringModel, thinkingBudgetFor, totalInputTokens, withRetry,
 } from '../../src/engine/frontier-adapter';
 import { liveCLIProcessCount, runCLI, terminateAllCLIProcesses } from '../../src/engine/cli-process';
 import { forgetRegisteredSecrets } from '../../src/engine/redaction';
@@ -88,15 +89,17 @@ describe('reading a subscription CLI\'s answer', () => {
     expect(parseCLIResponse('{"unexpected":"shape"}')).toBeUndefined();
   });
 
-  it('records "the tool did not say which model" as an empty string, never as the request', () => {
+  it('records "the tool did not say which model" as no participants at all, never as the request', () => {
     const parsed = parseCLIResponse('{"result":"hi"}')!;
-    expect(parsed.reportedModelID).toBe('');
+    expect(parsed.participants).toEqual([]);
+    expect(resolveAnsweringModel('m', parsed.participants).state).toBe('unverifiable');
+    expect(resolveAnsweringModel('m', parsed.participants).reportedModelID).toBe('');
   });
 
   it('takes the last complete JSON object, so a progress line does not become the answer', () => {
-    const parsed = parseCLIResponse('{"type":"progress"}\n{"result":"the answer","model":"m"}')!;
+    const parsed = parseCLIResponse('{"type":"progress"}\n{"result":"the answer","modelUsage":{"m":{"canonicalModel":"m"}}}')!;
     expect(parsed.answerText).toBe('the answer');
-    expect(parsed.reportedModelID).toBe('m');
+    expect(resolveAnsweringModel('m', parsed.participants).reportedModelID).toBe('m');
   });
 
   it('turns an unrecognised output into a malformedResponse, not a silent empty answer', async () => {
@@ -158,8 +161,12 @@ describe('a child process is stopped, not abandoned', () => {
     const fake = writeFakeCLI('claude', `trap '' TERM; while true; do sleep 0.2; done`);
     try {
       const started = Date.now();
+      // The deadline has to outlast `sh` STARTING UP and installing its trap, which is not the thing
+      // under test. At 500 ms on a loaded machine SIGTERM could arrive before the trap existed, and
+      // the shell would die politely — failing the test for a reason that has nothing to do with the
+      // escalation it exists to prove. The grace period, which IS under test, stays short.
       const result = await runCLI({
-        executable: fake.executablePath, args: [], timeoutMilliseconds: 500, graceMilliseconds: 300,
+        executable: fake.executablePath, args: [], timeoutMilliseconds: 2_000, graceMilliseconds: 300,
       });
       expect(result.failure?.kind).toBe('timeout');
       // SIGKILL, because SIGTERM was ignored.

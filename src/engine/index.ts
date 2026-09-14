@@ -11,6 +11,8 @@ export * from './redaction';
 export * from './credentials';
 export * from './cli-process';
 export * from './discovery';
+export * from './discovery-store';
+export * from './identity-smoke';
 export * from './spending';
 export * from './frontier-metrics';
 export * from './frontier-adapter';

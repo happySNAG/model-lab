@@ -64,9 +64,16 @@ export type AuthorizationMode = 'none' | 'subscriptionCLISession' | 'apiKeyEnvir
  * These are the names the providers themselves use. `none` means the request carries no effort
  * instruction at all, which is different from asking for low.
  */
-export type EffortLevel = 'none' | 'low' | 'medium' | 'high' | 'max';
+export type EffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-export const EFFORT_LEVELS: EffortLevel[] = ['none', 'low', 'medium', 'high', 'max'];
+/**
+ * `xhigh` is here because the tool has it.
+ *
+ * Pass 4B modelled four levels plus `none`. The installed `claude` CLI documents FIVE — low, medium,
+ * high, xhigh, max — and a ladder that cannot name `xhigh` cannot ask for it, which would have made
+ * a level of the provider's own ladder permanently unreachable and invisible.
+ */
+export const EFFORT_LEVELS: EffortLevel[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * What is actually known about the model identity behind a binding.

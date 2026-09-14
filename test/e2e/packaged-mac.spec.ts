@@ -64,7 +64,14 @@ test('Model Lab.app launches from its bundle, names itself, and stores data unde
   expect(providers).toContain('Nothing below contacted anything');
   expect(providers).toContain('Claude Subscription');
   expect(providers).toContain('Anthropic API');
-  expect(providers).toContain('No provider discovery has been run');
+  // This test deliberately uses the REAL data location, so it has to cope with a machine where
+  // discovery has already been run — which is the normal state after the first use, not an unusual
+  // one. The invariant is that the command always says how to ask; whether it has anything to
+  // report yet depends on the store, so only the empty case asserts the empty message.
+  expect(providers).toContain('Run discovery explicitly:');
+  const storeExists = fs.existsSync(path.join(os.homedir(),
+    'Library/Application Support/Model Lab/campaigns/.providers/discovered.json'));
+  if (!storeExists) expect(providers).toContain('No provider discovery has been run');
   const credentials = execFileSync(launcher, ['credentials'], { cwd: os.tmpdir(), encoding: 'utf8', timeout: 120_000 });
   expect(credentials).toContain('never stores a key itself and never prints one');
   expect(credentials).toContain('ANTHROPIC_API_KEY');

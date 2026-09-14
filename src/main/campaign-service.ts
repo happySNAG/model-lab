@@ -126,9 +126,16 @@ function metricsRow(metrics: FrontierCandidateMetrics): FrontierMetricsRow {
     visibleOutputTokens: value('visible output tokens', metrics.visibleOutputTokens),
     reasoningTokens: value('reasoning tokens', metrics.reasoningTokens),
     totalTokens: value('total tokens', metrics.totalTokens),
-    medianTokensPerSecondMilli: value('tokens per second', metrics.medianTokensPerSecondMilli),
+    medianProviderReportedGenerationTokensPerSecondMilli:
+      value('provider-reported generation speed', metrics.medianProviderReportedGenerationTokensPerSecondMilli),
+    medianClientObservedOutputTokensPerSecondMilli:
+      value('client-observed output throughput', metrics.medianClientObservedOutputTokensPerSecondMilli),
+    medianEndToEndOutputTokensPerSecondMilli:
+      value('end-to-end output throughput', metrics.medianEndToEndOutputTokensPerSecondMilli),
     medianTimeToFirstVisibleTokenMilliseconds: value('time to first visible token', metrics.medianTimeToFirstVisibleTokenMilliseconds),
-    costPerRunMicroUSD: value('cost per run', metrics.costPerRunMicroUSD),
+    costPerRunMicroUSD: value('marginal API charge per run', metrics.costPerRunMicroUSD),
+    subscriptionIncludedUsageMicroUSD: value('subscription allowance consumed', metrics.subscriptionIncludedUsageMicroUSD),
+    effectiveUserCostMicroUSD: value('effective cost to you', metrics.effectiveUserCostMicroUSD),
     costPerSuccessfulTaskMicroUSD: value('cost per successful task', metrics.costPerSuccessfulTaskMicroUSD),
     tokensPerCompletedPass: value('tokens per completed pass', metrics.tokensPerCompletedPass),
     wastedTokens: value('wasted tokens', metrics.wastedTokens),

@@ -72,6 +72,23 @@ export interface DiscoveredFrontierModel {
   discoveredAt: string;
 }
 
+/**
+ * What is known about a subscription session, and deliberately nothing more.
+ *
+ * There is no email, no organisation id, no organisation name and no token here. The CLI reports all
+ * four; none of them answer any question this project has, and every one of them would be a private
+ * account identifier written into a file somebody later shares.
+ */
+export interface SubscriptionSession {
+  loggedIn: boolean;
+  /** How the session authenticates, e.g. `claude.ai`. Not who it authenticates as. */
+  authMethod: string;
+  /** e.g. `firstParty`. Which service the requests actually go to. */
+  apiProvider: string;
+  /** The plan tier, e.g. `max`. What the allowance is, not whose it is. */
+  subscriptionType: string;
+}
+
 export interface ProviderStatus {
   provider: ProviderID;
   label: string;
@@ -92,6 +109,8 @@ export interface ProviderStatus {
   /** Only present after discovery: reading it requires running the tool. */
   version?: string;
   credential?: CredentialStatus;
+  /** Only after discovery, and only for a subscription CLI. Carries no account identifiers. */
+  session?: SubscriptionSession;
   /** Empty until discovery runs. An empty list is never presented as "no models exist". */
   models: DiscoveredFrontierModel[];
   checkedAt: string;
@@ -283,38 +302,97 @@ export async function discoverSubscriptionCLI(provider: ProviderID, options: Dis
   }
   const versionText = version.stdout.trim().split('\n')[0] ?? '';
 
-  // The model listing. A tool that does not offer one leaves the ladder unproven rather than
-  // producing an invented list — and the result says which of those happened.
-  const listing = await run({ executable: executablePath, args: ['models', 'list', '--json'], timeoutMilliseconds });
-  if (listing.failure) {
-    const unauthenticated = /not (?:logged|signed) in|unauthenticated|please (?:log|sign) in|no active session/i
-      .test(`${listing.stdout}\n${listing.stderr}`);
+  // AUTHENTICATION, ASKED THE WAY THE TOOL ANSWERS IT.
+  //
+  // CORRECTION TO PASS 4B: Pass 4B asked for `<cli> models list --json` and inferred authentication
+  // from PROSE when that failed, matching phrases like "not logged in" against stdout and stderr.
+  // The installed `claude` 2.1.251 has NO `models` command at all — so the call always failed, the
+  // prose match always missed, and every run of discovery returned `unknown`. It also has a
+  // documented machine-readable answer to exactly this question, which Pass 4B never asked:
+  // `claude auth status --json`.
+  const auth = await run({ executable: executablePath, args: authStatusArguments(provider), timeoutMilliseconds });
+  const session = parseAuthStatus(auth.stdout);
+
+  if (!session) {
     return {
       ...base,
       executablePath,
       version: versionText,
-      reachability: unauthenticated ? 'notAuthenticated' : 'unknown',
+      reachability: 'unknown',
       models: desiredCandidates(checkedAt).filter((model) => model.provider === provider),
-      detail: unauthenticated
-        ? `\`${executable}\` is installed but reports that it is not signed in. Authenticate it yourself, the way you `
-          + 'normally would; Cernum does not carry out a sign-in and does not hold your session.'
-        : `\`${executable} --version\` answered (${versionText}), but it offers no machine-readable model listing `
-          + `(${redactSecrets(listing.failure.detail)}). Nothing here knows which models this subscription may call, so every `
-          + 'candidate stays unproven until an identity smoke test establishes one by name.',
+      detail: `\`${executable} --version\` answered (${versionText}), but its authentication status could not be read `
+        + `in a machine-readable form (${redactSecrets(auth.failure?.detail ?? 'the output did not parse')}). Nothing `
+        + 'here will guess from prose, so whether this subscription is signed in is unknown and every candidate stays '
+        + 'unproven.',
     };
   }
 
-  const models = parseModelListing(listing.stdout, provider, checkedAt);
+  if (!session.loggedIn) {
+    return {
+      ...base,
+      executablePath,
+      version: versionText,
+      reachability: 'notAuthenticated',
+      models: desiredCandidates(checkedAt).filter((model) => model.provider === provider),
+      detail: `\`${executable}\` is installed but reports that it is not signed in. Authenticate it yourself, the way `
+        + 'you normally would; Cernum does not carry out a sign-in and does not hold your session.',
+    };
+  }
+
+  // SIGNED IN, AND STILL UNABLE TO LIST MODELS.
+  //
+  // This is the honest end of discovery for this tool, and it is a real limitation rather than a
+  // failure: `claude` documents no model-listing subcommand in any form. So nothing here knows which
+  // models the subscription may call, and the ladder stays UNPROVEN. The only remaining route from
+  // `unproven` to `proven` is an identity smoke test — one minimal request per candidate, which
+  // names the model in its own answer. That is a request, it consumes allowance, and it therefore
+  // happens only when a person asks for it by name.
   return {
     ...base,
     executablePath,
     version: versionText,
     reachability: 'ready',
-    models,
-    detail: models.length > 0
-      ? `\`${executable}\` ${versionText} is signed in and reports ${models.length} model(s) this subscription may call.`
-      : `\`${executable}\` ${versionText} is signed in but reported no models. That is its answer, not an assumption: `
-        + 'no candidate is selectable for this provider.',
+    session,
+    models: desiredCandidates(checkedAt).filter((model) => model.provider === provider),
+    detail: `\`${executable}\` ${versionText} is signed in (${session.authMethod}`
+      + `${session.subscriptionType ? `, ${session.subscriptionType} plan` : ''}) and this account can reach the `
+      + 'service. It offers NO model-listing command, so which models the subscription may call is still unknown: run '
+      + 'an identity smoke test to establish a candidate by name. Nothing is selectable until one does.',
+  };
+}
+
+/** How each subscription CLI is asked whether it is signed in. Its own documented subcommand. */
+function authStatusArguments(provider: ProviderID): string[] {
+  // `codex` was NOT INSTALLED when this was written, so its arguments could not be verified against
+  // a real binary. They are left as Pass 4B's assumption and are marked unverified in the report
+  // rather than being presented as checked.
+  return provider === 'claudeCLI' ? ['auth', 'status', '--json'] : ['login', 'status', '--json'];
+}
+
+/**
+ * Read a CLI's authentication status, keeping NOTHING that identifies the account.
+ *
+ * The real answer carries an email address, an organisation id and an organisation name. None of
+ * them are needed to know whether a benchmark can run, and all three would end up in evidence files
+ * and reports if this function returned the object it parsed. So the fields are named one by one and
+ * the rest is dropped here, at the boundary, rather than redacted later by something that might be
+ * forgotten.
+ */
+export function parseAuthStatus(stdout: string): SubscriptionSession | undefined {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(stdout.trim()) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  if (typeof parsed.loggedIn !== 'boolean') return undefined;
+  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+  return {
+    loggedIn: parsed.loggedIn,
+    authMethod: text(parsed.authMethod),
+    apiProvider: text(parsed.apiProvider),
+    subscriptionType: text(parsed.subscriptionType),
   };
 }
 
