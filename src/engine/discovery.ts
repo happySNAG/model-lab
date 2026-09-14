@@ -31,6 +31,7 @@
 import { ExecutionClass, PROVIDER_LABELS, ProviderID, billingBasisOf, executionClassOf } from './provider';
 import { CredentialStatus, CredentialLookupOptions, credentialStatus, isMeteredProvider } from './credentials';
 import { CLIResult, findExecutable, runCLI } from './cli-process';
+import { CodexAuthStatus, codexSubscriptionUsable, parseCodexDoctorAuth } from './codex-cli';
 import { redactSecrets } from './redaction';
 
 /** How far the truth about a provider has actually been established. */
@@ -130,11 +131,24 @@ const CLI_EXECUTABLE: Partial<Record<ProviderID, string>> = {
  * this list can therefore never make a model runnable — only discovery can.
  */
 export const DESIRED_CANDIDATE_LADDER: { provider: ProviderID; modelID: string; displayName: string; desiredEfforts: string[] }[] = [
-  { provider: 'claudeCLI', modelID: 'luna-max', displayName: 'Luna Max', desiredEfforts: ['none'] },
   { provider: 'claudeCLI', modelID: 'claude-haiku-4-5', displayName: 'Claude Haiku 4.5', desiredEfforts: ['none'] },
   { provider: 'claudeCLI', modelID: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', desiredEfforts: ['high', 'max'] },
   { provider: 'claudeCLI', modelID: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', desiredEfforts: ['none'] },
-  { provider: 'codexCLI', modelID: '', displayName: 'whichever models this Codex subscription reports', desiredEfforts: ['none'] },
+  // LUNA IS AN OPENAI MODEL AND BELONGS HERE, NOT ABOVE.
+  //
+  // Pass 5 asked the `claude` CLI for a model it called `luna-max`, was told 404, and concluded that
+  // "Luna Max does not exist". The 404 was correct and the conclusion was wrong: the Claude CLI had
+  // been asked for a model from the Codex family, which it has never served and could not serve. The
+  // full name is GPT-5.6 Luna; "Luna Max" is that model at MAX REASONING EFFORT, which is a model
+  // plus a setting rather than a model identifier — which is why sending it as one could only 404.
+  //
+  // A refusal is only evidence about the provider that was asked. Asking the wrong provider proves
+  // nothing about the model, and this ladder now keeps identifier and effort in the two separate
+  // columns the rest of the engine already uses.
+  { provider: 'codexCLI', modelID: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', desiredEfforts: ['max'] },
+  { provider: 'codexCLI', modelID: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', desiredEfforts: ['medium'] },
+  { provider: 'codexCLI', modelID: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', desiredEfforts: ['medium', 'max'] },
+  { provider: 'codexCLI', modelID: 'gpt-6-astra', displayName: 'GPT-6 Astra', desiredEfforts: ['medium', 'max'] },
 ];
 
 const LADDER_CAVEAT =
@@ -311,7 +325,27 @@ export async function discoverSubscriptionCLI(provider: ProviderID, options: Dis
   // documented machine-readable answer to exactly this question, which Pass 4B never asked:
   // `claude auth status --json`.
   const auth = await run({ executable: executablePath, args: authStatusArguments(provider), timeoutMilliseconds });
-  const session = parseAuthStatus(auth.stdout);
+  const session = provider === 'codexCLI' ? codexSession(auth.stdout) : parseAuthStatus(auth.stdout);
+
+  // A CODEX CLI SIGNED IN WITH AN API KEY IS NOT A SUBSCRIPTION, AND IS REFUSED RATHER THAN USED.
+  //
+  // The same binary serves both, and the difference is invisible from the outside: identical
+  // commands, identical output, and a per-token charge against a card in one case and a plan
+  // allowance in the other. This engine labels Codex execution `subscriptionIncluded` with a zero
+  // marginal charge, so running it against a metered session would report a real charge as free.
+  if (provider === 'codexCLI') {
+    const usable = codexSubscriptionUsable(parseCodexDoctorAuth(auth.stdout));
+    if (!usable.usable) {
+      return {
+        ...base,
+        executablePath,
+        version: versionText,
+        reachability: 'notAuthenticated',
+        models: desiredCandidates(checkedAt).filter((model) => model.provider === provider),
+        detail: usable.reason,
+      };
+    }
+  }
 
   if (!session) {
     return {
@@ -347,6 +381,25 @@ export async function discoverSubscriptionCLI(provider: ProviderID, options: Dis
   // `unproven` to `proven` is an identity smoke test — one minimal request per candidate, which
   // names the model in its own answer. That is a request, it consumes allowance, and it therefore
   // happens only when a person asks for it by name.
+  // WHAT EACH TOOL CAN AND CANNOT ESTABLISH, said separately, because they differ.
+  //
+  // CORRECTION TO PASS 5: this sentence used to assert that the signed-in CLI "offers NO
+  // model-listing command" for BOTH providers. That is true of `claude` and FALSE of `codex`, which
+  // documents `codex debug models` — "Render the raw model catalog as JSON" — and answers it. Pass 5
+  // could not have known: no `codex` binary was installed when it ran.
+  //
+  // It changes the wording and NOT the verdict. A catalogue is what the client knows about, not what
+  // the account may invoke, and the service makes that distinction itself: a model absent from the
+  // catalogue is refused with "not supported when using Codex with a ChatGPT account", which is an
+  // account-level judgement no local file can make. So every Codex candidate stays `unproven` too,
+  // and for a second reason on top: `codex exec --json` never names the model that answered, so even
+  // a successful smoke leaves identity `unverifiable`.
+  const listing = provider === 'codexCLI'
+    ? 'It DOES offer a machine-readable model catalogue (`codex debug models`), but a catalogue is what this client '
+      + 'knows about rather than what this account may invoke — the service refuses models that appear in it — and '
+      + '`codex exec` never names the model that answered, so identity stays unverifiable even on success.'
+    : 'It offers NO model-listing command, so which models the subscription may call is still unknown.';
+
   return {
     ...base,
     executablePath,
@@ -356,17 +409,25 @@ export async function discoverSubscriptionCLI(provider: ProviderID, options: Dis
     models: desiredCandidates(checkedAt).filter((model) => model.provider === provider),
     detail: `\`${executable}\` ${versionText} is signed in (${session.authMethod}`
       + `${session.subscriptionType ? `, ${session.subscriptionType} plan` : ''}) and this account can reach the `
-      + 'service. It offers NO model-listing command, so which models the subscription may call is still unknown: run '
-      + 'an identity smoke test to establish a candidate by name. Nothing is selectable until one does.',
+      + `service. ${listing} Run an identity smoke test to establish what a real request returns. Nothing is `
+      + 'selectable until something does.',
   };
 }
 
-/** How each subscription CLI is asked whether it is signed in. Its own documented subcommand. */
+/**
+ * How each subscription CLI is asked whether it is signed in. Its own documented subcommand.
+ *
+ * CORRECTION TO PASS 4B: `codex login status --json` DOES NOT EXIST. Verified against 0.154.0,
+ * which answers `error: unexpected argument '--json' found`. `codex login status` without the flag
+ * prints one line of PROSE — `Logged in using ChatGPT` — and this engine does not read prose where a
+ * machine-readable field is required.
+ *
+ * The machine-readable answer is `codex doctor --json`, documented as "Emit a redacted
+ * machine-readable report", whose `auth.credentials` check reports the stored auth mode, whether an
+ * API key is stored and whether ChatGPT tokens are. See `parseCodexDoctorAuth`.
+ */
 function authStatusArguments(provider: ProviderID): string[] {
-  // `codex` was NOT INSTALLED when this was written, so its arguments could not be verified against
-  // a real binary. They are left as Pass 4B's assumption and are marked unverified in the report
-  // rather than being presented as checked.
-  return provider === 'claudeCLI' ? ['auth', 'status', '--json'] : ['login', 'status', '--json'];
+  return provider === 'claudeCLI' ? ['auth', 'status', '--json'] : ['doctor', '--json'];
 }
 
 /**
@@ -393,6 +454,29 @@ export function parseAuthStatus(stdout: string): SubscriptionSession | undefined
     authMethod: text(parsed.authMethod),
     apiProvider: text(parsed.apiProvider),
     subscriptionType: text(parsed.subscriptionType),
+  };
+}
+
+/**
+ * The Codex equivalent of `parseAuthStatus`, mapped onto the same shape and keeping just as little.
+ *
+ * The two tools answer the question in completely different documents — `claude auth status --json`
+ * returns a flat object with a `loggedIn` boolean; `codex doctor --json` returns a report whose
+ * `auth.credentials` check carries STRING fields, so `"stored API key": "false"` is the string
+ * `false` and reading it as a boolean makes every session look like an API-key session.
+ *
+ * `subscriptionType` is left EMPTY rather than filled in. Codex reports no plan tier anywhere this
+ * pass could find, and writing "max" or "plus" into it from anything other than the tool's own
+ * statement would be inventing the one fact the field exists to carry.
+ */
+function codexSession(stdout: string): SubscriptionSession | undefined {
+  const auth: CodexAuthStatus | undefined = parseCodexDoctorAuth(stdout);
+  if (!auth) return undefined;
+  return {
+    loggedIn: auth.chatgptTokensStored || auth.apiKeyStored,
+    authMethod: auth.storedAuthMode,
+    apiProvider: 'openai',
+    subscriptionType: '',
   };
 }
 

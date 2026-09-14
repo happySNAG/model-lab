@@ -100,7 +100,7 @@ describe('the two surfaces freeze the same thing', () => {
 describe('the builder refuses an unproven model, whichever surface asked', () => {
   const request = (provenModels: ReturnType<typeof provenModel>[]) => () => buildCampaignPlan({
     label: 'a cohort', suiteIDs: SUITES, repeatsPerCase: 1, local: [],
-    frontier: [{ name: 'claudeCLI:luna-max', provider: 'claudeCLI', modelID: 'luna-max', effort: 'none', thinkingMode: 'disabled' }],
+    frontier: [{ name: 'claudeCLI:claude-opus-4-8', provider: 'claudeCLI', modelID: 'claude-opus-4-8', effort: 'none', thinkingMode: 'disabled' }],
     endpoint: 'http://127.0.0.1:11434', hardware: HARDWARE, runtimeVersion: 'x',
     provenModels,
   });
@@ -115,9 +115,9 @@ describe('the builder refuses an unproven model, whichever surface asked', () =>
   });
 
   it('accepts it once discovery has proven it, and records what proved it', () => {
-    const built = request([provenModel('claudeCLI', 'luna-max')])();
+    const built = request([provenModel('claudeCLI', 'claude-opus-4-8')])();
     expect(built.envelope.bindings[0].identityState).toBe('verified');
-    expect(built.envelope.bindings[0].verifiedModelID).toBe('luna-max');
+    expect(built.envelope.bindings[0].verifiedModelID).toBe('claude-opus-4-8');
     expect(built.envelope.bindings[0].identityEvidence).toMatch(/no provider was contacted to produce it/);
   });
 });

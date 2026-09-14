@@ -64,16 +64,27 @@ export type AuthorizationMode = 'none' | 'subscriptionCLISession' | 'apiKeyEnvir
  * These are the names the providers themselves use. `none` means the request carries no effort
  * instruction at all, which is different from asking for low.
  */
-export type EffortLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type EffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
- * `xhigh` is here because the tool has it.
+ * `xhigh` and `minimal` are here because the tools have them.
  *
  * Pass 4B modelled four levels plus `none`. The installed `claude` CLI documents FIVE — low, medium,
  * high, xhigh, max — and a ladder that cannot name `xhigh` cannot ask for it, which would have made
  * a level of the provider's own ladder permanently unreachable and invisible.
+ *
+ * PASS 5B ADDS `minimal`, for the same reason and from the same kind of evidence: the Codex service
+ * names its own accepted set in the 400 it returns for an unknown one — `none`, `minimal`, `low`,
+ * `medium`, `high`, `xhigh`, `max`. `minimal` was a level of a provider's ladder this engine could
+ * not express.
+ *
+ * `ultra` IS DELIBERATELY ABSENT. The Codex catalogue lists it for three models and the Codex
+ * service's effort enum does not contain it, because it is an orchestration mode that answers with a
+ * tree of subagents rather than a reasoning level a single model runs at. See
+ * `CODEX_ULTRA_IS_NOT_A_REASONING_EFFORT` in `codex-cli.ts`. A benchmark row naming one model must
+ * have been produced by one model, so this ladder cannot name ultra and cannot ask for it.
  */
-export const EFFORT_LEVELS: EffortLevel[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+export const EFFORT_LEVELS: EffortLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * What is actually known about the model identity behind a binding.

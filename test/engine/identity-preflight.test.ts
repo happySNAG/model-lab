@@ -141,6 +141,13 @@ describe('one minimal request, four possible verdicts', () => {
     expect(result.evidence).toMatch(/housekeeping/);
   });
 
+  // THE FIXTURE IS PRESERVED EXACTLY AS PASS 5 CAPTURED IT, and so is the verdict: the `claude` CLI
+  // really did answer this identifier with a 404, and reading that refusal correctly is what this
+  // test is for. What Pass 5B corrects is the CONCLUSION drawn from it, not the capture. `luna-max`
+  // was a Codex model asked of the Claude CLI, so the 404 was a fact about the provider that was
+  // asked and never about the model — see `codex-identity-preflight.test.ts`, where GPT-5.6 Luna
+  // answers. The identifier stays here because rewriting a captured envelope to match a later
+  // understanding is how evidence stops being evidence.
   it('REFUSED when the account cannot call the model, without retrying to get a nicer answer', async () => {
     const { result } = await smoke(`cat > /dev/null; ${emit(REFUSED_UNKNOWN_MODEL)}; exit 1`,
       smokeBinding('luna-max'));
@@ -421,13 +428,13 @@ describe('discovery evidence expires', () => {
     const rows = modelsFromSmokes([
       { ...blankSmoke(), requestedModelID: 'claude-sonnet-5', effort: 'high', verdict: 'proven',
         reportedModelID: 'claude-sonnet-5', attemptedAt: at },
-      { ...blankSmoke(), requestedModelID: 'luna-max', effort: 'none', verdict: 'refused', attemptedAt: at },
+      { ...blankSmoke(), requestedModelID: 'retired-model', effort: 'none', verdict: 'refused', attemptedAt: at },
       { ...blankSmoke(), requestedModelID: 'anon', effort: 'none', verdict: 'unverifiable', attemptedAt: at },
       { ...blankSmoke(), requestedModelID: 'swapped', effort: 'none', verdict: 'substituted', attemptedAt: at },
     ]);
     const availability = new Map(rows.map((row) => [row.modelID, row.availability]));
     expect(availability.get('claude-sonnet-5')).toBe('proven');
-    expect(availability.get('luna-max')).toBe('refused');
+    expect(availability.get('retired-model')).toBe('refused');
     expect(availability.get('anon')).toBe('unproven');
     // A model that answered under a different name is NOT selectable.
     expect(availability.get('swapped')).toBe('refused');

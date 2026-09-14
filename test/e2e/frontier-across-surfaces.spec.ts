@@ -83,7 +83,12 @@ test.beforeAll(async () => {
   // A fake `claude` shaped like the real one: it reports authentication as JSON, has NO `models`
   // subcommand, and names the answering model in `modelUsage` rather than in a `model` field. It
   // echoes back whichever `--model` it was given, so a substitution would be visible if one
-  // happened, and it refuses `luna-max` with the real 404 signature.
+  // happened.
+  //
+  // The `luna-max` branch below reproduces the real 404 signature Pass 5 captured. Nothing on the
+  // ladder asks for it any more — Luna is a Codex model and lives under `codexCLI` now — so the
+  // branch is unreachable through the ladder and is kept only as the documented shape of a refusal
+  // a direct `--frontier claudeCLI:<unknown>` would still produce.
   const claude = path.join(fakeBin, 'claude');
   fs.writeFileSync(claude, [
     '#!/bin/sh',
@@ -138,7 +143,9 @@ test('the terminal reports providers without contacting any of them', async () =
   expect(providers).toContain('No provider discovery has been run');
   // The ladder is named, and every entry is unproven.
   expect(providers).toContain('unproven');
-  expect(providers).toContain('Luna Max');
+  // CORRECTED IN PASS 5B: the ladder entry is GPT-5.6 Luna, under Codex. "Luna Max" was never a
+  // model identifier — it is that model at max reasoning effort — and it was never a Claude model.
+  expect(providers).toContain('GPT-5.6 Luna');
   expect(providerRequests).toEqual([]);
 
   const credentials = await cernum('credentials');
@@ -149,7 +156,7 @@ test('the terminal reports providers without contacting any of them', async () =
 });
 
 test('an unproven model cannot be put in a campaign', async () => {
-  const refused = await cernumExpectingFailure('create', 'unproven-run', '--frontier', 'claudeCLI:luna-max', '--suites', SUITE);
+  const refused = await cernumExpectingFailure('create', 'unproven-run', '--frontier', 'codexCLI:gpt-5.6-luna', '--suites', SUITE);
   expect(refused.status).toBe(2);
   expect(refused.stderr).toMatch(/has not been proven callable by this account/);
   expect(refused.stderr).toMatch(/A model identifier is a plan, not a capability/);
@@ -168,8 +175,12 @@ test('an identity smoke proves a model — discovery alone cannot — and then a
   const smoked = await cernum('smoke', 'claudeCLI');
   expect(smoked).toContain('consumes subscription allowance');
   expect(smoked).toContain('proven       claude-haiku-4-5');
-  // And the model that does not exist is recorded as refused, from the tool's own 404.
-  expect(smoked).toContain('refused      luna-max');
+  // Every model on the CLAUDE half of the ladder is a Claude model, so this fake proves all of
+  // them. The refusal path is exercised against its real captured 404 in the unit suite, and the
+  // Codex half — which cannot reach `proven` at all, because `codex exec` names no model — is
+  // covered in `codex-identity-preflight.test.ts`.
+  expect(smoked).toContain('proven       claude-sonnet-5');
+  expect(smoked).not.toContain('luna-max');
   expect(smoked).toContain('No campaign was created');
   // A zero marginal charge is never presented as a zero cost.
   expect(smoked).toContain('marginal API charge $0.000000');

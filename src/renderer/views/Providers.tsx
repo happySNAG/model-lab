@@ -183,11 +183,22 @@ export function ProvidersView({ shell }: { shell: Shell }) {
                 will say so and nothing further happens.
               </p>
               <p className="muted small">
-                It will <strong>not</strong> tell you which models your account may call: this tool has no
-                model-listing command, so there is no free way to find out. Proving a model takes an identity smoke
-                test — one minimal request per candidate — which does consume your plan allowance and is run from the
-                terminal with <code>cernum smoke {confirming.provider}</code>.
+                It will <strong>not</strong> tell you which models your account may call.{' '}
+                {confirming.provider === 'codexCLI'
+                  ? 'This tool does publish a model catalogue, but a catalogue is what the app knows about rather '
+                    + 'than what your account may invoke — the service refuses models that appear in it.'
+                  : 'This tool has no model-listing command, so there is no free way to find out.'}{' '}
+                Proving a model takes an identity smoke test — one minimal request per candidate — which does consume
+                your plan allowance and is run from the terminal with <code>cernum smoke {confirming.provider}</code>.
               </p>
+              {confirming.provider === 'codexCLI' ? (
+                <p className="muted small">
+                  For Codex, even a successful smoke test leaves the identity <strong>unverifiable</strong>:{' '}
+                  <code>codex exec</code> never names the model that answered, so nothing can confirm the model you
+                  asked for is the model that replied. It also reports no cost and no remaining allowance, so a Codex
+                  request spends a real, finite share of your ChatGPT plan that this app cannot measure.
+                </p>
+              ) : null}
             </>
           ) : (
             <>

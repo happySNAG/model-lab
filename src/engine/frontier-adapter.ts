@@ -34,8 +34,15 @@
 // adapters call published endpoints with a key the user supplied. There is no browser session, no
 // borrowed cookie, no private endpoint and no attempt to make a subscription behave like an API.
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { CanonicalValue } from './canonical';
 import { CLIResult, findExecutable, runCLI } from './cli-process';
+import {
+  CODEX_SERVICE_EFFORT_LEVELS, CODEX_ULTRA_IS_NOT_A_REASONING_EFFORT, buildCodexExecArguments, describeCodexContamination,
+  parseCodexExecJSONL,
+} from './codex-cli';
 import { EffortLevel, ProviderBinding, ProviderID } from './provider';
 import { Provenance, Quantity, estimatedQuantity, measuredQuantity, reportedQuantity, unavailableQuantity } from './frontier-metrics';
 import { redactError, redactSecrets } from './redaction';
@@ -261,9 +268,20 @@ export function buildCLIArguments(binding: ProviderBinding): { args: string[]; u
       + 'nothing caps this answer\'s length. The allowance an over-long answer consumes is real and is recorded, but '
       + 'it was not bounded. Use the metered API for this candidate if the ceiling has to hold.');
   } else if (binding.provider === 'codexCLI') {
-    args.push('exec', '--json');
-    if (binding.requestedModelID.length > 0) args.push('--model', binding.requestedModelID);
-    if (binding.effort !== 'none') args.push('--config', `model_reasoning_effort=${binding.effort}`);
+    // PASS 4B'S CODEX ARGUMENTS WERE NEVER RUN AGAINST A CODEX BINARY, and Pass 5 said so rather
+    // than pretending otherwise. They are replaced wholesale by `buildCodexExecArguments`, which is
+    // built from `codex exec --help` on the installed 0.154.0 and carries the isolation this tool
+    // needs and `claude` does not: Codex is an AGENTIC CLI that will otherwise load the user's
+    // plugins, MCP servers and skills into a request the manifest describes as a bare model call.
+    //
+    // It is not called here, because it needs a freshly created empty working directory that only
+    // the adapter can make and clean up. `SubscriptionCLIAdapter.complete` calls it directly, and
+    // this branch exists to refuse the settings that must be refused before any of that happens.
+    if (binding.effort !== 'none' && !CODEX_SERVICE_EFFORT_LEVELS.includes(binding.effort)) {
+      unexpressed.push(`effort '${binding.effort}': the Codex service accepts only `
+        + `${CODEX_SERVICE_EFFORT_LEVELS.filter((level) => level !== 'none').join(', ')}`
+        + (binding.effort as string === 'ultra' ? `. ${CODEX_ULTRA_IS_NOT_A_REASONING_EFFORT}` : ''));
+    }
   } else {
     unexpressed.push(`${binding.provider} is not a subscription CLI`);
   }
@@ -506,6 +524,14 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
     const { text } = assembleRequestText(request.promptText, request.suppliedContext);
     let firstVisibleTokenMilliseconds: number | undefined;
 
+    // CODEX IS A DIFFERENT TOOL AND IS READ AS ONE. Different arguments, a different output format,
+    // different usage field names, a different meaning for the input-token count, and a different
+    // way of signalling a refusal. It also needs a freshly created empty working directory, which is
+    // made and removed around the request rather than left on the machine.
+    if (this.provider === 'codexCLI') {
+      return this.completeCodex(request, text, startedAt, now, notEnforceable);
+    }
+
     const result = await this.run({
       executable: this.executablePath,
       args,
@@ -615,6 +641,131 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       participatingModelIDs: identity.participantIDs,
       notEnforceable,
     };
+  }
+
+  /**
+   * One isolated Codex request.
+   *
+   * THE WORKING DIRECTORY IS CREATED EMPTY AND REMOVED AFTERWARDS. An agentic CLI pointed at a real
+   * directory reads what is in it: `AGENTS.md`, project instructions, source files. None of those
+   * are in the manifest, and a model that read one answered a different question from the model that
+   * did not. The directory is also the contamination check — anything found in it afterwards was
+   * written by the run, which `-s read-only` is supposed to prevent.
+   */
+  private async completeCodex(request: FrontierRequest, text: string, startedAt: number,
+                              now: () => number, notEnforceable: string[]): Promise<FrontierResponse> {
+    const empty = (kind: FrontierFailureKind, detail: string): FrontierResponse => ({
+      answerText: '', reportedModelID: '', usage: {}, usageProvenance: 'unavailable',
+      totalElapsedMilliseconds: now() - startedAt, retryCount: 0, wastedTokens: 0,
+      failure: { kind, detail },
+    });
+
+    const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-codex-'));
+    let firstVisibleTokenMilliseconds: number | undefined;
+    try {
+      const built = buildCodexExecArguments(request.binding, { workingDirectory });
+      if (built.unexpressed.length > 0) {
+        return empty('budgetRefused',
+          `${request.binding.candidate} froze settings this CLI cannot express, so the request was not sent: `
+          + `${built.unexpressed.join('; ')}.`);
+      }
+
+      const result = await this.run({
+        executable: this.executablePath as string,
+        args: built.args,
+        input: text,
+        workingDirectory,
+        timeoutMilliseconds: request.binding.timeoutMilliseconds,
+        shouldCancel: request.shouldCancel,
+        onFirstOutput: (at) => { firstVisibleTokenMilliseconds = at; },
+      });
+
+      const parsed = parseCodexExecJSONL(result.stdout);
+
+      // The envelope is consulted before the shell's verdict, for the same reason as the Claude
+      // path: `codex exec` exits 1 on a refused turn AND still prints the documented `turn.failed`
+      // event that says why. Reading the exit code first throws that away.
+      if (parsed?.isError) {
+        const status = parsed.apiErrorStatus;
+        // A Codex refusal for an unknown model or an unavailable one is HTTP 400, not 404 — the
+        // service answers "not supported when using Codex with a ChatGPT account". Mapping 400 to
+        // `transport` would have recorded an account-level refusal as a network problem.
+        const kind: FrontierFailureKind = status === 400 || status === 403 || status === 404 ? 'refused'
+          : status === 401 ? 'notAuthenticated'
+            : status === 429 ? 'rateLimited'
+              : 'transport';
+        return {
+          ...empty(kind, `the CLI reported a failed turn (${parsed.terminalReason ?? 'no terminal reason'}`
+            + `${status === undefined ? '' : `, HTTP ${status}`}): `
+            + `${redactSecrets(parsed.errorMessage ?? '').slice(0, 400)}`),
+          totalElapsedMilliseconds: result.elapsedMilliseconds,
+          firstVisibleTokenMilliseconds,
+        };
+      }
+
+      if (result.failure) {
+        const kind: FrontierFailureKind = result.failure.kind === 'timeout' ? 'timeout'
+          : result.failure.kind === 'cancelled' ? 'cancelled'
+            : result.failure.kind === 'notInstalled' ? 'notInstalled' : 'transport';
+        return {
+          ...empty(kind, `${redactSecrets(result.failure.detail)}`
+            + `${result.stderr ? ` — ${redactSecrets(result.stderr).slice(0, 500)}` : ''}`),
+          totalElapsedMilliseconds: result.elapsedMilliseconds,
+          firstVisibleTokenMilliseconds,
+        };
+      }
+
+      if (!parsed) {
+        return {
+          ...empty('malformedResponse',
+            'the CLI exited successfully but produced no JSONL event this engine recognises, so nothing here can say '
+            + 'what it answered. Cernum refuses to scrape an unrecognised format.'),
+          totalElapsedMilliseconds: result.elapsedMilliseconds,
+          firstVisibleTokenMilliseconds,
+        };
+      }
+
+      // A TURN THAT RAN A TOOL IS NOT A MEASUREMENT OF A MODEL. It is refused rather than recorded,
+      // because its numbers would sit in the same column as turns that did not and nothing in the
+      // column would show the difference.
+      const contamination = describeCodexContamination(parsed.toolInvocations);
+      if (contamination) {
+        return {
+          ...empty('malformedResponse', `${request.binding.candidate}: ${contamination}`),
+          totalElapsedMilliseconds: result.elapsedMilliseconds,
+          firstVisibleTokenMilliseconds,
+        };
+      }
+
+      const reported = totalInputTokens(parsed.usage) !== undefined || parsed.usage.visibleOutputTokens !== undefined;
+      return {
+        answerText: parsed.answerText,
+        // ALWAYS EMPTY, AND THAT IS THE FINDING. `codex exec --json` names no model in any event, so
+        // the identity of whatever answered is unverifiable. It is never filled in with the
+        // requested identifier: "we asked for Luna" and "Luna answered" are different facts, and the
+        // whole point of this field is to keep them apart.
+        reportedModelID: '',
+        usage: parsed.usage,
+        usageProvenance: reported ? 'providerReported' : 'unavailable',
+        rawUsage: parsed.raw,
+        firstVisibleTokenMilliseconds,
+        totalElapsedMilliseconds: result.elapsedMilliseconds,
+        retryCount: 0,
+        wastedTokens: 0,
+        // Undefined, not the requested level: the tool echoes no effort back. An accepted effort is
+        // not an applied one.
+        reportedEffort: undefined,
+        // Undefined, not zero. Codex reports NO cost and NO allowance figure, and recording zero
+        // would say the request was free when it spent a real share of a finite plan.
+        subscriptionIncludedUsageMicroUSD: undefined,
+        participatingModelIDs: [],
+        notEnforceable: [...notEnforceable, ...built.notEnforceable],
+      };
+    } finally {
+      // Removed whether the request succeeded, failed, timed out or threw. A preflight that left a
+      // directory per attempt behind would be a preflight that filled a disk it also guards.
+      try { fs.rmSync(workingDirectory, { recursive: true, force: true }); } catch { /* already gone */ }
+    }
   }
 }
 

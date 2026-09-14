@@ -44,11 +44,34 @@ function writeFakeCLI(name: string, authStatus: string): void {
     '#!/bin/sh',
     `printf '%s %s\\n' "${name}" "$*" >> '${cliLog}'`,
     'if [ "$1" = "--version" ]; then echo "9.9.9 (fixture)"; exit 0; fi',
-    `if [ "$1" = "auth" ] || [ "$1" = "login" ]; then echo '${authStatus}'; exit 0; fi`,
+    `if [ "$1" = "auth" ]; then echo '${authStatus}'; exit 0; fi`,
+    // THE TWO TOOLS ANSWER THIS QUESTION IN COMPLETELY DIFFERENT DOCUMENTS, and the fixture has to
+    // as well. `codex login status --json` does not exist on the real 0.154.0 — it answers
+    // `error: unexpected argument '--json' found` — and the machine-readable answer lives in
+    // `codex doctor --json`, whose auth fields are STRINGS rather than booleans.
+    `if [ "$1" = "doctor" ]; then echo '${DOCTOR_JSON}'; exit 0; fi`,
     'echo "unknown command" >&2; exit 1',
   ].join('\n') + '\n', 'utf8');
   fs.chmodSync(file, 0o755);
 }
+
+/** `codex doctor --json`, trimmed to the check discovery reads. Carries no account identifier. */
+const DOCTOR_JSON = JSON.stringify({
+  schemaVersion: 1,
+  codexVersion: '9.9.9',
+  checks: {
+    'auth.credentials': {
+      id: 'auth.credentials',
+      status: 'ok',
+      details: {
+        'auth storage mode': 'File',
+        'stored API key': 'false',
+        'stored ChatGPT tokens': 'true',
+        'stored auth mode': 'chatgpt',
+      },
+    },
+  },
+});
 
 function cliInvocations(): string[] {
   if (!fs.existsSync(cliLog)) return [];
@@ -156,7 +179,11 @@ test('asking a subscription CLI what it is runs it — and still proves no model
   await expect(card).toContainText('signed in', { timeout: 20_000 });
   await expect(card.locator('[data-testid="frontier-model-table"]')).toContainText('Claude Sonnet 5');
   await expect(card.locator('tr', { hasText: 'Claude Sonnet 5' })).toContainText('unproven');
-  await expect(card.locator('tr', { hasText: 'Luna Max' })).toContainText('unproven');
+  // CORRECTED IN PASS 5B: this row used to assert "Luna Max" under the CLAUDE card. Luna is an
+  // OpenAI model — GPT-5.6 Luna — and it now sits under Codex, where the Claude card can no longer
+  // display it at all.
+  await expect(card.locator('tr', { hasText: 'Claude Opus 4.8' })).toContainText('unproven');
+  await expect(card.locator('[data-testid="frontier-model-table"]')).not.toContainText('Luna');
 
   // It ran `claude --version` and `claude auth status`, and it did not touch anything else. There
   // is no `models list` invocation, because there is no such command to invoke.

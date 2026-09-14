@@ -813,7 +813,9 @@ function FrontierPicker({ providers, selected, onChange }: {
           own is a plan, not a capability. Open the Providers screen and ask a provider what it can call — and note
           that a subscription CLI cannot answer that question: <code>claude</code> has no model-listing command, so the
           only way to prove one of its models is an identity smoke test (<code>cernum smoke claudeCLI</code>), which
-          sends one minimal request per candidate and consumes plan allowance.
+          sends one minimal request per candidate and consumes plan allowance. <code>codex</code> does publish a
+          catalogue, but it names no model in its replies, so its candidates stay <strong>unverifiable</strong> rather
+          than proven — which is a different thing from unavailable, and is why they are not selectable either.
         </p>
       ) : (
         <>

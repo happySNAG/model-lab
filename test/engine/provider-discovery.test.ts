@@ -79,9 +79,17 @@ describe('the intended testing ladder is a plan, not a capability claim', () => 
     }
   });
 
+  // REWRITTEN IN PASS 5B, NOT DELETED. This test used to assert that the ladder contained a
+  // `claudeCLI` entry called "Luna Max", which is how the mistake survived long enough to be written
+  // into a report: Luna is an OpenAI model, the Claude CLI could only ever 404 on it, and the test
+  // agreed with the defect. It now asserts the corrected classification, so a future attempt to put
+  // a Codex model back under the Claude provider fails here.
   it('includes the models this project intends to test, and none of them is selectable', () => {
     const names = DESIRED_CANDIDATE_LADDER.map((entry) => entry.displayName);
-    expect(names).toContain('Luna Max');
+    expect(names).toContain('GPT-5.6 Luna');
+    expect(names).not.toContain('Luna Max');
+    expect(DESIRED_CANDIDATE_LADDER.find((entry) => entry.displayName === 'GPT-5.6 Luna')!.provider)
+      .toBe('codexCLI');
     expect(names).toContain('Claude Haiku 4.5');
     expect(names).toContain('Claude Sonnet 5');
     expect(names).toContain('Claude Opus 4.8');

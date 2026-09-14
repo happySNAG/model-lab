@@ -270,7 +270,7 @@ async function commandProviders(options: Options): Promise<void> {
     say('');
   }
   say(`Run discovery explicitly: ${TERMINAL_COMMAND} discover [claudeCLI|codexCLI|anthropicAPI|openaiAPI]`);
-  say(`Prove a subscription model by asking it once:  ${TERMINAL_COMMAND} smoke claudeCLI   (spends allowance)`);
+  say(`Prove a subscription model by asking it once:  ${TERMINAL_COMMAND} smoke [claudeCLI|codexCLI]   (spends allowance)`);
 }
 
 /** Credential configuration, masked. Shows that something is set and how long it is, and nothing else. */
@@ -332,9 +332,14 @@ async function commandDiscover(positional: string[], options: Options): Promise<
  * It is a separate command from `discover` for exactly that reason: `discover` runs a tool's own
  * read-only subcommands and costs nothing, and this one talks to a model.
  *
- * It exists because the `claude` CLI has NO model-listing command. There is no free way to learn
- * which models a subscription may call, so the only honest route is to ask, once, and write down
- * what came back.
+ * It exists because NEITHER subscription CLI can answer "which models may this account call", though
+ * they fail to answer it differently. `claude` has no model-listing command at all. `codex` has one
+ * — `codex debug models` — but it renders a CATALOGUE of what the client knows about, and the
+ * service refuses models that appear in it, so a listing proves nothing about this account.
+ *
+ * So the only honest route is to ask, once, and write down what came back — and for Codex even that
+ * stops short of proof, because `codex exec` names no model in its reply. A Codex smoke establishes
+ * that SOMETHING answered; it cannot establish what.
  */
 async function commandSmoke(positional: string[], options: Options): Promise<void> {
   const root = String(options.root ?? defaultCampaignRoot());
