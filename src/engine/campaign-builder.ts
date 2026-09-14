@@ -20,6 +20,15 @@
 // interface — refused, by the builder, with a message naming what would prove it. A model name is a
 // plan, and nothing but discovery or an identity smoke test turns a plan into something a campaign
 // may spend real money on.
+//
+// PASS 6 ADDS EXACTLY ONE WAY PAST THAT REFUSAL, and it is not a weakening of it. A campaign may
+// carry a sealed `IdentityAdmission` naming specific Codex configurations, and a candidate that
+// record names is built with the identity state `requestAcceptedIdentityUnverifiable` instead of
+// being refused. Everything else is unchanged: a campaign without a record refuses every unproven
+// candidate exactly as before, on every provider; the record is per campaign and per configuration;
+// and the admitted binding's `verifiedModelID` stays empty, because nothing named a model. The
+// refusal message for a campaign that HAS a record but does not name this candidate says which of
+// those it was, since "unproven" and "not admitted" are different problems with different fixes.
 
 import { ThinkingMode } from './execution';
 import { EngineCatalogue, buildEngineCatalogue } from './catalogue';
@@ -35,6 +44,10 @@ import {
 } from './provider';
 import { DiscoveredFrontierModel } from './discovery';
 import { PlannedWork } from './spending';
+import {
+  AdmittedCandidateEvidence, IdentityAdmission, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionFor,
+  admissionProvenance,
+} from './identity-admission';
 
 export class CampaignBuildError extends Error {
   constructor(readonly code: string, message: string) {
@@ -94,6 +107,14 @@ export interface CampaignPlanRequest {
    * check"; it means nothing is proven, and every frontier candidate is refused.
    */
   provenModels?: DiscoveredFrontierModel[];
+  /**
+   * A sealed authorization to run named Codex configurations whose identity cannot be proven.
+   *
+   * Absent on almost every campaign, and absence is the safe state: without it, an unproven
+   * candidate is refused. Supplied, it still admits only the exact configurations it names, only on
+   * `codexCLI`, and only for the campaign whose label it carries.
+   */
+  identityAdmission?: IdentityAdmission;
 }
 
 export interface BuiltCampaign {
@@ -104,6 +125,14 @@ export interface BuiltCampaign {
   plannedWork: PlannedWork[];
   /** True when no candidate runs on this machine: the campaign takes no endpoint lease. */
   frontierOnly: boolean;
+  /**
+   * The candidates admitted WITHOUT a proven identity, if any.
+   *
+   * Returned separately from the bindings so a surface can disclose them without walking the
+   * envelope looking for a state — and so a caller that forgets to look gets an empty list rather
+   * than silence. Empty on every campaign that carries no admission record.
+   */
+  admittedWithoutProvenIdentity: AdmittedCandidateEvidence[];
 }
 
 /**
@@ -166,6 +195,7 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
   const names = new Set<string>();
   const candidates: (PlannableCandidate & ManifestCandidate)[] = [];
   const bindings: ProviderBinding[] = [];
+  const admitted: AdmittedCandidateEvidence[] = [];
 
   for (const local of request.local) {
     if (names.has(local.name)) throw new CampaignBuildError('duplicateCandidate', `${local.name} is named twice`);
@@ -197,13 +227,27 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
 
     const key = `${frontier.provider}:${frontier.modelID}`;
     const discovered = proven.get(key);
-    if (!discovered) {
+    // Consulted only when discovery did not prove the candidate. A proven candidate is built from
+    // its proof and never from an exception, even where a record would also have admitted it: the
+    // stronger evidence wins, and an unnecessary admission must not downgrade a real identity.
+    const admission = discovered ? undefined : admissionFor({
+      provider: frontier.provider,
+      modelID: frontier.modelID,
+      effort: frontier.effort,
+      campaignLabel: request.label,
+      admission: request.identityAdmission,
+    });
+    if (!discovered && !admission?.admitted) {
       // The refusal that makes the whole "desired candidate" discipline real. A model nobody proved
       // this account can call must not be spendable on, and must not be recorded as having answered.
       throw new CampaignBuildError('unprovenModel',
         `${frontier.modelID} on ${frontier.provider} has not been proven callable by this account, so it cannot be `
         + 'put in a campaign. A model identifier is a plan, not a capability: run provider discovery, or an identity '
-        + 'smoke test that establishes this exact model by name, and select it once something has confirmed it.');
+        + 'smoke test that establishes this exact model by name, and select it once something has confirmed it.'
+        + (request.identityAdmission === undefined ? ''
+          // Said out loud, because a campaign that HAS an authorization and still refuses looks like
+          // a broken authorization, and the reader needs to know which of the two it is.
+          : ` This campaign carries an identity admission record, and it does not admit this candidate: ${admission?.reason}`));
     }
 
     const executionClass = executionClassOf(frontier.provider);
@@ -236,14 +280,20 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
       quantization: '',
     });
 
+    if (admission?.admitted && admission.evidence) admitted.push(admission.evidence);
+
     bindings.push({
       candidate: frontier.name,
       provider: frontier.provider,
       executionClass,
       requestedModelID: frontier.modelID,
-      identityState: discovered.verifiedModelID.length > 0 ? 'verified' : 'unverifiable',
-      verifiedModelID: discovered.verifiedModelID,
-      identityEvidence: discovered.evidence,
+      identityState: discovered === undefined ? REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
+        : discovered.verifiedModelID.length > 0 ? 'verified' : 'unverifiable',
+      // EMPTY FOR AN ADMITTED CANDIDATE, and empty is the point. `frontier.modelID` is sitting right
+      // there and putting it here would make every artefact read as though the provider had named
+      // it. `validateBinding` refuses a non-empty one in this state, so this is enforced twice.
+      verifiedModelID: discovered?.verifiedModelID ?? '',
+      identityEvidence: discovered?.evidence ?? admissionProvenance(admission!.evidence!).join(' · '),
       effort: frontier.effort,
       thinkingMode: frontier.thinkingMode,
       sampling: frontier.sampling ?? { temperatureMilli: null, topPMilli: null, seed: null },
@@ -283,6 +333,9 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
       : guardPolicyForEndpoint(request.endpoint, request.guardOverrides),
     storeBaseline: frontierOnly ? undefined : request.storeBaseline,
     residencyDelayMilliseconds: request.residencyDelayMilliseconds ?? 5_000,
+    // Carried onto the configuration only when it actually admitted something. An authorization
+    // that admitted nothing is not recorded as having governed this campaign, because it did not.
+    identityAdmission: admitted.length > 0 ? request.identityAdmission : undefined,
   };
 
   return {
@@ -291,5 +344,6 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
     envelope,
     plannedWork: plannedWorkFor(catalogue, candidates.map((candidate) => candidate.name), request.repeatsPerCase),
     frontierOnly,
+    admittedWithoutProvenIdentity: admitted,
   };
 }

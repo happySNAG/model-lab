@@ -25,6 +25,9 @@
 // `unavailable` with a reason, because every other answer invites an arithmetic somebody will
 // mistake for a comparison.
 
+import {
+  ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
+} from './identity-admission';
 import { CanonicalValue } from './canonical';
 
 /** How a number was obtained. Ordered worst-to-best; aggregation keeps the worst. */
@@ -278,6 +281,12 @@ export interface FrontierAttemptRecord extends Record<string, CanonicalValue | u
   requestedModelID: string;
   /** Empty when the provider did not say. Never a copy of the request. */
   reportedModelID: string;
+  /**
+   * What was known about this candidate's identity before the request — `verified`, `unverifiable`,
+   * or the Pass 6 admission state. Carried on the RECORD as well as the aggregate so a row exported
+   * on its own still says what it is.
+   */
+  bindingIdentityState?: string;
   inputTokens?: number;
   visibleOutputTokens?: number;
   reasoningTokens?: number;
@@ -308,6 +317,22 @@ export interface FrontierAttemptMetrics {
   provider: string;
   executionClass: string;
   billingBasis: string;
+
+  /** What was asked for. */
+  requestedModelID: string;
+  /** What the provider named. EMPTY when it named nothing — never a copy of the request. */
+  reportedModelID: string;
+  /** `verified`, `unverifiable`, or `requestAcceptedIdentityUnverifiable`. */
+  identityState: string;
+  /**
+   * The stamp this row must be displayed with, or an empty string when it needs none.
+   *
+   * Computed here, once, so a chart legend, a CSV column and a terminal row cannot drift into
+   * describing the same state three different ways. `identityDisclosureRequired` is the flag a
+   * surface checks; this is what it prints.
+   */
+  identityDisclosure: string;
+  identityDisclosureRequired: boolean;
 
   inputTokens: Quantity;
   /** The answer the person would read. Kept apart from reasoning, always. */
@@ -370,6 +395,20 @@ export interface FrontierCandidateMetrics {
   executionClass: string;
   billingBasis: string;
 
+  /** What was asked for, across this candidate's attempts. */
+  requestedModelID: string;
+  /** What the provider named. Empty when it never named anything. */
+  reportedModelID: string;
+  /**
+   * The WEAKEST identity state any of this candidate's attempts carried.
+   *
+   * Weakest, not commonest: an aggregate is only as attributable as its least attributable row, and
+   * an average taken over one unattributable answer is an unattributable average.
+   */
+  identityState: string;
+  identityDisclosure: string;
+  identityDisclosureRequired: boolean;
+
   attemptCount: number;
   successfulTaskCount: number;
   /** Successes per thousand attempts. Unavailable — never zero — when nothing was attempted. */
@@ -431,6 +470,30 @@ function medianQuantity(quantities: Quantity[], reason: string): Quantity {
 }
 
 /**
+ * The line a row in this state must be displayed with, and an empty string for a row that needs none.
+ *
+ * ONE function, called by the attempt reader and by the aggregate, so that a chart legend, a CSV
+ * column and a terminal row cannot describe the same state three different ways. A surface that
+ * prints a metrics row without this line is showing a verified-looking row for a candidate nothing
+ * verified — see `assertSurfaceCanStamp`.
+ */
+export function identityDisclosureFor(identityState: string, requestedModelID: string): string {
+  if (identityState !== REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE) return '';
+  return `${requestedModelID || 'this candidate'}: ${ADMISSION_STAMP_SHORT}. ${ADMISSION_STAMP_LONG}`;
+}
+
+/**
+ * The line that must appear beside any table containing a candidate whose identity was never
+ * established. The counterpart of `MIXED_METRICS_CAVEAT`, and for the same reason: the caveat
+ * belongs on the table, not in a footnote somebody reads once.
+ */
+export const IDENTITY_UNVERIFIABLE_CAVEAT =
+  'At least one candidate in this table ran under the accepted-request identity exception. The provider accepted the '
+  + 'identifier and something answered; nothing named what. Those rows measure WHAT ANSWERED WHEN THAT IDENTIFIER WAS '
+  + 'REQUESTED, which is not the same claim as "this model scored this", and they must not be cited, charted or '
+  + 'compared as though it were. They earn no capability role and no retention recommendation.';
+
+/**
  * Fold one candidate's attempts into its aggregate.
  *
  * `successfulTaskCount` is supplied rather than derived, because what counts as success is the
@@ -443,6 +506,17 @@ export function aggregateCandidateMetrics(candidate: string, attempts: FrontierA
   const provider = first?.provider ?? 'unknown';
   const executionClass = first?.executionClass ?? 'unknown';
   const billingBasis = first?.billingBasis ?? 'unknown';
+  // The weakest state across the attempts, not the first one's. One admitted attempt is enough to
+  // make the whole aggregate unattributable, and an aggregate that reported the majority state
+  // would hide exactly the row a reader needs to see.
+  const identityState = attempts.some((a) => a.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE)
+    ? REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
+    : first?.identityState ?? 'verified';
+  const requestedModelID = first?.requestedModelID ?? '';
+  // Empty unless EVERY attempt named the same model. A candidate whose replies named two different
+  // models has no single reported identity, and printing one of them would pick a winner.
+  const reportedIDs = new Set(attempts.map((a) => a.reportedModelID).filter((id) => id.length > 0));
+  const reportedModelID = reportedIDs.size === 1 ? [...reportedIDs][0] : '';
 
   const inputTokens = sumQuantities(attempts.map((a) => a.inputTokens),
     'at least one attempt has no input token count, so the campaign total would be an undercount presented as a total');
@@ -495,6 +569,11 @@ export function aggregateCandidateMetrics(candidate: string, attempts: FrontierA
     provider,
     executionClass,
     billingBasis,
+    requestedModelID,
+    reportedModelID,
+    identityState,
+    identityDisclosure: identityDisclosureFor(identityState, requestedModelID),
+    identityDisclosureRequired: identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
     attemptCount: attempts.length,
     successfulTaskCount,
     successfulTaskRateMilli: attempts.length === 0
@@ -546,7 +625,10 @@ export function describeCandidateMetrics(metrics: FrontierCandidateMetrics): str
     (rate === undefined ? 'no rate' : `${(rate / 10).toFixed(1)}%`).padStart(8),
     money.padStart(18),
     metrics.measurementQuality,
-  ].join('  ');
+    // Appended to the ROW, not printed under the table. A reader scanning a leaderboard reads rows,
+    // and a caveat at the bottom is a caveat they have already skipped by the time it applies.
+    metrics.identityDisclosureRequired ? `  ** ${ADMISSION_STAMP_SHORT} **` : '',
+  ].join('  ').trimEnd();
 }
 
 /**
@@ -604,6 +686,11 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
     : unavailableQuantity('this attempt carries no token counts to estimate a total from');
 
   const billingBasisOfRow = typeof row.billingBasis === 'string' ? row.billingBasis : 'unknown';
+  const rowRequestedModelID = typeof row.requestedModelID === 'string' ? row.requestedModelID : '';
+  // `verified` is the fallback for a row written before Pass 6, where a local candidate's identity
+  // was established by its weights digest and there was no third state to record. The state this
+  // reader exists to surface is never absent from a row that has it — `campaign.ts` stamps it.
+  const rowIdentityState = typeof row.bindingIdentityState === 'string' ? row.bindingIdentityState : 'verified';
 
   return {
     candidate: typeof row.candidate === 'string' ? row.candidate : '',
@@ -611,6 +698,13 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
     provider: row.provider,
     executionClass: typeof row.executionClass === 'string' ? row.executionClass : 'unknown',
     billingBasis: billingBasisOfRow,
+    requestedModelID: rowRequestedModelID,
+    // Read straight through, never defaulted to the request. A row that named nothing keeps an
+    // empty field here, all the way onto whatever surface displays it.
+    reportedModelID: typeof row.reportedModelID === 'string' ? row.reportedModelID : '',
+    identityState: rowIdentityState,
+    identityDisclosure: identityDisclosureFor(rowIdentityState, rowRequestedModelID),
+    identityDisclosureRequired: rowIdentityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
     inputTokens: quantity(inputTokens, usageProvenance, 'no input token count was recorded for this attempt'),
     visibleOutputTokens: quantity(visibleOutputTokens, usageProvenance, 'no visible output token count was recorded'),
     reasoningTokens: quantity(reasoningTokens, usageProvenance,

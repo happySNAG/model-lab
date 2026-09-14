@@ -10,8 +10,16 @@
 
 import { Measurement } from '../core/candidate';
 import { CandidateRanking, FinalRankings } from './ranking';
+import { NOT_PROMOTABLE_BECAUSE } from './identity-admission';
 
-export type RetentionOutcome = 'keep' | 'keepForOneRole' | 'replace' | 'insufficientEvidence' | 'disqualified';
+export type RetentionOutcome =
+  | 'keep' | 'keepForOneRole' | 'replace' | 'insufficientEvidence' | 'disqualified'
+  /**
+   * Measured in full, and no recommendation offered — because nothing established WHICH model
+   * produced the measurements. Distinct from `insufficientEvidence`, which means there was not
+   * enough data: here there is plenty of data about an answerer nobody can name.
+   */
+  | 'identityNeverEstablished';
 
 export interface RetentionPolicy {
   /** A model at or above this overall pass rate earns an unqualified keep. */
@@ -37,6 +45,8 @@ export const RETENTION_PREAMBLE = [
   'Everything above this heading is a measurement read off the ledger under rules fixed before the first request.',
   'Everything below it is a judgement about what these measurements mean for the work at hand, and a different owner with different work could reasonably reach a different one.',
   'No model is deleted by this engine. These are sentences to read, not actions taken.',
+  'A candidate whose identity was never established gets no recommendation at all, however well it '
+  + 'scored. Its measurements are above and they are real; what is missing is the name to attach them to.',
 ];
 
 export interface RetentionRecommendation {
@@ -113,6 +123,18 @@ export function recommendRetention(rankings: FinalRankings, policy: RetentionPol
       return {
         ...base, outcome: 'disqualified',
         statement: `Do not use ${ranking.candidate} for this work: it broke a governance rule on ${ranking.disqualifyingCases.join(', ')}. A governance failure is a different outcome from a low score, and no pass rate offsets it.`,
+      };
+    }
+    // Checked after disqualification and before everything else. A governance failure is a stronger
+    // statement and stays sayable — "do not use this" needs no identity to be sound. Every branch
+    // below this one, by contrast, ends in a sentence recommending a named model to somebody, and
+    // this candidate has no established name to recommend.
+    if (!ranking.promotable) {
+      return {
+        ...base, outcome: 'identityNeverEstablished',
+        statement: `No retention recommendation for ${ranking.candidate}, and its measurements above stand: `
+          + `${NOT_PROMOTABLE_BECAUSE} To turn these numbers into a decision, establish the identity first — `
+          + 'then re-run, and the same measurements will carry a recommendation.',
       };
     }
     if (ranking.scoredCount < policy.minimumScoredOutcomes) {

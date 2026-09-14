@@ -15,6 +15,8 @@ import {
 function attempt(overrides: Partial<FrontierAttemptMetrics> = {}): FrontierAttemptMetrics {
   return {
     candidate: 'a', slotKey: 'a|s|1|c', provider: 'anthropicAPI', executionClass: 'meteredAPI', billingBasis: 'meteredAPI',
+    requestedModelID: 'a-model', reportedModelID: 'a-model', identityState: 'verified',
+    identityDisclosure: '', identityDisclosureRequired: false,
     inputTokens: reportedQuantity(100),
     visibleOutputTokens: reportedQuantity(20),
     reasoningTokens: unavailableQuantity('not reported separately'),

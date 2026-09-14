@@ -118,6 +118,11 @@ function metricsRow(metrics: FrontierCandidateMetrics): FrontierMetricsRow {
   return {
     candidate: metrics.candidate,
     provider: metrics.provider,
+    requestedModelID: metrics.requestedModelID,
+    reportedModelID: metrics.reportedModelID,
+    identityState: metrics.identityState,
+    identityDisclosure: metrics.identityDisclosure,
+    identityDisclosureRequired: metrics.identityDisclosureRequired,
     executionClass: metrics.executionClass,
     billingBasis: metrics.billingBasis,
     attemptCount: metrics.attemptCount,
@@ -343,6 +348,8 @@ export class CampaignService extends EventEmitter {
           latencyMilliseconds: typeof result.latencyMilliseconds === 'number' ? result.latencyMilliseconds : undefined,
           identityState: typeof result.identityState === 'string' ? result.identityState : 'unverifiable',
           suppliedContextState: typeof result.suppliedContextState === 'string' ? result.suppliedContextState : 'notSupplied',
+          bindingIdentityState: typeof result.bindingIdentityState === 'string' ? result.bindingIdentityState : undefined,
+          identityAdmissionStamp: typeof result.identityAdmissionStamp === 'string' ? result.identityAdmissionStamp : undefined,
         })),
       events: campaign.ledger.events().slice(-40).map((event) => ({ kind: String(event.kind), at: String(event.at) })),
       anomalies: campaign.ledger.anomalies.map((anomaly) => ({ kind: anomaly.kind, why: anomaly.why ?? '' })),
@@ -356,6 +363,8 @@ export class CampaignService extends EventEmitter {
           passRateMilli: 'measured' in ranking.overallPassRateMilli ? ranking.overallPassRateMilli.measured : undefined,
           scoredCount: ranking.scoredCount,
           roles: ranking.roles.filter((role) => role.qualified).map((role) => role.role),
+          promotable: ranking.promotable,
+          notPromotableBecause: ranking.notPromotableBecause,
         })),
         retentionHeading: report.retention.heading,
         retention: report.retention.recommendations.map((recommendation) => ({ candidate: recommendation.candidate, outcome: recommendation.outcome, statement: recommendation.statement })),
@@ -390,6 +399,9 @@ export class CampaignService extends EventEmitter {
           : undefined,
       })),
       mixedExecutionBecause: campaign.operationalEnvelope?.mixed === true ? MIXED_EXECUTION_REASONS : [],
+      // From the campaign's own status, so it is present the moment the campaign exists rather than
+      // only once a report has been written.
+      admittedWithoutProvenIdentity: status.admittedWithoutProvenIdentity,
       frontierMetrics: (report?.frontierMetrics ?? []).map(metricsRow),
       // Read LIVE, not only from a finalized report. Whether a campaign is authorised to spend money
       // matters most BEFORE it runs — which is precisely when no report exists yet. Showing it only

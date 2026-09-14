@@ -87,12 +87,39 @@ export type EffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhig
 export const EFFORT_LEVELS: EffortLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
+ * The one provider the Pass 6 identity exception may ever apply to.
+ *
+ * Declared here, next to the state itself, so `validateBinding` can enforce it without importing
+ * `identity-admission` — which imports this module, and a cycle between the two would make the
+ * enforcement depend on module evaluation order. `ADMISSIBLE_PROVIDERS` there is the authority a
+ * person reads; this is the same fact where the binding validator can reach it, and a test asserts
+ * the two never drift apart.
+ */
+export const IDENTITY_ADMISSIBLE_PROVIDER: ProviderID = 'codexCLI';
+
+/**
+ * The name of the Pass 6 admission state, in one place.
+ *
+ * It lives in this module rather than in `identity-admission` because it is a member of
+ * `BindingIdentityState`, and the type and its member drifting apart is exactly the sort of silent
+ * divergence this engine spends its effort refusing. `identity-admission` re-exports it.
+ */
+export const REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE = 'requestAcceptedIdentityUnverifiable' as const;
+
+/**
  * What is actually known about the model identity behind a binding.
  *
  * There is no `assumed`. A provider that did not confirm which model answered leaves the binding
  * `unverifiable`, and that word appears on every artefact the run produces.
+ *
+ * `requestAcceptedIdentityUnverifiable` — ADDED IN PASS 6 — is weaker than `unverifiable`, not
+ * stronger. `unverifiable` is what a binding gets when nothing established an identity; this third
+ * state says that AND that the campaign carried a sealed, campaign-bound authorization to run the
+ * candidate anyway. It records one fact and one only: THE PROVIDER ACCEPTED THIS IDENTIFIER AND
+ * SOMETHING ANSWERED. It is never a claim about which model answered, it never reaches
+ * `verifiedModelID`, and it is not routable or promotable. See `identity-admission.ts`.
  */
-export type BindingIdentityState = 'verified' | 'unverifiable';
+export type BindingIdentityState = 'verified' | 'unverifiable' | typeof REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
 
 /** Published prices, as they stood at a moment somebody recorded. Never inferred, never defaulted. */
 export interface PricingSnapshot {
@@ -259,7 +286,12 @@ export function billingLabel(binding: ProviderBinding): string {
 export function describeBinding(binding: ProviderBinding): string {
   const identity = binding.identityState === 'verified'
     ? `identity verified as ${binding.verifiedModelID}`
-    : 'identity UNVERIFIABLE';
+    : binding.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
+      // Longer than the other two on purpose. This is the state a reader is most likely to skim past
+      // as though it said "verified", so the one line it gets says what it is and what it is not.
+      ? `request ACCEPTED, identity UNVERIFIABLE — ${binding.requestedModelID} was accepted and something `
+        + 'answered; the provider named no model, so this is not a claim that this model answered'
+      : 'identity UNVERIFIABLE';
   const effort = binding.effort === 'none' ? 'no effort instruction' : `effort ${binding.effort}`;
   const thinking = binding.thinkingMode === 'enabled' ? 'thinking on'
     : binding.thinkingMode === 'disabled' ? 'thinking off'
@@ -294,6 +326,24 @@ export function validateBinding(binding: ProviderBinding): void {
     throw new ProviderBindingError('verifiedWithoutIdentity',
       `${binding.candidate}: the binding claims a verified identity but carries no identifier the provider returned. `
       + 'An identity nobody can name is not verified; record it as unverifiable instead.');
+  }
+  if (binding.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE) {
+    // The two refusals that keep the exception from becoming a way to launder an identity: it
+    // applies to one provider, and its returned-model field stays empty forever. Enforced HERE,
+    // in the validator every binding passes through, rather than only in the builder that writes
+    // one — a binding assembled by any other route is refused on exactly the same terms.
+    if (binding.provider !== IDENTITY_ADMISSIBLE_PROVIDER) {
+      throw new ProviderBindingError('identityAdmissionProviderNotAdmissible',
+        `${binding.candidate}: the accepted-request identity state applies only to ${IDENTITY_ADMISSIBLE_PROVIDER}, `
+        + `whose CLI names no model in its reply. ${binding.provider} does report identity, so a candidate on it `
+        + 'that could not be proven has a different problem, and recording it under this state would conceal that.');
+    }
+    if (binding.verifiedModelID.length > 0) {
+      throw new ProviderBindingError('identityAdmissionWithReturnedIdentity',
+        `${binding.candidate}: this binding carries the accepted-request identity state AND a returned model `
+        + 'identifier. Those cannot both be true: if the provider named a model, the binding is verified and needs '
+        + 'no exception. Never backfill the requested identifier into the returned-model field.');
+    }
   }
   if (isMetered(binding) && binding.pricing === null) {
     throw new ProviderBindingError('meteredWithoutPricing',

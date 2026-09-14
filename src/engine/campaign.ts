@@ -42,6 +42,10 @@ import { OperationalEnvelope, ProviderBinding, bindingFor, isLocal } from './pro
 import { FrontierAttemptRecord, FrontierCandidateMetrics, aggregateFromRows } from './frontier-metrics';
 import { MIXED_EXECUTION_REASONS } from './provider';
 import { SpendingAuthorization } from './spending';
+import {
+  ADMISSION_STAMP_LONG, AdmittedCandidateEvidence, IdentityAdmission,
+  REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance, admissionStamp,
+} from './identity-admission';
 
 export const CAMPAIGN_FORMAT_VERSION = 1;
 
@@ -151,6 +155,15 @@ export interface CampaignConfiguration {
    * stored identity.
    */
   operationalEnvelope?: OperationalEnvelope;
+  /**
+   * The sealed, per-campaign authorization under which a candidate with an unprovable identity runs.
+   *
+   * Absent on almost every campaign. Present, it is frozen into the manifest and thereafter as
+   * unchangeable as the envelope: editing it in `configuration.json` is a drift that refuses the
+   * resume, because a campaign whose second half ran under a different authorization is not the
+   * campaign that was authorised.
+   */
+  identityAdmission?: IdentityAdmission;
 }
 
 export type CampaignState = 'created' | 'running' | 'paused' | 'aborted' | 'complete';
@@ -183,6 +196,14 @@ export interface CampaignStatus {
   mixedExecution: boolean;
   /** The manifest format this campaign was frozen at: 3 for a Pass 3 campaign, 4 for a bound one. */
   manifestFormatVersion: number;
+  /**
+   * Candidates running under the Pass 6 identity exception, with the stamp each must be shown with.
+   *
+   * On the STATUS, not only on the final report, because a campaign is watched while it runs and a
+   * live screen that does not say this is a live screen showing verified-looking rows. Empty on
+   * almost every campaign.
+   */
+  admittedWithoutProvenIdentity: { candidate: string; requestedModelID: string; effort: string; stamp: string }[];
 }
 
 export interface AttemptTrace {
@@ -261,6 +282,25 @@ export interface FinalReport {
   retention: RetentionReport;
   humanReview: { awaiting: number; packetWritten: boolean; packetPath?: string; audit?: PacketAudit };
   guardTrace: { at: string; kind: string }[];
+  /**
+   * The identity-confidence disclosure. Present on EVERY report, empty when nothing was admitted.
+   *
+   * Present-and-empty rather than absent-when-empty on purpose: a reader who looks for this block
+   * and does not find it cannot tell a campaign that admitted nothing from a report written by
+   * something that did not know to disclose. An empty `admitted` list is an assertion.
+   */
+  identityConfidence: {
+    /** Empty on almost every campaign. One entry per candidate run without a proven identity. */
+    admitted: AdmittedCandidateEvidence[];
+    /** The one-line stamp for each, in the same order. Rendered here so no surface composes its own. */
+    stamps: string[];
+    /** The full provenance block per admitted candidate, for a surface with room for it. */
+    provenance: string[][];
+    /** What the state means, verbatim. Empty string when nothing was admitted. */
+    disclosure: string;
+    /** The sealed authorization itself, when there was one. */
+    admission?: IdentityAdmission;
+  };
   producedAt: string;
 }
 
@@ -380,6 +420,7 @@ export class Campaign {
       runtimeVersion: configuration.runtimeVersion,
       execution: configuration.execution ?? DEFAULT_EXECUTION_POLICY,
       operationalEnvelope: configuration.operationalEnvelope,
+      identityAdmission: configuration.identityAdmission,
       frozenAt,
     });
 
@@ -406,6 +447,19 @@ export class Campaign {
       hasMeteredBinding: configuration.operationalEnvelope?.hasMeteredBinding ?? false,
     });
     ledger.event('campaignCreated', { campaignID, manifestID: manifest.manifestID, slotCount: ledger.plan.length });
+    // The exception is recorded in the campaign's own event stream at the moment it takes effect,
+    // not only in the manifest. The manifest says what was authorised; this says that a campaign
+    // was actually created under it, which is the thing a later reader is trying to establish.
+    if (configuration.identityAdmission !== undefined) {
+      ledger.event('identityAdmitted', {
+        admissionDigest: configuration.identityAdmission.admissionDigest,
+        authorizedBy: configuration.identityAdmission.authorizedBy,
+        authorizedAt: configuration.identityAdmission.authorizedAt,
+        admitted: configuration.identityAdmission.admitted.map((entry) =>
+          `${entry.provider}:${entry.requestedModelID}@${entry.requestedEffort}`).join(', '),
+        disclosure: ADMISSION_STAMP_LONG,
+      });
+    }
     ledger.writeCheckpoint();
     return new Campaign(campaignID, root, manifest, ledger, catalogue, configuration, host);
   }
@@ -449,6 +503,9 @@ export class Campaign {
       // a cheaper model, a lower effort or a different provider is a drift that refuses the resume
       // rather than a change that quietly takes effect halfway through a campaign.
       operationalEnvelope: this.configuration.operationalEnvelope,
+      // Same reason again, and with more at stake: an admission is the one field in this
+      // configuration that grants permission rather than describing a setting.
+      identityAdmission: this.configuration.identityAdmission,
     }, this.host.now().toISOString().replace(/\.\d{3}Z$/, 'Z'));
   }
 
@@ -851,6 +908,20 @@ export class Campaign {
       requestedModelID: outcome.frontier?.requestedModelID,
       reportedModelID: outcome.frontier?.reportedModelID,
       providerIdentityState: providerIdentity?.state,
+      // WHAT WAS KNOWN ABOUT THIS CANDIDATE'S IDENTITY BEFORE THE REQUEST, on every row.
+      //
+      // `providerIdentityState` above says what THIS reply established, which for a Codex candidate
+      // is always `unverifiable` — the tool names no model. That is not the same fact as "this
+      // campaign carried a written authorization to run an unprovable candidate", and a reader with
+      // only the first cannot tell an admitted row from an ordinary unverifiable one. So the binding
+      // state travels on the row too, with its stamp already rendered, because a row read months
+      // later will not have the manifest beside it.
+      bindingIdentityState: binding?.identityState,
+      identityAdmissionStamp: binding?.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
+        ? `[${REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE}] ${binding.requestedModelID} (requested, effort `
+          + `${binding.effort}) — the provider accepted this identifier and something answered; it named no `
+          + 'model, so this row is not a claim that this model answered. Returned model: none.'
+        : undefined,
       inputTokens: outcome.frontier?.inputTokens,
       visibleOutputTokens: outcome.frontier?.visibleOutputTokens,
       reasoningTokens: outcome.frontier?.reasoningTokens,
@@ -925,6 +996,15 @@ export class Campaign {
       operationalEnvelope: this.operationalEnvelope,
       mixedExecution: this.operationalEnvelope?.mixed ?? false,
       manifestFormatVersion: this.manifest.manifestFormatVersion,
+      admittedWithoutProvenIdentity: (this.operationalEnvelope?.bindings ?? [])
+        .filter((binding) => binding.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE)
+        .map((binding) => ({
+          candidate: binding.candidate,
+          requestedModelID: binding.requestedModelID,
+          effort: binding.effort,
+          stamp: `${binding.requestedModelID} (requested, effort ${binding.effort}) — the provider accepted this `
+            + 'identifier and something answered; it named no model. Returned model: none.',
+        })),
     };
   }
 
@@ -1002,6 +1082,15 @@ export class Campaign {
       }
       : undefined;
 
+    // Read off the FROZEN envelope, not off the configuration's admission record. The envelope is
+    // what the campaign actually ran under; a record naming a candidate the campaign never built
+    // would otherwise be disclosed as though it had governed one.
+    const admittedNames = new Set((this.operationalEnvelope?.bindings ?? [])
+      .filter((binding) => binding.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE)
+      .map((binding) => `${binding.provider}:${binding.requestedModelID}:${binding.effort}`));
+    const admittedCandidates = (this.configuration.identityAdmission?.admitted ?? [])
+      .filter((entry) => admittedNames.has(`${entry.provider}:${entry.requestedModelID}:${entry.requestedEffort}`));
+
     const report: FinalReport = {
       campaignID: this.campaignID,
       label: this.configuration.label,
@@ -1019,8 +1108,16 @@ export class Campaign {
       humanReview: { awaiting: awaiting.length, packetWritten, packetPath: packetWritten ? paths.packet : undefined, audit },
       guardTrace: this.ledger.events().filter((event) => event.kind === 'guardBreach' || event.kind === 'residencyVerified'
         || event.kind === 'residencyNotManaged' || event.kind === 'residencyNotApplicable' || event.kind === 'abort'
-        || event.kind === 'spendingRefused' || event.kind === 'providerModelSubstituted')
+        || event.kind === 'spendingRefused' || event.kind === 'providerModelSubstituted'
+        || event.kind === 'identityAdmitted')
         .map((event) => ({ at: String(event.at), kind: String(event.kind) })),
+      identityConfidence: {
+        admitted: admittedCandidates,
+        stamps: admittedCandidates.map(admissionStamp),
+        provenance: admittedCandidates.map(admissionProvenance),
+        disclosure: admittedCandidates.length > 0 ? ADMISSION_STAMP_LONG : '',
+        admission: admittedCandidates.length > 0 ? this.configuration.identityAdmission : undefined,
+      },
       producedAt,
     };
     atomicWriteJSON(paths.rankings, rankings as unknown as CanonicalValue);

@@ -17,6 +17,8 @@
 //   candidates   identity AND ORDER — order matters, because thermal state is not reset
 //   guards       the safety floors in force
 //   hardware     the machine the numbers were produced on
+//   admission    (Pass 6, and only when there is one) the sealed authorization under which a Codex
+//                candidate whose identity could not be proven was run at all
 //
 // VERIFICATION IS A COMPARISON, NOT A RE-COMPUTATION OF THE SAME THING. `verify` recomputes each
 // binding from the live inputs and reports every field that differs. It never repairs a drift:
@@ -25,6 +27,7 @@
 import { CanonicalValue, canonicalJSON, digestObject, sha256Text } from './canonical';
 import { ExecutionPolicy, isCanonical } from './execution';
 import { OperationalEnvelope, operationalEnvelopeDigest } from './provider';
+import { IdentityAdmission, admissionSealIsIntact } from './identity-admission';
 
 /**
  * 3 adds the execution policy — residency mode and thinking mode — to the bound body.
@@ -145,6 +148,23 @@ export interface FrozenManifest {
    */
   operationalEnvelope?: OperationalEnvelope;
   operationalEnvelopeDigest?: string;
+  /**
+   * The sealed authorization to run a named Codex configuration whose identity could not be proven.
+   *
+   * ABSENT ON ALMOST EVERY MANIFEST, and absence is what a reader should expect. Present, it is the
+   * written record of a deliberate exception — who authorized it, when, for which campaign, and for
+   * exactly which configurations — bound into `manifestDigest` through `identityAdmissionDigest`, so
+   * an admission cannot be added to, removed from, or edited within a frozen campaign.
+   *
+   * WHY NO FORMAT BUMP. Format 4 was a bump because EVERY new campaign gained an envelope, so every
+   * new manifest identity changed. Almost no campaign carries an admission, `canonicalJSON` drops an
+   * undefined key entirely, and a manifest without one therefore hashes to exactly the bytes it
+   * always did. A campaign that does carry one has a different digest from the same campaign without
+   * it — which is the property that matters — and every manifest already on disk stays verifiable,
+   * finalizable and resumable under its stored identity.
+   */
+  identityAdmission?: IdentityAdmission;
+  identityAdmissionDigest?: string;
   /** Set only on a manifest derived for different hardware; names the manifest it descends from. */
   retestOf?: { manifestID: string; hardwareDigest: string; derivedAt: string; reason: string };
   manifestDigest: string;
@@ -171,6 +191,8 @@ export interface ManifestInputs {
    * ambiguity format 4 was created to remove.
    */
   operationalEnvelope?: OperationalEnvelope;
+  /** Supply it only for a campaign that admits a candidate under the Pass 6 identity exception. */
+  identityAdmission?: IdentityAdmission;
   frozenAt: string;
 }
 
@@ -222,6 +244,16 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
   const envelope = inputs.operationalEnvelope;
   const envelopeDigest = envelope === undefined ? undefined : operationalEnvelopeDigest(envelope);
 
+  // An admission is frozen only if its own seal is intact at freeze time. A record that was edited
+  // between being authorized and being frozen is not the record that was authorized, and freezing it
+  // would give a tampered authorization the standing of a sealed one for the life of the campaign.
+  const admission = inputs.identityAdmission;
+  if (admission !== undefined && !admissionSealIsIntact(admission)) {
+    throw new ManifestError('this campaign carries an identity admission whose seal does not match its contents, so '
+      + 'what would be frozen is not what was authorised. Refusing to freeze it.');
+  }
+  const admissionDigest = admission === undefined ? undefined : admission.admissionDigest;
+
   if (envelope !== undefined) {
     const names = new Set(inputs.candidates.map((candidate) => candidate.name));
     for (const binding of envelope.bindings) {
@@ -254,6 +286,9 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
     // Present only on format 4. `canonicalJSON` drops an undefined key entirely, so a format-3 body
     // hashes to exactly the bytes it always did.
     operationalEnvelopeDigest: envelopeDigest,
+    // Present only on a campaign that admits one, and dropped entirely otherwise — which is what
+    // keeps every manifest frozen before Pass 6 hashing to the bytes it already did.
+    identityAdmissionDigest: admissionDigest,
     runtimeVersion: inputs.runtimeVersion,
   };
   const manifestDigest = digestObject(body);
@@ -271,6 +306,7 @@ export function freezeManifest(inputs: ManifestInputs): FrozenManifest {
     execution: inputs.execution,
     canonical: isCanonical(inputs.execution),
     operationalEnvelope: envelope,
+    identityAdmission: admission,
     manifestDigest,
   };
 }
@@ -303,6 +339,7 @@ export interface VerificationInputs {
   runtimeVersion?: string;
   execution?: ExecutionPolicy;
   operationalEnvelope?: OperationalEnvelope;
+  identityAdmission?: IdentityAdmission;
 }
 
 const MEANINGS: Record<string, string> = {
@@ -315,6 +352,7 @@ const MEANINGS: Record<string, string> = {
   hardwareDigest: 'the machine changed; latency and throughput are not comparable across hardware, and a retest manifest is required',
   executionDigest: 'the execution policy changed: residency management or thinking mode is not the one that was frozen, and neither may be changed after the freeze',
   runtimeVersion: 'the inference runtime version changed; its own behaviour is part of the measurement',
+  identityAdmissionDigest: 'the identity admission changed: the authorization under which a candidate with an unprovable identity was run is not the one that was frozen. An admission is granted to one campaign, for named configurations, by a person; a changed one is a different authorization and the campaign it authorised is not this one',
   operationalEnvelopeDigest: 'the operational envelope changed: a provider, a model identifier, an effort level, a thinking mode, a sampling setting, a token budget, a timeout, a retry policy, a billing basis or a pricing snapshot is not the one that was frozen. None of these may change after the freeze — a campaign whose second half was answered by a different model, at a different effort, or on a different bill is not the campaign that was authorised',
 };
 
@@ -360,6 +398,15 @@ export function verifyManifest(manifest: FrozenManifest, live: VerificationInput
   if (live.operationalEnvelope !== undefined && manifest.operationalEnvelopeDigest !== undefined) {
     compare('operationalEnvelopeDigest', manifest.operationalEnvelopeDigest, operationalEnvelopeDigest(live.operationalEnvelope));
   }
+  // Absent on every manifest frozen before Pass 6, and on every campaign since that admits nothing.
+  // Not compared when it was never frozen, for the same reason format 3 and 4 are not: there is
+  // nothing bound to have moved.
+  if (live.identityAdmission !== undefined && manifest.identityAdmissionDigest !== undefined) {
+    compare('identityAdmissionDigest', manifest.identityAdmissionDigest,
+      // The LIVE record's own recomputed seal, not its stored digest — a record whose contents were
+      // edited without its digest being updated would otherwise compare equal and pass.
+      admissionSealIsIntact(live.identityAdmission) ? live.identityAdmission.admissionDigest : 'seal broken');
+  }
   compare('runtimeVersion', manifest.runtimeVersion, live.runtimeVersion);
 
   return {
@@ -404,6 +451,10 @@ export function deriveRetestManifest(original: FrozenManifest, hardware: Hardwar
     hardwareDigest,
     executionDigest: original.executionDigest,
     operationalEnvelopeDigest: original.operationalEnvelopeDigest,
+    // Carried across with everything else the benchmark is: a retest on another machine is the same
+    // campaign, run under the same authorization, and re-deriving one here would be inventing an
+    // authorization nobody gave.
+    identityAdmissionDigest: original.identityAdmissionDigest,
     runtimeVersion,
   };
   const manifestDigest = digestObject({ ...body, retestOf } as unknown as CanonicalValue);
@@ -420,6 +471,7 @@ export function deriveRetestManifest(original: FrozenManifest, hardware: Hardwar
     execution: original.execution,
     canonical: original.canonical,
     operationalEnvelope: original.operationalEnvelope,
+    identityAdmission: original.identityAdmission,
     retestOf,
     manifestDigest,
   };

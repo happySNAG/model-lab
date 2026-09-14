@@ -266,7 +266,10 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                     <td>{ranking.candidate}{ranking.disqualified && <> <Pill tone="bad">disqualified</Pill></>}</td>
                     <td className="num">{ratePercent(ranking.passRateMilli)}</td>
                     <td className="num">{ranking.scoredCount}</td>
-                    <td>{ranking.roles.length > 0 ? ranking.roles.join(', ') : <span className="muted">no role cleared</span>}</td>
+                    <td>
+                      {ranking.roles.length > 0 ? ranking.roles.join(', ') : <span className="muted">no role cleared</span>}
+                      {!ranking.promotable && <div className="warn small">{ranking.notPromotableBecause}</div>}
+                    </td>
                   </tr>
                 ))}</tbody>
               </table></div>
@@ -306,7 +309,15 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                     <td className="small">
                       {binding.identityState === 'verified'
                         ? <><Pill tone="ok">verified</Pill> <span className="mono">{binding.verifiedModelID}</span></>
-                        : <Pill tone="warn">unverifiable</Pill>}
+                        : binding.identityState === 'requestAcceptedIdentityUnverifiable'
+                          // Three states, three appearances. The admitted one reads as the WEAKEST of
+                          // the three and says "returned model: none" in place of an identifier,
+                          // because an empty identity cell would be read as a rendering gap.
+                          ? <>
+                            <Pill tone="bad">request accepted · identity unverifiable</Pill>
+                            <div className="muted small">returned model: none — the provider named no model</div>
+                          </>
+                          : <Pill tone="warn">unverifiable</Pill>}
                       <div className="muted small">{binding.identityEvidence}</div>
                     </td>
                     <td className="small">
@@ -330,6 +341,22 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                 ))}</tbody>
               </table></div>
             </>
+          )}
+
+          {detail.admittedWithoutProvenIdentity.length > 0 && (
+            // Shown from the moment the campaign exists, not once it has been finalized. A person
+            // watching a run needs to know its rows are unattributed while they are still arriving.
+            <div className="note warn" data-testid="identity-admission-note">
+              <strong>Identity unverifiable — request accepted only.</strong>{' '}
+              {detail.admittedWithoutProvenIdentity.length} candidate(s) in this campaign run under a written,
+              sealed authorization to measure a model whose identity cannot be proven. The provider accepts the
+              identifier and something answers; it names no model, so nothing here is a claim that this model
+              answered. These candidates earn no capability role, no retention recommendation, and are never a
+              routing or promotion target.
+              <ul>{detail.admittedWithoutProvenIdentity.map((entry) => (
+                <li key={entry.candidate}><span className="mono">{entry.candidate}</span> — {entry.stamp}</li>
+              ))}</ul>
+            </div>
           )}
 
           {detail.mixedExecutionBecause.length > 0 && (
@@ -368,6 +395,7 @@ export function CampaignsView({ shell }: { shell: Shell }) {
                   <td className="num">{attempt.latencyMilliseconds === undefined ? 'not reported' : `${attempt.latencyMilliseconds} ms`}</td>
                   <td className="small">
                     {attempt.identityState !== 'verified' && <div className="muted">identity {attempt.identityState}</div>}
+                    {attempt.identityAdmissionStamp && <div className="warn small">{attempt.identityAdmissionStamp}</div>}
                     {attempt.suppliedContextState !== 'intact' && attempt.suppliedContextState !== 'notSupplied' && <div className="muted">context {attempt.suppliedContextState}</div>}
                     {attempt.detail}
                   </td>
@@ -457,9 +485,20 @@ export function CampaignsView({ shell }: { shell: Shell }) {
  */
 function MetricsTable({ rows }: { rows: FrontierMetricsRow[] }) {
   const mixed = new Set(rows.map((row) => row.executionClass)).size > 1;
+  const unattributed = rows.filter((row) => row.identityDisclosureRequired);
   return (
     <>
       <h3>Tokens, speed and cost</h3>
+      {unattributed.length > 0 && (
+        // ABOVE the mixed-execution caveat and above the table. This one is not about how to compare
+        // the rows; it is about whether some of them are attributed to anything at all.
+        <p className="note warn small" data-testid="identity-unverifiable-caveat">
+          <strong>{unattributed.length} candidate(s) here ran with an identity nothing established.</strong>{' '}
+          The provider accepted the identifier and something answered; it named no model. Those rows measure what
+          answered when that identifier was requested, which is not the same claim as &ldquo;this model scored
+          this&rdquo;. They earn no capability role and no retention recommendation.
+        </p>
+      )}
       {mixed && (
         <p className="note warn small">
           These candidates were reached through different execution classes. Their task outcomes are comparable; their
@@ -475,7 +514,12 @@ function MetricsTable({ rows }: { rows: FrontierMetricsRow[] }) {
         </tr></thead>
         <tbody>{rows.map((row) => (
           <tr key={row.candidate}>
-            <td><strong>{row.candidate}</strong><div className="muted small">{row.provider}</div></td>
+            <td>
+              <strong>{row.candidate}</strong><div className="muted small">{row.provider}</div>
+              {row.identityDisclosureRequired && (
+                <div className="warn small" title={row.identityDisclosure}>identity unverifiable — request accepted only</div>
+              )}
+            </td>
             <td className="small">
               {executionLabel(row.executionClass)}
               <div className="muted small">

@@ -333,6 +333,14 @@ export interface CampaignAttemptRow {
   latencyMilliseconds?: number;
   identityState: string;
   suppliedContextState: string;
+  /**
+   * What was known about the answering model BEFORE this attempt: `verified`, `unverifiable`, or
+   * `requestAcceptedIdentityUnverifiable`. Distinct from `identityState`, which is the local
+   * runtime's weights check and says nothing about who answered a frontier request.
+   */
+  bindingIdentityState?: string;
+  /** The exact words this row must be displayed with when it carries the admission state. */
+  identityAdmissionStamp?: string;
 }
 
 export interface CampaignRankingRow {
@@ -343,6 +351,9 @@ export interface CampaignRankingRow {
   passRateMilli?: number;
   scoredCount: number;
   roles: string[];
+  /** False for a candidate whose identity was never established. Its rate is real; the advice is not. */
+  promotable: boolean;
+  notPromotableBecause: string;
 }
 
 export interface CampaignDetail {
@@ -381,6 +392,13 @@ export interface CampaignDetail {
   }[];
   /** Empty unless candidates were reached through more than one execution class. */
   mixedExecutionBecause: string[];
+  /**
+   * Candidates running under the Pass 6 identity exception. Empty on almost every campaign.
+   *
+   * Read LIVE from the frozen envelope, not from a finalized report: a person watching a campaign
+   * run needs this before the numbers exist, not after they have been read.
+   */
+  admittedWithoutProvenIdentity: { candidate: string; requestedModelID: string; effort: string; stamp: string }[];
   /** Tokens, speed and cost with provenance. Empty until the campaign has been finalized. */
   frontierMetrics: FrontierMetricsRow[];
   spending?: CampaignSpendingRow;
@@ -525,6 +543,14 @@ export interface FrontierMetricsRow {
   providerReportedTotalTokens?: number;
   estimatedTotalTokens?: number;
   reportedMinusEstimatedTokens?: number;
+  /** What was asked for, and what the provider named. The second is empty when it named nothing. */
+  requestedModelID: string;
+  reportedModelID: string;
+  /** `verified` · `unverifiable` · `requestAcceptedIdentityUnverifiable`. */
+  identityState: string;
+  /** The words this row must be shown with. Empty when it needs none; never composed by a view. */
+  identityDisclosure: string;
+  identityDisclosureRequired: boolean;
   /** measured · providerReported · estimated · unavailable. Rendered, never hidden. */
   measurementQuality: string;
   /** Why a figure is absent, when it is. Shown rather than replaced with a zero. */

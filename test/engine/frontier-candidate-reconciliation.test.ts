@@ -9,9 +9,12 @@
 // forgotten. So the requested cohort is declared independently in `reconciliation.ts` and compared
 // against the ladder here — and dropping a model now takes two deliberate deletions and still fails.
 //
-// The second job is the Codex admission state, which is a DESIGN this pass wrote and did not switch
-// on. Those tests assert it behaves correctly AND that it is inert, because "prepared for Pass 6
-// approval" is only true while nothing has quietly started using it.
+// The second job is the Codex admission state, which Pass 5C wrote and did not switch on. PASS 6
+// SWITCHED IT ON, under decision 1(b), and the two tests that asserted its inertness now assert what
+// replaced it: that being active means a record MAY exist, and nothing more. Every other test in
+// that section is unchanged and still passes, which is the useful part — the refusals approved in
+// 5C are the refusals that shipped in 6, not a redesign wearing the same name. The heavier Pass 6
+// tests, covering the surfaces and the non-promotion rule, live in `identity-admission-pass6.test.ts`.
 //
 // NOTHING IN THIS FILE CONTACTS ANY PROVIDER.
 
@@ -152,16 +155,26 @@ const admissionOf = (...admitted: AdmittedCandidateEvidence[]) => authorizeIdent
   authorizedBy: 'a person, at the terminal', admitted,
 });
 
-describe('requestAcceptedIdentityUnverifiable — prepared, and switched off', () => {
-  it('IS NOT ACTIVE IN THIS PASS', () => {
-    expect(ADMISSION_IS_ACTIVE).toBe(false);
+describe('requestAcceptedIdentityUnverifiable — approved in Pass 6, and still fail-closed', () => {
+  it('IS ACTIVE AS OF PASS 6 — which means a record MAY exist, not that anything is admitted', () => {
+    expect(ADMISSION_IS_ACTIVE).toBe(true);
   });
 
-  it('refuses every candidate while it is inactive, even one a record names', () => {
+  // THE DISTINCTION THE FLAG'S NAME INVITES A READER TO MISS, asserted so it cannot be lost: with
+  // the exception fully active, a campaign carrying no record still refuses every unproven candidate.
+  it('still refuses a candidate when the campaign carries no record, active or not', () => {
+    const result = admissionFor({
+      provider: 'codexCLI', modelID: 'gpt-6-astra', effort: 'max', campaignLabel: 'pass-6-pilot',
+    });
+    expect(result.admitted).toBe(false);
+    expect(result.reason).toMatch(/no identity admission record/i);
+  });
+
+  it('refuses every candidate if it is ever switched back off, even one a record names', () => {
     const admission = admissionOf(evidence());
     const result = admissionFor({
       provider: 'codexCLI', modelID: 'gpt-6-astra', effort: 'max',
-      campaignLabel: 'pass-6-pilot', admission,
+      campaignLabel: 'pass-6-pilot', admission, active: false,
     });
     expect(result.admitted).toBe(false);
     expect(result.reason).toMatch(/not active/i);

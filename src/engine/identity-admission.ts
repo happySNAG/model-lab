@@ -1,21 +1,23 @@
-// Benchmark engine · the narrow exception by which a Codex candidate MIGHT one day be admitted
-// without its identity ever having been proven.
+// Benchmark engine · the narrow exception by which a Codex candidate is admitted WITHOUT its
+// identity ever having been proven.
 //
 // ============================================================================================
-// THIS IS INERT. NOTHING CALLS IT. IT CHANGES NO BEHAVIOUR IN THIS PASS.
+// APPROVED AND ACTIVE AS OF PASS 6 — Decision 1(b).
 //
-// It is a DESIGN, written out in full and tested, so that Pass 6 can be approved or declined
-// against the real thing rather than against a paragraph describing it. `campaign-builder.ts` does
-// not import this module, and the fail-closed refusal of an unproven candidate remains exactly as
-// it was. Activating this is a separate, explicit decision — see `ACTIVATION_REQUIREMENTS`.
+// Pass 5C wrote this module inert, as a design, so that Pass 6 could be approved or declined
+// against the real thing rather than against a paragraph describing it. Pass 6 approved it. What
+// changed is ONE fact: `ADMISSION_IS_ACTIVE` is now true, which means a campaign MAY carry an
+// admission record. It does not mean any campaign does. Every other refusal in this file is
+// untouched, and a campaign with no sealed, self-named admission record still refuses an unproven
+// candidate exactly as it did before — see `admissionFor`, whose default is refusal.
 // ============================================================================================
 //
 // THE PROBLEM IT ADDRESSES. `codex exec --json` names no model in any event it emits. Not in
 // `thread.started`, not in `item.completed`, not in `turn.completed`. All six requested Codex
 // configurations answer, the requested identifier is accepted, and the tool will still not say who
 // replied. So every Codex candidate is `unverifiable`, and the campaign builder refuses an unproven
-// candidate by design. That refusal is correct. This module does not weaken it; it describes the
-// only honest alternative to it.
+// candidate by design. That refusal remains the default. This module is the only way past it, and
+// it costs a person a written, sealed, per-campaign authorization to use.
 //
 // WHAT THE STATE MEANS, AND WHAT IT DOES NOT. `requestAcceptedIdentityUnverifiable` records exactly
 // one fact: THE PROVIDER ACCEPTED THIS IDENTIFIER AND SOMETHING ANSWERED. It is not a claim about
@@ -25,12 +27,33 @@
 //
 // WHY IT IS NOT SIMPLY `proven` WITH A FOOTNOTE. Because a footnote is lost on the second reading
 // and every chart is a second reading. The state travels with the datum, not with the report.
+//
+// WHAT ACTIVATION DID NOT CHANGE, and what the tests in `identity-admission-pass6.test.ts` hold
+// shut:
+//
+//   · fail-closed is still the default. No record, a record for another campaign, a broken seal, a
+//     candidate the record does not name: refused, every time, with the reason said out loud.
+//   · claudeCLI can never be admitted. That CLI names its model, so an unprovable Claude candidate
+//     has a different fault and this exception would hide it.
+//   · the returned-model field stays empty. Forever. On every artefact.
+//   · routing never consults an admitted candidate — `isRoutable`.
+//   · promotion never consults one either — `isPromotable`, added in Pass 6, because a retention
+//     recommendation and a capability role are promotion in every sense that matters.
+//   · nothing outside this repository is touched. See `NEVER_AFFECTS`.
 
 import { CanonicalValue, digestObject } from './canonical';
-import { EffortLevel, ProviderID } from './provider';
+import {
+  EffortLevel, IDENTITY_ADMISSIBLE_PROVIDER, ProviderID, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
+} from './provider';
 
-/** The admission state's name, in one place, so every surface stamps the same word. */
-export const REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE = 'requestAcceptedIdentityUnverifiable' as const;
+/**
+ * The admission state's name, in one place, so every surface stamps the same word.
+ *
+ * Re-exported from `provider.ts` rather than declared twice: it is a member of
+ * `BindingIdentityState` and has to be defined where that type is, or the two could drift. Callers
+ * import it from here, where its meaning is written down.
+ */
+export { REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE };
 
 export type IdentityAdmissionState = typeof REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
 
@@ -41,13 +64,48 @@ export type IdentityAdmissionState = typeof REQUEST_ACCEPTED_IDENTITY_UNVERIFIAB
  * and asserted by tests. The Claude CLI names the model that answered, so a Claude candidate that
  * cannot be proven has a different problem, and this exception would hide it.
  */
-export const ADMISSIBLE_PROVIDERS: ProviderID[] = ['codexCLI'];
-
-/** Whether this pass has activated the exception. It has not, and the tests assert it. */
-export const ADMISSION_IS_ACTIVE = false;
+export const ADMISSIBLE_PROVIDERS: ProviderID[] = [IDENTITY_ADMISSIBLE_PROVIDER];
 
 /**
- * What must be true before `ADMISSION_IS_ACTIVE` may become true. Each is a separate decision.
+ * Whether the exception exists at all. Approved in Pass 6; true.
+ *
+ * READ THIS CAREFULLY, because the name invites a misreading. True here means "a campaign MAY carry
+ * an admission record", not "candidates are admitted". Admission is decided per campaign and per
+ * configuration by `admissionFor`, which refuses unless a sealed record names that exact candidate
+ * for that exact campaign. Flipping this back to false would refuse every admission everywhere,
+ * which is why it stays a switch rather than being deleted now that it is on.
+ */
+export const ADMISSION_IS_ACTIVE = true;
+
+/** What approved it, when, and on whose authority. Written into every artefact that discloses one. */
+export const ADMISSION_APPROVAL = {
+  pass: 'Cernum Pass 6',
+  decision: '1(b) — admit Codex candidates under the narrowly scoped, recorded identity exception '
+    + 'designed in Pass 5C',
+  approvedAt: '2026-09-13',
+  approvedBy: 'the repository owner, in writing, in the Pass 6 approval prompt',
+  designedIn: 'Pass 5C, and activated without alteration: the refusals approved were the refusals shipped',
+} as const;
+
+/**
+ * What this exception must never reach. Not a note — each one is asserted by a test.
+ *
+ * The exception exists to let a MEASUREMENT be taken. Everything on this list is a decision made ON
+ * a measurement, and a decision made on an identity nobody established is a decision about nothing.
+ */
+export const NEVER_AFFECTS: string[] = [
+  'production routing — see isRoutable; an admitted candidate is never a routing target',
+  'automatic model promotion — see isPromotable; no retention recommendation, no capability role',
+  'Skippy — nothing in this engine writes to that application, and an admitted candidate reaches no '
+  + 'configuration it reads',
+  'Ordra — likewise',
+  'any campaign that does not carry its own sealed admission record, on any provider',
+];
+
+/**
+ * What had to be true before `ADMISSION_IS_ACTIVE` could become true. Each was a separate decision;
+ * `ACTIVATION_SATISFIED_BY` records where each one is now actually enforced, so a reader can check
+ * the claim rather than take it.
  */
 export const ACTIVATION_REQUIREMENTS: string[] = [
   'A person approves the exception explicitly, in the knowledge that it relaxes the one guarantee '
@@ -59,6 +117,28 @@ export const ACTIVATION_REQUIREMENTS: string[] = [
   'Routing never consults an admitted candidate. Admission is for MEASUREMENT only.',
   'The refusal of an unproven candidate remains the default for every provider and every campaign '
   + 'that does not carry the record.',
+];
+
+/**
+ * Where each activation requirement is now enforced, in the same order.
+ *
+ * A list of requirements is a promise; this is the address of the code that keeps each one. It
+ * exists so that "we satisfied the conditions" is a claim a reader can check in an afternoon rather
+ * than one they have to accept.
+ */
+export const ACTIVATION_SATISFIED_BY: string[] = [
+  'approval: ADMISSION_APPROVAL, recorded above, naming the pass, the decision and the date.',
+  'per-campaign seal: authorizeIdentityAdmission seals campaignLabel, time, authorizer and every '
+  + 'admitted candidate together; admissionFor refuses a record naming another campaign, and '
+  + 'Campaign.create binds admissionDigest into the frozen manifest.',
+  'every surface stamps it: campaign-builder writes the state onto the binding, campaign.ts writes '
+  + 'it onto every ledger row, frontier-metrics carries it into every attempt and candidate '
+  + 'aggregate, the terminal prints an identity-confidence block, the Campaigns view stamps the '
+  + 'binding and the attempt, and assertSurfaceCanStamp refuses a surface that cannot.',
+  'routing and promotion: isRoutable and isPromotable, called by ranking.ts and retention.ts, so an '
+  + 'admitted candidate qualifies for no role and earns no retention recommendation.',
+  'the default is unchanged: buildCampaignPlan still throws unprovenModel for every candidate no '
+  + 'record admits, on every provider, in every campaign.',
 ];
 
 /** The words every surface prints. Short enough to fit a chart legend, explicit enough to not mislead. */
@@ -273,6 +353,48 @@ export function admissionProvenance(evidence: AdmittedCandidateEvidence): string
  * somebody has to remember. Measurement and routing are different questions, and a candidate whose
  * identity is unknown can answer only the first.
  */
-export function isRoutable(state: IdentityAdmissionState | 'verified'): boolean {
+export function isRoutable(state: IdentityAdmissionState | 'verified' | 'unverifiable'): boolean {
   return state === 'verified';
+}
+
+/**
+ * Promotion must never consult one either. ADDED IN PASS 6.
+ *
+ * `isRoutable` alone was not enough, and the gap is worth naming. This engine does not route
+ * anything — it recommends. A retention recommendation that says "Keep gpt-6-astra" and a capability
+ * role that says "qualified: structured worker" are how a measurement becomes a decision to use a
+ * model, which is promotion by every route that matters here, and neither of them passes through
+ * anything called routing. So the rule is stated a second time, for the thing this engine actually
+ * does, and `ranking.ts` and `retention.ts` both call it.
+ *
+ * An admitted candidate still gets its RATE published in full. Refusing to publish the measurement
+ * would defeat the point of taking it. What is refused is the sentence that turns the measurement
+ * into an instruction about a model nobody can name.
+ */
+export function isPromotable(state: IdentityAdmissionState | 'verified' | 'unverifiable' | string): boolean {
+  return state !== REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
+}
+
+/** Why a measured, unpromotable candidate is not promotable, for the surface that has to say so. */
+export const NOT_PROMOTABLE_BECAUSE =
+  'this candidate ran under the accepted-request identity exception: the provider accepted the '
+  + 'identifier and something answered, and nothing named what. Its measurements are published in '
+  + 'full; a recommendation to use it is not, because a recommendation about a model nobody can name '
+  + 'is a recommendation about nothing.';
+
+/**
+ * The rule that a surface which cannot stamp the state must refuse to display the candidate.
+ *
+ * `stamp` is what the surface is able to print. A surface with no room for one says so by passing an
+ * empty string, and gets an exception rather than a quietly unlabelled row — which is the whole
+ * difference between a disclosure and an intention to disclose.
+ */
+export function assertSurfaceCanStamp(surface: string, state: string, stamp: string): void {
+  if (state !== REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE) return;
+  if (stamp.trim().length === 0) {
+    throw new IdentityAdmissionError('notActivated',
+      `${surface} cannot stamp the accepted-request identity state, so it must not display this candidate at all. `
+      + 'A surface that shows an admitted candidate without its state shows a verified-looking row, and that is the '
+      + 'one outcome this exception was designed to prevent.');
+  }
 }

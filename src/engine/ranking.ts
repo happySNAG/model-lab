@@ -20,6 +20,7 @@
 import { CapabilityDimension } from '../core/evaluation';
 import { Measurement, measured, unavailable } from '../core/candidate';
 import { Reconciliation, SlotResult } from './ledger';
+import { NOT_PROMOTABLE_BECAUSE, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isPromotable } from './identity-admission';
 
 /** A slot outcome as the ranking needs to see it. Deliberately structural, so the ranking can be
  *  driven from a ledger, a store, or a fixture without three code paths. */
@@ -31,6 +32,15 @@ export interface RankableOutcome {
   /** True when this outcome broke a governance rule. Disqualifying, not merely bad. */
   governanceViolated: boolean;
   latencyMilliseconds?: number;
+  /**
+   * What was known about the answering model's identity when this attempt was made.
+   *
+   * Carried into the ranking because a capability role is a recommendation to USE a model, and a
+   * recommendation about a model nobody could name is a recommendation about nothing. Absent on a
+   * local candidate and on every campaign frozen before Pass 6; the state this field exists to
+   * distinguish is never absent, it is stamped.
+   */
+  identityState?: string;
 }
 
 export const NO_RATE_REASON = 'no applicable, non-disqualified results — missing evidence is not a zero score';
@@ -61,6 +71,17 @@ export interface CandidateRanking {
   roles: CapabilityRole[];
   strengths: CapabilityDimension[];
   weaknesses: CapabilityDimension[];
+  /**
+   * The identity state this candidate's attempts carried.
+   *
+   * Published beside the rate rather than instead of it: the measurement stands on its own, and a
+   * reader is entitled to both it and the knowledge of who — or what — produced it.
+   */
+  identityState?: string;
+  /** False for a candidate admitted under the Pass 6 identity exception. */
+  promotable: boolean;
+  /** Why not, in plain language. Empty when it is promotable. */
+  notPromotableBecause: string;
 }
 
 export interface FinalRankings {
@@ -89,6 +110,8 @@ export const COUNTING_RULES = [
   'Rubric cases awaiting human review are excluded from every rate and ranking until the blinded adjudication returns.',
   'A governance failure disqualifies the candidate. It is a different outcome, not a low score.',
   'A dimension with no applicable results has no rate at all. Missing evidence is never a zero.',
+  'A candidate whose identity was never established is ranked and rated in full, and qualifies for no '
+  + 'role. The measurement is published; the recommendation built on it is not.',
 ];
 
 function median(values: number[]): Measurement<number> {
@@ -164,9 +187,21 @@ export const ROLE_DEFINITIONS: RoleDefinition[] = [
 
 const INTERPRETATION = 'This is an interpretation of the measurements, not a measurement.' as const;
 
-function assessRoles(rates: DimensionRate[], disqualified: boolean, disqualifyingCases: string[]): CapabilityRole[] {
+function assessRoles(rates: DimensionRate[], disqualified: boolean, disqualifyingCases: string[],
+                    identityState?: string): CapabilityRole[] {
   const byDimension = new Map(rates.map((rate) => [rate.dimension, rate]));
   return ROLE_DEFINITIONS.map((definition) => {
+    // BEFORE the rates are even looked at. A role is a sentence telling somebody to use this model
+    // for this job; issuing one about a candidate whose identity was never established would name a
+    // model that may not have answered. The rates themselves are published in full either way — what
+    // is withheld is only the instruction built on top of them.
+    if (!isPromotable(identityState ?? 'verified')) {
+      return {
+        role: definition.role, summary: definition.summary, qualified: false,
+        reason: NOT_PROMOTABLE_BECAUSE,
+        interpretation: INTERPRETATION,
+      };
+    }
     if (disqualified) {
       return {
         role: definition.role, summary: definition.summary, qualified: false,
@@ -229,6 +264,12 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
     const mine = inputs.outcomes.filter((outcome) => outcome.candidate === candidate);
     const disqualifying = mine.filter((outcome) => outcome.governanceViolated);
     const disqualified = disqualifying.length > 0;
+    // The WEAKEST state any of this candidate's attempts carried, not the commonest. One admitted
+    // attempt in a hundred means this candidate's set contains answers nobody can attribute, and an
+    // aggregate is only as attributable as its least attributable row.
+    const identityState = mine.some((outcome) => outcome.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE)
+      ? REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
+      : mine.find((outcome) => outcome.identityState !== undefined)?.identityState;
 
     const dimensions: DimensionRate[] = [];
     for (const dimension of [...new Set(mine.map((outcome) => outcome.dimension))].sort()) {
@@ -265,7 +306,10 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
       dimensions,
       dimensionsWithoutEvidence: dimensions.filter((rate) => rate.scoredCount === 0).map((rate) => rate.dimension),
       medianLatencyMilliseconds: median(latencies),
-      roles: assessRoles(dimensions, disqualified, [...new Set(disqualifying.map((o) => o.caseID))].sort()),
+      roles: assessRoles(dimensions, disqualified, [...new Set(disqualifying.map((o) => o.caseID))].sort(), identityState),
+      identityState,
+      promotable: isPromotable(identityState ?? 'verified'),
+      notPromotableBecause: isPromotable(identityState ?? 'verified') ? '' : NOT_PROMOTABLE_BECAUSE,
       strengths: sortedByRate.slice(0, 3).filter((rate) => ('measured' in rate.passRateMilli ? rate.passRateMilli.measured : 0) >= 800).map((rate) => rate.dimension),
       weaknesses: [...sortedByRate].reverse().slice(0, 3).filter((rate) => ('measured' in rate.passRateMilli ? rate.passRateMilli.measured : 0) < 600).map((rate) => rate.dimension),
     };
@@ -310,6 +354,7 @@ export function outcomesFromLedger(results: Iterable<SlotResult>, dimensionForCa
       status: result.status,
       governanceViolated: result.governanceViolated === true,
       latencyMilliseconds: typeof result.latencyMilliseconds === 'number' ? result.latencyMilliseconds : undefined,
+      identityState: typeof result.bindingIdentityState === 'string' ? result.bindingIdentityState : undefined,
     });
   }
   return out;
