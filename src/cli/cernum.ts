@@ -23,7 +23,8 @@ import {
   ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure, authorizeSpending,
   breakCampaignLock, breakRuntimeLease, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths,
   SubscriptionCLIAdapter, credentialStatus, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
-  describeExpiry, describeSmoke, desiredCandidates, discoveryStorePath, identitySmokeTest, modelsFromSmokes,
+  IDENTITY_SMOKE_PROMPT, describeExpiry, describeSmoke, desiredCandidates, discoveryStorePath,
+  identitySmokeTest, modelsFromSmokes,
   readDiscoveryStore, selectableFromStore, writeDiscoveryStore,
   discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI, estimateSpending, formatMicroUSD,
   guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink,
@@ -392,6 +393,26 @@ async function commandSmoke(positional: string[], options: Options): Promise<voi
   const kept = readDiscovered(root).filter((model) => !fresh.some(
     (entry) => entry.provider === model.provider && entry.modelID === model.modelID));
   writeDiscovered(root, [...kept, ...fresh]);
+
+  // The full evidence, on request, somewhere the caller names.
+  //
+  // It is written OUTSIDE the repository by whoever runs this, and it carries no account identifier:
+  // the session fields are dropped at the parser, and every answer and error string has already been
+  // through redaction. What it does carry is each verdict with the numbers behind it, which is what
+  // a later reader needs to check a claim rather than take it.
+  const evidencePath = options.evidence === undefined ? undefined : String(options.evidence);
+  if (evidencePath) {
+    fs.mkdirSync(path.dirname(path.resolve(evidencePath)), { recursive: true });
+    fs.writeFileSync(path.resolve(evidencePath), JSON.stringify({
+      writtenAt: new Date().toISOString(),
+      note: 'Identity smoke evidence. No credential, session token, email address, organisation id or '
+        + 'organisation name appears here: the authentication parser keeps only whether the session is signed in, '
+        + 'how, and the plan tier.',
+      prompt: IDENTITY_SMOKE_PROMPT,
+      results,
+    }, null, 2) + '\n', 'utf8');
+    say(`Evidence written to ${path.resolve(evidencePath)}`);
+  }
 
   const proven = fresh.filter((model) => model.availability === 'proven');
   say(`${proven.length} of ${fresh.length} candidate(s) are now proven and selectable.`);
@@ -1110,6 +1131,7 @@ function commandHelp(): void {
   say('  providers                       every provider\'s status, WITHOUT contacting any of them');
   say('  discover [<provider>]           ask a provider what it is and what this account may call');
   say('  smoke [<provider>]              prove a model by asking it once who it is — SPENDS ALLOWANCE');
+  say('                                  --evidence <file>  write the full per-request evidence there');
   say('  credentials                     which API keys are configured (masked; never printed)');
   say('  models                          list the models installed locally (read-only)');
   say('  suites                          list the benchmark suites this engine can plan');
