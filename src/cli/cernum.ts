@@ -40,6 +40,7 @@ import {
   referredRows, reinterpretDispositions, renderAdjudicationBatches, writeArtefact, writeText,
   recountWithCorrectedDispositions, buildEngineCatalogue as buildCatalogueForRecount,
   FABLE_SUBSTITUTION_REASON, prepareManifest, renderPreparedManifest,
+  applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
@@ -1428,6 +1429,8 @@ function commandHelp(): void {
   say('                                  and the sealed identity map. --key-out must NOT be inside --out.');
   say('  prepare <name> --frontier p:m:e --exclude-suites a,b --out <dir>');
   say('                                  write a campaign down without freezing, binding or sending it');
+  say('  record-rulings <packet.json> --rulings <f.json> --out <dir>');
+  say('                                  validate one batch of human verdicts and record them, blinded');
   say('  reinterpret <results.jsonl...> --out <file>');
   say('                                  the corrected reading of a sealed campaign, written beside it');
   say('');
@@ -1620,6 +1623,61 @@ async function commandPrepare(positional: string[], options: Options): Promise<v
   say('NOTHING WAS SENT. This is a document, not a frozen manifest and not an authorisation.');
 }
 
+/**
+ * Take a batch of human rulings in, validate them against the packet, and record them.
+ *
+ * The verdicts are the most valuable evidence this programme has: a campaign can be re-measured and
+ * a person's reading of 160 answers cannot. So nothing is coerced — a ruling that does not validate
+ * is refused with the reason, and no file is written.
+ */
+async function commandRecordRulings(positional: string[], options: Options): Promise<void> {
+  const [packetPath] = positional;
+  if (!packetPath) fail(`usage: ${TERMINAL_COMMAND} record-rulings <packet.json> --rulings <file.json> --out <dir>`);
+  const rulingsPath = typeof options.rulings === 'string' ? options.rulings : undefined;
+  const out = typeof options.out === 'string' ? options.out : undefined;
+  if (!rulingsPath) fail('--rulings <file.json> is required');
+  if (!out) fail('--out <dir> is required');
+
+  const packet = JSON.parse(fs.readFileSync(packetPath!, 'utf8')) as Parameters<typeof recordRulings>[0];
+  const input = JSON.parse(fs.readFileSync(rulingsPath!, 'utf8')) as RulingsInput;
+  const recordedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const { record, verification } = recordRulings(packet, input, recordedAt);
+
+  const directory = path.resolve(out!);
+  const batch = String(record.provenance.batchNumber).padStart(2, '0');
+  writeArtefact(path.join(directory, `CERNUM-PASS-09-RULINGS-BATCH-${batch}.json`), record);
+
+  // The answer sheet is refilled from EVERY recorded batch on disk, so it is always the union of what
+  // has been adjudicated rather than only the batch just handed in.
+  const sheetPath = path.join(path.dirname(packetPath!), 'CERNUM-PASS-09-ANSWER-SHEET-BLANK.json');
+  if (fs.existsSync(sheetPath)) {
+    const blank = JSON.parse(fs.readFileSync(sheetPath, 'utf8')) as { answers: unknown[] };
+    const recorded = fs.readdirSync(directory)
+      .filter((name) => /^CERNUM-PASS-09-RULINGS-BATCH-\d+\.json$/.test(name)).sort()
+      .map((name) => JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')) as RulingsRecord);
+    writeArtefact(path.join(directory, 'CERNUM-PASS-09-ANSWER-SHEET-FILLED.json'),
+      applyRulingsToAnswerSheet(blank, recorded));
+    const filledBatches = recorded.map((entry) => entry.provenance.batchNumber).sort((a, b) => a - b);
+    say(`answer sheet refilled from batch(es) ${filledBatches.join(', ')} — every other decision left blank`);
+  }
+  writeArtefact(path.join(directory, `CERNUM-PASS-09-RULINGS-BATCH-${batch}-VERIFICATION.json`), verification);
+
+  say(`batch ${record.provenance.batchNumber}: ${verification.decisionsRuled} of ${verification.decisionsInBatch} decisions ruled`
+    + ` (${verification.governanceCount} governance, ${verification.rubricCount} rubric), ${verification.rowsSettled} row(s) settled`);
+  say(`  governance verdicts: ${Object.entries(verification.verdictTally).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`);
+  say(`  rubric ratings:      ${Object.entries(verification.ratingTally).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`
+    + ` · ${verification.rubricItemsRated} item rating(s)`);
+  if (verification.qualityObservations > 0) {
+    say(`  quality observations: ${verification.qualityObservations} — recorded apart from the verdicts, changing none of them`);
+  }
+  say(`  batch complete: ${verification.batchComplete ? 'yes' : `no — ${verification.outstandingDecisionIDs.length} outstanding`}`);
+  say(`  still blinded: ${!verification.containsCandidateName && !verification.containsSlotKey ? 'yes' : 'NO'}`
+    + ` · every rationale present: ${verification.everyRationaleNonEmpty ? 'yes' : 'NO'}`);
+  say(`  batches not ruled by this record: ${record.scope.unruledBatchNumbers.join(', ') || 'none'}`);
+  say(`written: ${directory}`);
+  if (!verification.valid) fail('the recorded rulings did not verify; treat the written files as suspect');
+}
+
 export async function main(argv: string[]): Promise<void> {
   // A terminal command has to survive its reader going away. `cernum status | head -3` closes the
   // pipe while there is still output queued, and without this Node turns that into an unhandled
@@ -1646,6 +1704,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'finalize': return commandFinalize(positional, options);
     case 'retest': return commandRetest(positional, options);
     case 'prepare': return commandPrepare(positional, options);
+    case 'record-rulings': return commandRecordRulings(positional, options);
     case 'adjudicate': return commandAdjudicate(positional, options);
     case 'reinterpret': return commandReinterpret(positional, options);
     case 'lock': return commandLock(positional, options);
