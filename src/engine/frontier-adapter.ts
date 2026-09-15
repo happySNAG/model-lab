@@ -48,12 +48,26 @@ import { Provenance, Quantity, estimatedQuantity, measuredQuantity, reportedQuan
 import { redactError, redactSecrets } from './redaction';
 import { requireCredential, CredentialLookupOptions } from './credentials';
 import { OTLPTurnObservation, OTLPTurnSource } from './otlp-observer';
+import { isContentFilterRefusal } from './attempt-disposition';
 
 export type FrontierFailureKind =
   | 'notInstalled' | 'notAuthenticated' | 'timeout' | 'cancelled' | 'rateLimited'
-  | 'refused' | 'transport' | 'malformedResponse' | 'modelMismatch' | 'budgetRefused';
+  | 'refused' | 'transport' | 'malformedResponse' | 'modelMismatch' | 'budgetRefused'
+  // Pass 9. Both were `transport` and `malformedResponse` respectively, and both were wrong in a
+  // way that reached the leaderboard — see `attempt-disposition.ts`.
+  | 'contentFiltered' | 'toolContaminated';
 
-/** Which failures a retry could plausibly fix. A refusal and a mismatch are not among them. */
+/**
+ * Which failures a retry could plausibly fix. A refusal and a mismatch are not among them.
+ *
+ * NEITHER PASS 9 KIND IS RETRYABLE, and `contentFiltered` is the one that matters. It arrives on the
+ * Codex path with NO HTTP STATUS, so Pass 8 classified it as `transport` — which IS retryable, and
+ * the ledger proves what that cost: all four Pass 8 content refusals carry `retryCount: 2`, so each
+ * deterministic refusal was re-sent three times for twelve requests and four identical answers. A
+ * content filter is a decision about the prompt, not a fault in the wire; re-sending the same prompt
+ * spends allowance to be told the same thing again. A contaminated turn is not retried either: the
+ * tool ran because the interface permits it, and asking a second time is a coin toss, not a fix.
+ */
 export const RETRYABLE_FAILURES: FrontierFailureKind[] = ['timeout', 'rateLimited', 'transport'];
 
 export interface FrontierUsage {
@@ -589,13 +603,18 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       const errored = parseCLIResponse(result.stdout);
       if (errored?.isError) {
         const status = errored.apiErrorStatus;
-        const kind: FrontierFailureKind = status === 404 || status === 403 ? 'refused'
-          : status === 401 ? 'notAuthenticated'
-            : status === 429 ? 'rateLimited'
-              : 'transport';
+        const message = redactSecrets(errored.answerText);
+        // Same order and same reason as the Codex path: a service content filter is recognised from
+        // its message before any status-based branch can call it a transport fault. This provider
+        // emitted none in Pass 8; the classification is here so that the first one is not a fail.
+        const kind: FrontierFailureKind = isContentFilterRefusal(message) ? 'contentFiltered'
+          : status === 404 || status === 403 ? 'refused'
+            : status === 401 ? 'notAuthenticated'
+              : status === 429 ? 'rateLimited'
+                : 'transport';
         return {
           ...empty(kind, `the CLI reported a failed turn (${errored.terminalReason ?? 'no terminal reason'}`
-            + `${status === undefined ? '' : `, HTTP ${status}`}): ${redactSecrets(errored.answerText).slice(0, 400)}`),
+            + `${status === undefined ? '' : `, HTTP ${status}`}): ${message.slice(0, 400)}`),
           totalElapsedMilliseconds: result.elapsedMilliseconds,
           firstVisibleTokenMilliseconds,
           // A refusal still reports what it consumed — usually nothing. Carrying the reported zero
@@ -729,17 +748,23 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       // event that says why. Reading the exit code first throws that away.
       if (parsed?.isError) {
         const status = parsed.apiErrorStatus;
+        const message = redactSecrets(parsed.errorMessage ?? '');
         // A Codex refusal for an unknown model or an unavailable one is HTTP 400, not 404 — the
         // service answers "not supported when using Codex with a ChatGPT account". Mapping 400 to
         // `transport` would have recorded an account-level refusal as a network problem.
-        const kind: FrontierFailureKind = status === 400 || status === 403 || status === 404 ? 'refused'
-          : status === 401 ? 'notAuthenticated'
-            : status === 429 ? 'rateLimited'
-              : 'transport';
+        //
+        // THE CONTENT FILTER IS TESTED FIRST, AND ON THE MESSAGE. It arrives with no HTTP status at
+        // all, so every status-based branch below falls through to `transport` — which is how Pass 8
+        // recorded a service's policy decision as a network fault, retried it twice, and then scored
+        // the silence as the model's failure.
+        const kind: FrontierFailureKind = isContentFilterRefusal(message) ? 'contentFiltered'
+          : status === 400 || status === 403 || status === 404 ? 'refused'
+            : status === 401 ? 'notAuthenticated'
+              : status === 429 ? 'rateLimited'
+                : 'transport';
         return {
           ...empty(kind, `the CLI reported a failed turn (${parsed.terminalReason ?? 'no terminal reason'}`
-            + `${status === undefined ? '' : `, HTTP ${status}`}): `
-            + `${redactSecrets(parsed.errorMessage ?? '').slice(0, 400)}`),
+            + `${status === undefined ? '' : `, HTTP ${status}`}): ${message.slice(0, 400)}`),
           totalElapsedMilliseconds: result.elapsedMilliseconds,
           firstVisibleTokenMilliseconds,
         };
@@ -773,7 +798,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       const contamination = describeCodexContamination(parsed.toolInvocations);
       if (contamination) {
         return {
-          ...empty('malformedResponse', `${request.binding.candidate}: ${contamination}`),
+          // `toolContaminated`, not `malformedResponse`: the response was not malformed. A tool ran,
+          // which is a fact about the interface, and it is named as one so it can be counted as one.
+          ...empty('toolContaminated', `${request.binding.candidate}: ${contamination}`),
           totalElapsedMilliseconds: result.elapsedMilliseconds,
           firstVisibleTokenMilliseconds,
         };

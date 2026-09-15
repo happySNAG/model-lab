@@ -249,7 +249,7 @@ describe('pointing one invocation at the collector', () => {
 
   it('keeps every isolation flag it had before', () => {
     const args = buildCodexExecArguments(binding, { workingDirectory: '/tmp/x', otlpEndpoint: 'http://127.0.0.1:9' }).args.join(' ');
-    for (const flag of ['--ignore-user-config', '--ephemeral', '--ignore-rules', '--skip-git-repo-check', 'tools.web_search=false']) {
+    for (const flag of ['--ignore-user-config', '--ephemeral', '--ignore-rules', '--skip-git-repo-check', 'web_search="disabled"']) {
       expect(args).toContain(flag);
     }
   });

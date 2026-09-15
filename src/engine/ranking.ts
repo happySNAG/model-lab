@@ -16,11 +16,17 @@
 //      ranking until the blinded adjudication returns. No model judges a candidate.
 //   4  A GOVERNANCE FAILURE DISQUALIFIES. It is not a low score; it is a different outcome.
 //   5  MISSING EVIDENCE IS NOT A ZERO. A dimension with no applicable results has no rate at all.
+//   6  ONLY A MODEL'S ANSWER IS SCORED (Pass 9). A row whose disposition is not `modelAnswered`
+//      measured a provider's content filter or a leaked tool, not a model, and is excluded from
+//      every capability rate — out of the numerator AND the denominator, so a refused case neither
+//      counts against a candidate nor quietly flatters its rate. Both are reported instead as
+//      provider-reliability rates, which are never netted against a quality figure.
 
 import { CapabilityDimension } from '../core/evaluation';
 import { Measurement, measured, unavailable } from '../core/candidate';
 import { Reconciliation, SlotResult } from './ledger';
 import { NOT_PROMOTABLE_BECAUSE, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isPromotable } from './identity-admission';
+import { PROVIDER_RELIABILITY_MEANS, ProviderReliability, dispositionOf, isScoreableDisposition, providerReliability } from './attempt-disposition';
 
 /** A slot outcome as the ranking needs to see it. Deliberately structural, so the ranking can be
  *  driven from a ledger, a store, or a fixture without three code paths. */
@@ -51,6 +57,13 @@ export interface RankableOutcome {
   semanticStatus?: string;
   /** True when the two readings of this outcome disagree. */
   viewsDivergent?: boolean;
+  /**
+   * What this attempt measured — see `attempt-disposition.ts`.
+   *
+   * Absent on every row written before Pass 9, which is read as `modelAnswered`: defaulting the
+   * other way would retroactively excuse every failure this project has ever recorded.
+   */
+  disposition?: string;
 }
 
 /**
@@ -82,6 +95,8 @@ export interface DimensionRate {
   failCount: number;
   awaitingHumanReviewCount: number;
   notApplicableCount: number;
+  /** Rows excluded because no model answered them. Never folded into any count above. */
+  notMeasuredCount: number;
   scoredCount: number;
   /** Passes per thousand scored outcomes. Unavailable — never zero — when nothing was scored. */
   passRateMilli: Measurement<number>;
@@ -112,6 +127,14 @@ export interface CandidateRanking {
   promotable: boolean;
   /** Why not, in plain language. Empty when it is promotable. */
   notPromotableBecause: string;
+  /**
+   * How often this path could not deliver a measurement at all.
+   *
+   * Published ON the ranking row and never inside the rate, because they answer different questions.
+   * A configuration can be excellent and unreachable; a reader choosing one needs both facts, and
+   * would get neither if the refusals had been averaged into the quality figure.
+   */
+  reliability: ProviderReliability;
 }
 
 export interface FinalRankings {
@@ -139,6 +162,8 @@ export interface FinalRankings {
   rankings: CandidateRanking[];
   awaitingHumanReviewTotal: number;
   countingRules: string[];
+  /** What the per-candidate reliability figures mean, and what they may not be used for. */
+  providerReliabilityMeans: string;
   derivedAt: string;
 }
 
@@ -158,6 +183,9 @@ export const COUNTING_RULES = [
   'A dimension with no applicable results has no rate at all. Missing evidence is never a zero.',
   'A candidate whose identity was never established is ranked and rated in full, and qualifies for no '
   + 'role. The measurement is published; the recommendation built on it is not.',
+  'Only a model\'s answer is scored. An attempt stopped by a provider content filter, or one in which a '
+  + 'tool ran, measured no model: it leaves the numerator AND the denominator, and is reported instead '
+  + 'in the provider-reliability rates, which are never netted against a quality figure.',
 ];
 
 function median(values: number[]): Measurement<number> {
@@ -331,7 +359,12 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
 
     const dimensions: DimensionRate[] = [];
     for (const dimension of [...new Set(mine.map((outcome) => outcome.dimension))].sort()) {
-      const inDimension = mine.filter((outcome) => outcome.dimension === dimension && !outcome.governanceViolated);
+      const everything = mine.filter((outcome) => outcome.dimension === dimension && !outcome.governanceViolated);
+      // RULE 6, APPLIED BEFORE ANY COUNTING. A row no model answered is removed from the dimension
+      // entirely rather than sorted into one of the buckets below, because every bucket below is a
+      // statement about an answer and this row has none.
+      const notMeasured = everything.filter((o) => !isScoreableDisposition(dispositionOf(o)));
+      const inDimension = everything.filter((o) => isScoreableDisposition(dispositionOf(o)));
       const passCount = inDimension.filter((o) => statusOf(o) === 'pass').length;
       const partialCount = inDimension.filter((o) => statusOf(o) === 'partial').length;
       const awaiting = inDimension.filter((o) => statusOf(o) === 'requiresHumanReview').length;
@@ -342,6 +375,7 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
       dimensions.push({
         dimension, passCount, partialCount, failCount,
         awaitingHumanReviewCount: awaiting, notApplicableCount: notApplicable,
+        notMeasuredCount: notMeasured.length,
         scoredCount, passRateMilli: rateMilli(passCount, scoredCount),
       });
     }
@@ -368,6 +402,12 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
       identityState,
       promotable: isPromotable(identityState ?? 'verified'),
       notPromotableBecause: isPromotable(identityState ?? 'verified') ? '' : NOT_PROMOTABLE_BECAUSE,
+      // Over EVERY attempt of this candidate, including the governance-disqualified ones: a refusal
+      // rate is about the path, and the path does not know what the scorer later decided.
+      reliability: providerReliability(mine)[0]
+        ?? { candidate, attempts: 0, answered: 0, providerRefusedContentCount: 0, interfaceContaminatedCount: 0,
+             providerRefusalRateMilli: 0, interfaceContaminationRateMilli: 0,
+             providerRefusedCases: [], interfaceContaminatedCases: [] },
       strengths: sortedByRate.slice(0, 3).filter((rate) => ('measured' in rate.passRateMilli ? rate.passRateMilli.measured : 0) >= 800).map((rate) => rate.dimension),
       weaknesses: [...sortedByRate].reverse().slice(0, 3).filter((rate) => ('measured' in rate.passRateMilli ? rate.passRateMilli.measured : 0) < 600).map((rate) => rate.dimension),
     };
@@ -411,6 +451,7 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
     // The comparability rule is stated first on a noncanonical ranking, because it governs every
     // rule under it: a rate computed correctly from incomparable measurements is still incomparable.
     countingRules: canonical ? COUNTING_RULES : [NONCANONICAL_COUNTING_RULE, ...COUNTING_RULES],
+    providerReliabilityMeans: PROVIDER_RELIABILITY_MEANS,
     derivedAt: inputs.derivedAt,
   };
 }
@@ -435,6 +476,9 @@ export function outcomesFromLedger(results: Iterable<SlotResult>, dimensionForCa
       // — not by treating the row as unmeasured.
       semanticStatus: typeof result.jsonSemanticSchemaStatus === 'string' ? result.jsonSemanticSchemaStatus : undefined,
       viewsDivergent: result.jsonViewsDivergent === true,
+      // Read through `dispositionOf`, so a pre-Pass-9 row with no field is `modelAnswered` here and
+      // in every other reader, rather than each caller inventing its own default.
+      disposition: dispositionOf(result as { disposition?: unknown }),
     });
   }
   return out;

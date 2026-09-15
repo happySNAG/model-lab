@@ -107,11 +107,93 @@ export const CODEX_ISOLATION_FLAGS: { flag: string[]; shutsOff: string }[] = [
   { flag: ['--ephemeral'], shutsOff: 'session persistence: nothing about this turn is written to the session store' },
   { flag: ['--ignore-user-config'], shutsOff: '~/.codex/config.toml entirely — and with it the user\'s plugins, MCP servers, marketplaces, feature flags and project trust settings' },
   { flag: ['--ignore-rules'], shutsOff: 'user and project execpolicy `.rules` files' },
-  { flag: ['-s', 'read-only'], shutsOff: 'every write a model-generated shell command could make' },
-  { flag: ['-c', 'tools.web_search=false'], shutsOff: 'the web-search tool, so no answer can be assembled from a page fetched at measurement time' },
+  { flag: ['-s', 'read-only'], shutsOff: 'writes by a model-generated shell command. IT DOES NOT SHUT OFF THE SHELL — see CODEX_TOOL_SURFACE_IS_NOT_CLOSED' },
+  { flag: ['-c', 'tools.web_search=false'], shutsOff: 'the web-search tool. Kept from Pass 8: local probing proves this key and value ARE valid — `tools.web_search=42` is rejected by name and `false` is accepted — so it was never the malformed flag it was first taken for' },
+  { flag: ['-c', 'web_search="disabled"'], shutsOff: 'web search again, through the CLI\'s second documented key: a top-level enum of `disabled | cached | indexed | live`. Both are set because the first one demonstrably did not hold in Pass 8 and nothing available locally says why' },
+  { flag: ['--disable', 'shell_tool'], shutsOff: 'the shell tool, which `codex features list` reports as stable and ON by default' },
+  { flag: ['--disable', 'unified_exec'], shutsOff: 'the second command-execution path, also stable and on by default' },
+  { flag: ['--disable', 'browser_use'], shutsOff: 'the browser tool, stable and on by default' },
+  { flag: ['--disable', 'computer_use'], shutsOff: 'the computer-use tool, stable and on by default' },
+  { flag: ['--disable', 'image_generation'], shutsOff: 'image generation, stable and on by default' },
+  { flag: ['--disable', 'sleep_tool'], shutsOff: 'the sleep tool, stable and on by default' },
+  { flag: ['--disable', 'apps'], shutsOff: 'app tools, stable and on by default' },
+  { flag: ['--disable', 'multi_agent'], shutsOff: 'delegation to further agents, stable and on by default: a turn that spawns one is not one model answering one question' },
+  { flag: ['--disable', 'hooks'], shutsOff: 'hook execution, stable and on by default' },
   { flag: ['--color', 'never'], shutsOff: 'ANSI escapes, which would otherwise land inside captured text' },
   { flag: ['--json'], shutsOff: 'prose output: every fact this engine reads comes from a JSONL event' },
 ];
+
+/**
+ * THE ISOLATION ENVELOPE IS NOT AIRTIGHT, AND CERNUM WILL NOT SAY THAT IT IS.
+ *
+ * Pass 8 recorded four Codex turns that invoked `web_search` or `command_execution` under flags this
+ * file described as shutting both off. Pass 9 investigated with the CLI's own artefacts and without
+ * sending it a single request — `codex exec --help`, `codex features list`, the schema the binary
+ * generates itself via `codex app-server generate-json-schema`, and `codex sandbox <local command>`,
+ * which loads and VALIDATES the full configuration and then runs something local. Two different
+ * answers came back, and only one of them is a fixable defect.
+ *
+ *   1  `command_execution` WAS NEVER DISABLED BY ANYTHING PASS 8 SENT, and that is on Cernum.
+ *      `codex exec --help` documents `--sandbox` as "the sandbox policy to use WHEN EXECUTING
+ *      model-generated shell commands" — it scopes what a command may write, and has never had an
+ *      opinion about whether the shell tool is offered. `codex features list` reports `shell_tool`
+ *      and `unified_exec` as stable and effective-true. Pass 8 read `-s read-only` as a tool switch;
+ *      it is not one, and the four flags it sent contained nothing that was.
+ *
+ *   2  `web_search` IS NOT EXPLAINED, AND THAT IS THE MORE SERIOUS HALF. The first reading of this
+ *      defect was that `-c tools.web_search=false` had been a silently-ignored no-op, because the
+ *      generated schema types `Config.tools.web_search` as a `WebSearchToolConfig` object. THAT
+ *      READING IS WRONG, and the probe disproves it: the CLI rejects `tools.web_search=42` by name
+ *      ("data did not match any variant of untagged enum WebSearchToolConfigInput") and ACCEPTS
+ *      `tools.web_search=false`, so the input enum carries a boolean variant and the flag Pass 8
+ *      sent was valid, recognised, and correctly typed. A validly-expressed instruction not to offer
+ *      web search was given, and the tool ran anyway, three times.
+ *
+ *      Why is not knowable from here. It could be a server-side search the client setting does not
+ *      reach, a second search path (`standalone_web_search` and `web_search_cached` both exist as
+ *      feature flags), or a bug. Distinguishing them needs real requests, which Pass 9 was not
+ *      authorised to send — so this engine says it does not know, rather than picking the most
+ *      flattering of the three.
+ *
+ *   3  THE TOOL SURFACE IS WIDER THAN TWO. `browser_use`, `computer_use`, `image_generation`,
+ *      `sleep_tool`, `apps`, `hooks` and `multi_agent` are all reported stable and on by default.
+ *      Every feature name in `CODEX_DISABLED_FEATURES` was checked against the CLI, which rejects an
+ *      invented one ("Unknown feature flag: ..."), so none of them is a guess.
+ *
+ * The flags above now shut off everything this engine knows how to name, by keys the CLI validates.
+ * What CANNOT be claimed, and is therefore claimed nowhere in this engine's output:
+ *
+ *   • that any of it binds. The `web_search` case is the proof that a validly-set switch can be set
+ *     and not hold, and `--disable` is not documented to bind a feature the CLI calls `stable`.
+ *     Config VALIDATION is local and free; config EFFECT is only observable in a real turn.
+ *   • that the enumerated list is complete. Feature names are not marked as tool-bearing, the model
+ *     may be offered tools the client never configured, and a future release can add one.
+ *
+ * SO DETECTION STAYS, AND IT IS THE ONLY THING RELIED UPON. Every tool event in the stream is still
+ * caught, the attempt is still refused rather than scored, and it is now recorded as
+ * `interfaceContaminated` with a published contamination rate — a measured property of the
+ * interface, not a footnote. An envelope whose tightness is unproven is reported as unproven.
+ */
+export const CODEX_TOOL_SURFACE_IS_NOT_CLOSED =
+  'The Codex CLI offers no switch that GUARANTEES a tool-free turn, and Cernum has direct evidence that a '
+  + 'validly-set one need not hold: Pass 8 sent `tools.web_search=false` — a key and value this CLI '
+  + 'validates and accepts — and three turns invoked web search regardless. Every tool this engine can name '
+  + 'is now disabled through keys the CLI itself validates, and separately the shell paths that `-s '
+  + 'read-only` never disabled are switched off. None of that is proof. Cernum therefore DETECTS tool '
+  + 'invocations rather than assuming their absence: a turn that ran one is recorded as '
+  + '`interfaceContaminated`, excluded from every capability rate, and counted in the interface-'
+  + 'contamination rate. This engine does not assert that the isolation envelope held.';
+
+/**
+ * Every tool-bearing feature this engine knows to switch off, in the CLI's own vocabulary.
+ *
+ * Read from `codex features list` on 0.154.0, where each is reported `stable` and effective-`true`.
+ * The list is a best effort and is documented as one: see CODEX_TOOL_SURFACE_IS_NOT_CLOSED.
+ */
+export const CODEX_DISABLED_FEATURES = [
+  'shell_tool', 'unified_exec', 'browser_use', 'computer_use',
+  'image_generation', 'sleep_tool', 'apps', 'multi_agent', 'hooks',
+] as const;
 
 /**
  * Arguments for one isolated, non-interactive Codex request.
@@ -141,7 +223,16 @@ export function buildCodexExecArguments(binding: ProviderBinding, isolation: Cod
   args.push('-C', isolation.workingDirectory);
   args.push('--skip-git-repo-check', '--ephemeral', '--ignore-user-config', '--ignore-rules');
   args.push('-s', 'read-only');
+  // BOTH documented web-search keys, not one. Pass 8's `tools.web_search=false` is kept because the
+  // CLI validates and accepts it — it was not the malformed flag it first appeared to be — and the
+  // top-level `web_search` enum is added beside it because the first one demonstrably did not hold.
+  // See CODEX_TOOL_SURFACE_IS_NOT_CLOSED.
   args.push('-c', 'tools.web_search=false');
+  args.push('-c', 'web_search="disabled"');
+  // `--disable <feature>` is the CLI's own documented spelling of `-c features.<name>=false`. Every
+  // one of these is reported `stable` and `true` by `codex features list`, so none of them was off
+  // during Pass 8 and `-s read-only` never made them so.
+  for (const feature of CODEX_DISABLED_FEATURES) args.push('--disable', feature);
   // Telemetry to a collector this machine owns, and only when one was asked for. Appended here
   // rather than in the adapter so it appears in `activeIsolation` below and in the recorded
   // argument list: where a tool's telemetry goes is part of what a reader has to be able to check.
@@ -177,6 +268,9 @@ export function buildCodexExecArguments(binding: ProviderBinding, isolation: Cod
   }
 
   const activeIsolation = CODEX_ISOLATION_FLAGS.map((entry) => `${entry.flag.join(' ')} — ${entry.shutsOff}`);
+  // Stated in the recorded envelope itself, not only in a comment. A reader auditing the argument
+  // list is entitled to know what the argument list does NOT establish.
+  activeIsolation.push(CODEX_TOOL_SURFACE_IS_NOT_CLOSED);
   activeIsolation.push(`-C ${isolation.workingDirectory} — a freshly created empty directory: no Git repository, `
     + 'no AGENTS.md, no project instructions and no files the model could read');
   activeIsolation.push('prompt delivered on stdin — never in argv, where the process table would expose it');

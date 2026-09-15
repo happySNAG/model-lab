@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CanonicalValue, digestObject } from './canonical';
 import { Ledger, LedgerError, PlanSlot, PlannableCandidate, Reconciliation, TerminalSlotStatus, atomicWriteJSON } from './ledger';
+import { AttemptDisposition, DISPOSITION_EXPLANATION, NON_ANSWER_TERMINAL_STATUS } from './attempt-disposition';
 import { EngineCatalogue, buildEngineCatalogue, evaluatorBindings } from './catalogue';
 import { FrozenManifest, HardwareIdentity, ManifestCandidate, VerificationReport, deriveRetestManifest, freezeManifest, manifestSeal, verifyManifest } from './manifest';
 import { DEFAULT_GUARD_POLICY, GuardPolicy, GuardVerdict, StoreBaseline, SystemReading, describeBreach, evaluateGuards } from './guards';
@@ -942,9 +943,33 @@ export class Campaign {
     // was never scored at all — a runtime error has no JSON verdict of either kind, and inventing
     // one would put a "semantic fail" on a row where nothing was measured.
     let jsonViews: JSONViewAdjudication | undefined;
+    // WHAT THIS ATTEMPT MEASURED, on its own axis. `modelAnswered` unless something other than a
+    // model determined the outcome — see `attempt-disposition.ts` for why this is not a status.
+    let disposition: AttemptDisposition = 'modelAnswered';
     if (outcome.failure) {
-      status = 'runtimeError';
+      // 6a. A PROVIDER'S CONTENT FILTER AND A LEAKED TOOL ARE NOT `runtimeError`, and neither is a
+      // model-quality failure. Both are recorded terminally — NOT aborted like a throttle — because
+      // both are deterministic: the filter will refuse the same prompt every time, and `cernum
+      // resume` re-running them forever would be a loop, not a recovery. The slot is finished, the
+      // row is unscoreable, and the loss is counted in the provider-reliability rates instead.
+      const kind = outcome.failure.code.includes('.')
+        ? outcome.failure.code.slice(outcome.failure.code.lastIndexOf('.') + 1)
+        : outcome.failure.code;
+      if (kind === 'contentFiltered') disposition = 'providerRefusedContent';
+      else if (kind === 'toolContaminated') disposition = 'interfaceContaminated';
+      status = disposition === 'modelAnswered' ? 'runtimeError' : NON_ANSWER_TERMINAL_STATUS;
       detail = `${outcome.failure.code}: ${outcome.failure.detail}`;
+      if (disposition !== 'modelAnswered') {
+        detail = `${detail} — recorded as ${disposition}: ${DISPOSITION_EXPLANATION[disposition]}`;
+        this.ledger.event(disposition, {
+          candidate: slot.candidate,
+          provider: binding?.provider ?? 'unknown',
+          caseID: slot.caseID,
+          slotKey: slot.slotKey,
+          code: outcome.failure.code,
+          retryCount: outcome.frontier?.retryCount,
+        });
+      }
     } else if (!suppliedContextIsUsable(suppliedContext)) {
       // A measurement fault is recorded as one. Scoring it would report the harness's bug as the
       // model's failure, which is the single most misleading thing a benchmark can do.
@@ -969,6 +994,10 @@ export class Campaign {
       suite: slot.suite,
       pass: slot.pass,
       governanceViolated,
+      // ON EVERY ROW, including the ordinary ones. A field that appears only on the exceptions is a
+      // field a reader has to know to look for, and its absence then means two different things.
+      disposition,
+      dispositionExplanation: DISPOSITION_EXPLANATION[disposition],
       detail,
       answerText: outcome.answerText,
       identityState: identity.state,

@@ -36,6 +36,10 @@ import {
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
   IDENTITY_UNVERIFIABLE_CAVEAT, IdentityAdmission, IdentityAdmissionError, NEVER_AFFECTS,
   REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance, authorizeIdentityAdmission,
+  auditAdjudicationPacket, buildAdjudicationPacket, caseMaterialFor, readResultsJSONL,
+  referredRows, reinterpretDispositions, renderAdjudicationBatches, writeArtefact, writeText,
+  recountWithCorrectedDispositions, buildEngineCatalogue as buildCatalogueForRecount,
+  FABLE_SUBSTITUTION_REASON, prepareManifest, renderPreparedManifest,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
@@ -1419,6 +1423,14 @@ function commandHelp(): void {
   say('  finalize <name>                 reconcile, rank, interpret, and build the blinded packet');
   say('  retest <name> <new-name>        derive a manifest for this machine from another one');
   say('');
+  say('  adjudicate <results.jsonl...> --out <dir> --key-out <dir>');
+  say('                                  build the blinded human-review packet, the blank answer sheet');
+  say('                                  and the sealed identity map. --key-out must NOT be inside --out.');
+  say('  prepare <name> --frontier p:m:e --exclude-suites a,b --out <dir>');
+  say('                                  write a campaign down without freezing, binding or sending it');
+  say('  reinterpret <results.jsonl...> --out <file>');
+  say('                                  the corrected reading of a sealed campaign, written beside it');
+  say('');
   say('  cost <name>                     what a campaign is estimated to cost, without running it');
   say('  authorize <name> --ceiling 5.00 --yes');
   say('                                  record explicit authorization for paid execution');
@@ -1489,6 +1501,125 @@ function commandHelp(): void {
   say('visible there while it runs, and a run started there can be resumed here.');
 }
 
+// MARK: - Pass 9 · blinded adjudication and the offline reinterpretation
+
+/**
+ * Build the human-review packet from one or more campaigns' sealed evidence.
+ *
+ * THE KEY DIRECTORY IS A SEPARATE ARGUMENT AND HAS NO DEFAULT UNDER THE PACKET. `--key-out` must
+ * name a directory that is not inside `--out`, and the command refuses otherwise: a blinding whose
+ * key ships in the same folder as the packet is a label, not a property.
+ */
+async function commandAdjudicate(positional: string[], options: Options): Promise<void> {
+  const ledgers = positional.length > 0 ? positional : [];
+  if (ledgers.length === 0) fail('name at least one results.jsonl to adjudicate');
+  const out = typeof options.out === 'string' ? options.out : undefined;
+  const keyOut = typeof options['key-out'] === 'string' ? options['key-out'] : undefined;
+  if (!out) fail('--out <dir> is required: where the reviewer packet is written');
+  if (!keyOut) fail('--key-out <dir> is required: where the sealed identity map is written, and it must not be inside --out');
+  const outResolved = path.resolve(out!);
+  const keyResolved = path.resolve(keyOut!);
+  if (keyResolved === outResolved || keyResolved.startsWith(outResolved + path.sep)) {
+    fail(`--key-out (${keyResolved}) is inside --out (${outResolved}). The map that reverses the blinding never ships beside the packet it reverses.`);
+  }
+
+  const rows = ledgers.flatMap((file) => readResultsJSONL(file));
+  const { governance, rubric } = referredRows(rows);
+  const material = caseMaterialFor([...governance.map((r) => r.caseID), ...rubric.map((r) => r.caseID)]);
+  const candidates = [...new Set([...governance, ...rubric].map((row) => ({ name: row.candidate })).map((c) => c.name))]
+    .sort().map((name) => ({ name }));
+
+  // Generated per build and never stored beside the packet. Losing it means a new packet must be
+  // built, which is the correct failure: an unblindable packet is safe.
+  const secret = typeof options.secret === 'string' ? options.secret : randomBytes(32).toString('hex');
+  const builtAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const batchSize = options.batch === undefined ? 20 : Number(options.batch);
+  const { packet, identityMap, answerSheet } = buildAdjudicationPacket({
+    governanceRows: governance, rubricRows: rubric, material, candidates, secret, builtAt, batchSize,
+  });
+
+  const batches = renderAdjudicationBatches(packet);
+  const audit = auditAdjudicationPacket(packet, candidates, batches.map((batch) => batch.markdown));
+
+  writeArtefact(path.join(outResolved, 'CERNUM-PASS-09-REVIEW-PACKET.json'), packet);
+  writeArtefact(path.join(outResolved, 'CERNUM-PASS-09-ANSWER-SHEET-BLANK.json'), answerSheet);
+  for (const batch of batches) writeText(path.join(outResolved, batch.fileName), batch.markdown);
+  writeArtefact(path.join(keyResolved, 'CERNUM-PASS-09-IDENTITY-MAP.SEALED.json'), identityMap);
+  writeArtefact(path.join(keyResolved, 'CERNUM-PASS-09-LEAKAGE-AUDIT.json'), audit);
+
+  say(`${packet.rawRowCount} raw rows (${packet.governanceRowCount} governance, ${packet.rubricRowCount} rubric)`);
+  say(`${packet.decisionCount} human decisions after exact grouping (${packet.governanceDecisionCount} governance, ${packet.rubricDecisionCount} rubric)`);
+  say(`${batches.length} batch file(s), at most ${packet.batchSize} decisions each`);
+  say(`packet: ${outResolved}`);
+  say(`sealed: ${keyResolved}   (keep this apart from the packet until every verdict is recorded)`);
+  say(`leakage audit: ${audit.clean ? 'CLEAN' : `LEAKED — ${audit.termLeaks.length} term(s), ${audit.fieldLeaks.length} field(s)`}`
+    + ` · ${audit.termsChecked} terms, ${audit.decisionsChecked} decisions, ${audit.charactersScanned} characters scanned`);
+  if (!audit.clean) fail('the packet is not blinded; it has not been handed over and must be rebuilt');
+}
+
+/** The corrected reading of a sealed campaign, written beside it and never over it. */
+async function commandReinterpret(positional: string[], options: Options): Promise<void> {
+  if (positional.length === 0) fail('name at least one results.jsonl to reinterpret');
+  const out = typeof options.out === 'string' ? options.out : undefined;
+  if (!out) fail('--out <file> is required: where the corrected interpretation is written');
+  const producedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const all = positional.map((file) => ({ file, rows: readResultsJSONL(file) }));
+  // The dimension lookup comes from the sealed catalogue, so the recount below counts the same
+  // rows into the same dimensions the campaign did.
+  const catalogue = buildCatalogueForRecount(allRankableSuiteIDs(), 1);
+  const dimensionForCase = (caseID: string): string | undefined => catalogue.cases.get(caseID)?.category;
+  const reports = all.map((entry) => ({
+    ...reinterpretDispositions(entry.rows, entry.file, producedAt),
+    recount: recountWithCorrectedDispositions(entry.rows, dimensionForCase),
+  }));
+  writeArtefact(path.resolve(out!), { producedAt, sources: positional, reports });
+  for (const report of reports) {
+    say(`${report.source}: ${report.sealedRowCount} sealed rows, ${report.reinterpreted.length} reinterpreted, `
+      + `${report.wastedRequests} request(s) spent retrying a deterministic refusal`);
+    for (const line of report.recount.filter((entry) => entry.deltaMilli !== null && entry.deltaMilli !== 0)) {
+      say(`    ${line.candidate}: ${(line.sealedPassRateMilli ?? 0) / 10}% sealed -> `
+        + `${(line.correctedPassRateMilli ?? 0) / 10}% corrected (n ${line.sealedScoredCount} -> ${line.correctedScoredCount})`);
+    }
+  }
+  say(`written: ${path.resolve(out!)} — the sealed ledgers are unchanged`);
+}
+
+/** Write down a campaign without freezing it, binding it, or sending anything. */
+async function commandPrepare(positional: string[], options: Options): Promise<void> {
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} prepare <name> --frontier provider:model[:effort] --exclude-suites a,b --out <dir>`);
+  const spec = typeof options.frontier === 'string' ? options.frontier : undefined;
+  if (!spec) fail('--frontier provider:model[:effort] is required');
+  const out = typeof options.out === 'string' ? options.out : undefined;
+  if (!out) fail('--out <dir> is required');
+  const [provider, requestedModelID, effort] = spec!.split(':');
+  if (!provider || !requestedModelID) fail(`--frontier '${spec}' must read provider:model[:effort]`);
+
+  const suiteIDs = options.suites ? String(options.suites).split(',') : allRankableSuiteIDs();
+  const excludeSuiteIDs = options['exclude-suites'] ? String(options['exclude-suites']).split(',') : [];
+  const manifest = prepareManifest({
+    name,
+    candidate: { name: `${provider}:${requestedModelID}${effort ? '@' + effort : ''}`, provider, requestedModelID, effort: effort ?? 'none' },
+    suiteIDs,
+    excludeSuiteIDs,
+    exclusionReason: typeof options.reason === 'string' ? options.reason : FABLE_SUBSTITUTION_REASON,
+    repeatsPerCase: Number(options.repeats ?? 2),
+    preparedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    beforeItMayRun: [
+      'A person authorises the run. This document is not an authorisation.',
+      'The identity evidence for this configuration is re-proved if it has expired — one request.',
+      'The manifest is frozen by `cernum create`, which binds the candidate and costs one request per configuration.',
+    ],
+  });
+  const directory = path.resolve(out!);
+  writeArtefact(path.join(directory, `CERNUM-PASS-09-PREPARED-MANIFEST-${name}.json`), manifest);
+  writeText(path.join(directory, `CERNUM-PASS-09-PREPARED-MANIFEST-${name}.md`), renderPreparedManifest(manifest));
+  say(`prepared ${manifest.caseCount} case(s) x ${manifest.repeatsPerCase} repeat(s) = ${manifest.caseCount * manifest.repeatsPerCase} attempt(s)`);
+  say(`excluded ${manifest.excludedCaseCount} case(s); dimensions without evidence: ${manifest.dimensionsWithoutEvidence.join(', ') || 'none'}`);
+  say(`written: ${directory}`);
+  say('NOTHING WAS SENT. This is a document, not a frozen manifest and not an authorisation.');
+}
+
 export async function main(argv: string[]): Promise<void> {
   // A terminal command has to survive its reader going away. `cernum status | head -3` closes the
   // pipe while there is still output queued, and without this Node turns that into an unhandled
@@ -1514,6 +1645,9 @@ export async function main(argv: string[]): Promise<void> {
     case 'verify': return commandVerify(positional, options);
     case 'finalize': return commandFinalize(positional, options);
     case 'retest': return commandRetest(positional, options);
+    case 'prepare': return commandPrepare(positional, options);
+    case 'adjudicate': return commandAdjudicate(positional, options);
+    case 'reinterpret': return commandReinterpret(positional, options);
     case 'lock': return commandLock(positional, options);
     case 'unlock': return commandUnlock(positional, options);
     case 'endpoints': return commandEndpoints(options);

@@ -291,7 +291,16 @@ describe('isolation', () => {
     expect(joined).toContain('--ignore-user-config');
     expect(joined).toContain('--ignore-rules');
     expect(joined).toContain('-s read-only');
+    // The DOCUMENTED off switch. `tools.web_search=false` is asserted absent as well as replaced:
+    // it is a boolean written into a key the CLI types as an object, and Pass 8 shipped it as
+    // isolation while it disabled nothing.
+    // BOTH documented keys. `tools.web_search=false` is valid — the CLI rejects a wrong-typed value
+    // in that key by name and accepts this one — so it is kept rather than replaced, and the
+    // top-level enum is set beside it because the first one did not hold in Pass 8.
     expect(joined).toContain('tools.web_search=false');
+    expect(joined).toContain('web_search="disabled"');
+    expect(joined).toContain('--disable shell_tool');
+    expect(joined).toContain('--disable unified_exec');
   });
 
   it('records every active isolation setting, so a run can be described afterwards', () => {
