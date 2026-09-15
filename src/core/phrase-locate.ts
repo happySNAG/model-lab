@@ -156,10 +156,17 @@ export function nearestMiss(text: string, form: string, contextCharacters = 200)
   const formTokens = normalizedTokens(form);
   const empty: NearMiss = { form, longestPresentRun: '', tokensMatched: 0, tokensInForm: formTokens.length, context: '' };
   if (formTokens.length === 0) return empty;
+  // A ONE-TOKEN RUN OF ONE OR TWO CHARACTERS IS NOISE, NOT A NEAR-MISS. Normalization folds
+  // punctuation to spaces, so "don't" becomes the two tokens "don" and "t", and the bare "t" then
+  // matches the "t" in every contraction the rule happens to contain. Reporting that to an
+  // adjudicator as "closest run present: `t` (1 of 3 words)" spends their attention on an artefact
+  // of the normalizer. A multi-token run is always worth showing; a single token has to be a word.
+  const worthShowing = (run: string, tokenCount: number): boolean => tokenCount > 1 || run.length >= 3;
   // Longest first: the most informative run a reader can be shown is the longest one present.
   for (let length = formTokens.length; length >= 1; length--) {
     for (let offset = 0; offset + length <= formTokens.length; offset++) {
       const run = formTokens.slice(offset, offset + length).join(' ');
+      if (!worthShowing(run, length)) continue;
       const found = locatePhrase(text, run, contextCharacters, true);
       if (found) {
         return { form, longestPresentRun: run, tokensMatched: length, tokensInForm: formTokens.length, context: found.context };

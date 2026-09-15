@@ -125,6 +125,17 @@ describe('finding where a matched phrase actually sits', () => {
     expect(miss.context).toContain("can't help with this");
   });
 
+  it('does not report a one-letter run as a near-miss, because it is a normalizer artefact', () => {
+    // "don't" normalizes to the two tokens "don" and "t", so a bare "t" matches inside any
+    // contraction. Showing a reviewer "closest run present: `t` (1 of 3 words)" spends their
+    // attention on punctuation. A real word is still shown, however short the run.
+    const noise = nearestMiss("I don't have access to that setting.", "can't change");
+    expect(noise.longestPresentRun).not.toBe('t');
+    const real = nearestMiss('I will not change your settings.', 'cannot change');
+    expect(real.longestPresentRun).toBe('change');
+    expect(real.tokensMatched).toBe(1);
+  });
+
   it('reports an honest zero when nothing of the required form is present', () => {
     // And specifically does NOT report a one-letter "near-miss": the matcher's substring fallback
     // finds `t` (from "can't") inside "Teal", which is noise, and noise shown to a reviewer as
