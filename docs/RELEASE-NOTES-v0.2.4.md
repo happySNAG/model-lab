@@ -178,8 +178,37 @@ never updated for. That is fixed here; it now reaches the same disk guard as the
 ## Checksums
 
 ```
+f1c0ce9ed8673e6f32b5e03a2e0ca4c58792514e99d8053622c5e85d3e0d50ff  Cernum-0.2.4-macos-arm64.dmg
+f19f84b3536fac5fedf7c37425984cea972864be5f63a0a2c599ee68283001e7  Cernum-0.2.4-macos-arm64.zip
+2bb5351253454299900c5f9eef2a22a4386f18d5ef3794ff2e169601ac913aa3  Cernum-0.2.4-macos-x64.dmg
+e5053f70bd0c23d36aac39b24f1b84b342e87c29ffebb1abf0d825f83fb1878a  Cernum-0.2.4-macos-x64.zip
+```
+
+Verify before installing:
+
+```
 shasum -a 256 -c Cernum-0.2.4-SHA256SUMS.txt --ignore-missing
 ```
+
+Built from commit `6315cb1`, which the bundle carries and the install script asserts.
+
+## Upgrading a second Mac without trusting the one that built this
+
+An Apple Silicon install script is pinned to that arm64 DMG checksum and to the build commit, and
+verifies both before it mounts anything:
+
+```
+cd ~/Downloads
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/49ca9478b4eacb61347cf99ae08a09e5d7bfc683/scripts/releases/install-cernum-v0.2.4-macos-arm64.sh
+shasum -a 256 install-cernum-v0.2.4-macos-arm64.sh
+#  02ba83fa959a1f7602e936037c27ca2e76b6c49e9b441ae6a3511430cbd4ae93
+less install-cernum-v0.2.4-macos-arm64.sh
+bash install-cernum-v0.2.4-macos-arm64.sh
+```
+
+It sends no provider request and could not: the only verbs it issues are `where`, `providers`,
+`discover`, `models`, `install-command`, `help` and `smoke --dry-run`, and a metered provider would
+refuse a live smoke without an authorization the script never supplies.
 
 ## Opening an unsigned build
 
