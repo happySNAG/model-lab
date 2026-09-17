@@ -6,8 +6,8 @@ import { canonicalJSON, fnv1a64Hex, seal, T0 } from '@core/digest';
 import { containsPhrase, excerpt, firstIndex, normalize, tokens } from '@core/text';
 import { configurationID, deterministicFake, descriptorDigest, registryAll, skippyRelayGemma } from '@core/candidate';
 import { caseDigest, comparabilityKey, packageDigest, suiteDigest } from '@core/benchmark';
-import { allGovernedSuites, allPolicies, humanReviewRubrics, policyCatalog } from '@core/catalog';
-import { policyDigest } from '@core/scoring-policy';
+import { allGovernedSuites, allPolicies, canonicalPolicies, humanReviewRubrics, policyCatalog } from '@core/catalog';
+import { ScoringPolicyCatalog, policyDigest } from '@core/scoring-policy';
 import { echoInstruction } from '@core/foundation';
 import { rubricDigest } from '@core/human-review';
 import { loadFixture } from './fixtures';
@@ -27,6 +27,9 @@ interface CatalogFixture {
   }[] }[];
   policies: { id: string; version: string; method: string; dimension: string; policyDigest: string; canonicalJSON: string }[];
   catalogDigest: string;
+  /** Generation-2 twins registered after the Swift capture. TypeScript-only; no cross-implementation claim. */
+  postVintagePolicies: { id: string; version: string; method: string; dimension: string; policyDigest: string; canonicalJSON: string }[];
+  registryCatalogDigest: string;
   candidates: { id: string; descriptorDigest: string; configurationID: string; canonicalJSON: string }[];
   humanReviewRubricDigests: Record<string, string>;
 }
@@ -101,9 +104,11 @@ describe('sealed catalog identity parity', () => {
       expect(suiteDigest(suite), expected.suiteID).toBe(expected.suiteDigest);
     }
   });
-  it('registers every scoring policy with an identical canonical form and digest', () => {
-    expect(policyCatalog.policies.length).toBe(catalog.policies.length);
-    expect(allPolicies.length).toBe(catalog.policies.length);
+  it('registers every Swift-vintage scoring policy with an identical canonical form and digest', () => {
+    // THE CROSS-IMPLEMENTATION ASSERTION, unchanged in strength. Every policy the Swift engine
+    // produced must still resolve from the shipped catalog, byte for byte, and the sub-catalog they
+    // form must still seal to the digest Swift computed.
+    expect(canonicalPolicies.length).toBe(catalog.policies.length);
     for (const expected of catalog.policies) {
       const policy = policyCatalog.policy(expected.id, expected.version);
       expect(policy, `${expected.id}@${expected.version}`).toBeDefined();
@@ -112,7 +117,20 @@ describe('sealed catalog identity parity', () => {
       expect(policy!.method).toBe(expected.method);
       expect(policy!.dimension).toBe(expected.dimension);
     }
-    expect(policyCatalog.catalogDigest()).toBe(catalog.catalogDigest);
+    expect(new ScoringPolicyCatalog(canonicalPolicies).catalogDigest()).toBe(catalog.catalogDigest);
+  });
+  it('registers exactly the pinned post-vintage policies, and nothing else', () => {
+    // These have no Swift counterpart. They are pinned against regression, not against a second
+    // implementation, and the fixture says so. The registry may hold the vintage plus these — no more.
+    for (const expected of catalog.postVintagePolicies) {
+      const policy = policyCatalog.policy(expected.id, expected.version);
+      expect(policy, `${expected.id}@${expected.version}`).toBeDefined();
+      expect(canonicalJSON(policy), expected.id).toBe(expected.canonicalJSON);
+      expect(policyDigest(policy!)).toBe(expected.policyDigest);
+    }
+    expect(allPolicies.length).toBe(catalog.policies.length + catalog.postVintagePolicies.length);
+    expect(policyCatalog.policies.length).toBe(allPolicies.length);
+    expect(policyCatalog.catalogDigest()).toBe(catalog.registryCatalogDigest);
   });
   it('validates the catalog and every governed suite reference exactly like Swift', () => {
     expect(() => policyCatalog.validate()).not.toThrow();

@@ -50,6 +50,31 @@ So, concretely:
   test data. A change to `src/core/` that moves any of these bytes is a change to the engine's
   observable behaviour and must be deliberate.
 
+### The one approved rebaseline — Cernum REQ-03 Phase 6, 2026-09-16
+
+`catalog.json` has been **extended once**, by explicit human approval, and the rule above still holds
+for every byte it already contained.
+
+Cernum adopted a second scoring policy generation: the Pass 10 Gate D hybrid governance matcher and
+the REQ-03 Phase 5 narrowed capability repair, frozen together as version 2. Registering that
+generation makes the shipped policy registry larger than the Swift vintage, which the registry-size
+assertion had pinned at 42. The two requirements genuinely conflicted, and a person chose.
+
+What the rebaseline did, precisely:
+
+- **Nothing Swift-derived moved.** All 42 captured policies keep their canonical JSON, their digests
+  and their order. The sub-catalog they form still seals to `mlspc1:42c16e06a941b143`, and the
+  regeneration script *refuses to run* if it does not.
+- **The 40 generation-2 twins were added** in a separate `postVintagePolicies` section, with
+  `registryCatalogDigest` pinning the whole 82-policy registry.
+- **The assertion got stronger, not weaker.** The vintage is still compared byte for byte, and the
+  additions — previously just the reason a test failed — are now pinned too.
+
+`postVintagePolicies` carries **no cross-implementation claim**. Those rows exist only in TypeScript;
+they are pinned against regression, not against a second engine. The fixture's `rebaseline` block
+records that in the corpus itself. Regenerate it only under the same kind of explicit approval, with
+`scripts/req03-phase6-rebaseline-parity.ts`.
+
 The same sealing applies to the benchmark suites themselves: their titles, system prompts and
 provenance strings are part of the pinned bytes. A few of them still carry the name of the private
 project the engine was first written for — see *Known limitations* in the [README](../README.md).

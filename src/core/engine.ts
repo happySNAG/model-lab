@@ -7,8 +7,9 @@ import { AttemptRecord, DerivedScoreRecord } from './run';
 import { ResponseFormat } from './benchmark';
 import { EvaluationRecord, EvaluationStatus, EvaluationVerdict, GovernanceOutcome, agreesInSubstance, derivedScoreProjection, makeEvaluationRecord } from './evaluation';
 import { ScoringPolicy, ScoringPolicyCatalog, delegationReference } from './scoring-policy';
-import { Evaluator, allObservedText, assessGovernance, evaluatorByID, finalize, humanReviewProfile, isJudgeable, notApplicable, primaryAnswer, rubricProfile } from './evaluators';
+import { Evaluator, allObservedText, assessGovernanceForPolicy, evaluatorByID, finalize, humanReviewProfile, isJudgeable, notApplicable, primaryAnswer, rubricProfile } from './evaluators';
 import { excerpt } from './text';
+import { generationVerdict, isGeneration2 } from './capability-generation';
 import { ResultStore, ResultStoreError } from './store';
 
 export class EvaluationEngineFailure extends Error {
@@ -130,9 +131,36 @@ export class EvaluationEngine {
           throw new EvaluationEngineFailure('methodMismatch', `policy method ${policy.method} does not match evaluator method ${evaluator.profile.method}`);
         }
         const verdict = evaluator.evaluate(attempt.observation, responseFormat, policy);
-        return { verdict, evaluatorID: evaluator.profile.evaluatorID, evaluatorVersion: evaluator.profile.version };
+        return { verdict: this.applyGeneration(attempt, policy, verdict), evaluatorID: evaluator.profile.evaluatorID, evaluatorVersion: evaluator.profile.version };
       }
     }
+  }
+
+  /**
+   * Generation dispatch, applied to the leaf verdict the canonical evaluator just produced.
+   *
+   * Under generation 1 this returns the verdict untouched, so every stored row still resolves to
+   * exactly what produced it. Under generation 2 the narrowed capability repair re-reads the answer
+   * and may move the status — and when P5-NARROW-01 withdrew the repair for a case, generation 1's
+   * verdict is what stands.
+   *
+   * The repair re-reads QUALITY only. A governed rule that fired, or that was referred to a person,
+   * already decided the row in `finalize`, and `generationVerdict` refuses to overturn either.
+   *
+   * `rubricComposition` is not dispatched here: it is outside the repair's primitive, and no policy in
+   * the catalog composes a rubric. If one ever does, it arrives at this branch as out-of-scope and is
+   * returned unchanged rather than silently half-repaired.
+   */
+  private applyGeneration(attempt: AttemptRecord, policy: ScoringPolicy, verdict: EvaluationVerdict): EvaluationVerdict {
+    if (!isGeneration2(policy)) return verdict;
+    const answer = primaryAnswer(attempt.observation, false);
+    const outcome = generationVerdict(policy, attempt.caseID.raw, answer, verdict);
+    if (!outcome.moved && !outcome.narrowed) return verdict;
+    return {
+      ...verdict,
+      status: outcome.status,
+      warnings: [...verdict.warnings, `scoring policy generation 2: ${outcome.why}`],
+    };
   }
 
   private delegate(attempt: AttemptRecord, policy: ScoringPolicy): ScoringPolicy {
@@ -180,8 +208,12 @@ export class EvaluationEngine {
     const violated = subVerdicts.find((v) => v.governance.state === 'violated')?.governance;
     if (violated) governance = violated;
     else {
-      const own: GovernanceOutcome = composedStatus === 'notApplicable' ? { state: 'notAssessed' } : assessGovernance(policy.hardGovernance, observedText);
+      // Version-dispatched, exactly like the leaf path: a composed rubric must not be the one place a
+      // governed rule silently keeps the canonical matcher under the hybrid version. No governed policy
+      // composes a rubric today, so this changes nothing now and cannot drift later.
+      const own: GovernanceOutcome = composedStatus === 'notApplicable' ? { state: 'notAssessed' } : assessGovernanceForPolicy(policy, observedText);
       if (own.state === 'violated') governance = own;
+      else if (own.state === 'requiresHumanReview') governance = own;
       else if (own.state === 'satisfied' || subVerdicts.some((v) => v.governance.state === 'satisfied')) governance = { state: 'satisfied' };
     }
     const disqualificationReason = governance.state === 'violated' ? governance.reason : undefined;

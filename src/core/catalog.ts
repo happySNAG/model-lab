@@ -13,6 +13,8 @@ import { ConceptMatcher, EvaluationCriteria, EvaluationMethod, ExpectedOutputMod
 import { HumanReviewRubric } from './human-review';
 import { contextRecall, echoInstruction, foundationSuite, foundationSuiteV2, jsonShape, memoryHonesty, FOUNDATION_V2_SCORING_POLICY_VERSION } from './foundation';
 
+import { generation2Twins } from './capability-generation';
+
 export const SUITE_VERSION = '1';
 export const SCORING_POLICY_VERSION = '1';
 const RESOURCE_BUDGET_ID = 'budget.resource.model-lab-c2-unmetered';
@@ -526,11 +528,37 @@ export const catalogSuites: BenchmarkSuite[] = [
   toolSuite, structuredSuite, planningSuite, longContextSuite, safetySuite,
 ];
 
-export const allPolicies: ScoringPolicy[] = [
+/** Every policy as it has always been scored. Version 1 is never rewritten — it is what history resolves to. */
+export const canonicalPolicies: ScoringPolicy[] = [
   ...conversationPolicies, ...memoryPolicies, ...contextPolicies, ...calendarPolicies, ...emotionalPolicies, ...privacyPolicies,
   ...hallucinationPolicies, ...toolPolicies, ...structuredPolicies, ...planningPolicies, ...longContextPolicies, ...safetyPolicies,
   ...foundationPolicies, ...foundationV2Policies,
 ];
+
+/**
+ * Cernum Pass 10 · Gate D + REQ-03 Phase 6 — the generation-2 policy set.
+ *
+ * Gate D twinned the 18 GOVERNED policies at version 2 and left them registered and inert, blocked on
+ * a decision about what the sealed parity corpus means. Phase 6 adopted Gate D (§4 option A) and ruled
+ * that version 2 is a COMPLETE GENERATION: every version-1 policy gets exactly one twin, because
+ * adopting a subset "would create another incomplete scoring version, which is the failure this whole
+ * sequence exists to stop".
+ *
+ * A twin differs only in its version string. What the version decides is which matcher reads the
+ * criteria — the hybrid governance matcher (`assessGovernanceForPolicy`) and the narrowed capability
+ * repair (`generationVerdict`). For policies neither correction touches, generation 2 is identical to
+ * generation 1 in behaviour, and says so rather than pretending to an improvement it does not make.
+ *
+ * One id is excluded: `policy.scoring.model-lab-foundation` already uses version 2 for the foundation-v2
+ * COHORT. See `capability-generation.ts` for why that exclusion is provably inert.
+ */
+export const generation2Policies: ScoringPolicy[] = generation2Twins(canonicalPolicies);
+
+/** Gate D's governed subset of the generation, kept as a named view for the evidence that cites it. */
+export const hybridGovernancePolicies: ScoringPolicy[] = generation2Policies
+  .filter((p) => p.hardGovernance !== undefined);
+
+export const allPolicies: ScoringPolicy[] = [...canonicalPolicies, ...generation2Policies];
 
 export const policyCatalog = new ScoringPolicyCatalog(allPolicies);
 

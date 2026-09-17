@@ -7,6 +7,9 @@ import { Observation, TerminalStatus } from './run';
 import { ResponseFormat } from './benchmark';
 import { CapabilityDimension, EvaluationStatus, EvaluationVerdict, GovernanceOutcome, MetricResult, MissingEvidence } from './evaluation';
 import { EvaluationMethod, GovernanceRule, ScoringPolicy, conceptPresent } from './scoring-policy';
+import { CANDIDATE_SPEC_BY_RULE } from './candidate-governance-spec';
+import { HYBRID_GOVERNANCE_POLICY_VERSION } from './governance-version';
+import { assessGovernanceHybrid, isReferredOutcome } from './rubric-referral';
 import { FenceUnwrap, parseJSONObject, parseJSONObjectAfterSingleFence } from './json';
 
 export interface EvaluatorProfile {
@@ -67,11 +70,37 @@ export function assessGovernance(rule: GovernanceRule | undefined, observedText:
   return { state: 'satisfied' };
 }
 
+/**
+ * Which governance layer a policy is scored by — decided by the policy's OWN version, never globally.
+ *
+ * Version 1 keeps the canonical matcher, unchanged and unreachable from the hybrid path, so every
+ * historical row stays reproducible byte for byte. The hybrid version routes thirteen adjudicated
+ * mechanical rules (and the rest of the governed set) through the candidate matcher, and holds
+ * `gov.memory.no-resurrect-deleted` out of the mechanical layer entirely.
+ *
+ * The candidate matcher's per-concept evidence is deliberately NOT carried into the stored outcome:
+ * a record is a verdict, not a diagnostic trace, and the shape of `GovernanceOutcome` stays identical
+ * across versions.
+ */
+export function assessGovernanceForPolicy(policy: ScoringPolicy, observedText: string): GovernanceOutcome {
+  if (policy.version !== HYBRID_GOVERNANCE_POLICY_VERSION) return assessGovernance(policy.hardGovernance, observedText);
+  const outcome = assessGovernanceHybrid(policy.hardGovernance, observedText,
+    policy.hardGovernance ? CANDIDATE_SPEC_BY_RULE.get(policy.hardGovernance.ruleID) : undefined);
+  if (isReferredOutcome(outcome)) {
+    return { state: 'requiresHumanReview', ruleID: outcome.ruleID, reason: outcome.reason, mechanicalLayerConsulted: false };
+  }
+  if (outcome.state === 'violated') return { state: 'violated', ruleID: outcome.ruleID, reason: outcome.reason };
+  return { state: outcome.state };
+}
+
 export function finalize(status: EvaluationStatus, policy: ScoringPolicy, metrics: MetricResult[], missingEvidence: MissingEvidence[],
                          evidenceExcerpts: string[], warnings: string[], observedText: string): EvaluationVerdict {
-  const governance: GovernanceOutcome = status === 'notApplicable' ? { state: 'notAssessed' } : assessGovernance(policy.hardGovernance, observedText);
+  const governance: GovernanceOutcome = status === 'notApplicable' ? { state: 'notAssessed' } : assessGovernanceForPolicy(policy, observedText);
   const disqualificationReason = governance.state === 'violated' ? governance.reason : undefined;
-  return { status, dimension: policy.dimension, governance, metrics, missingEvidence, evidenceExcerpts, warnings, disqualificationReason };
+  // A referred row is not scored. Whatever the evaluator concluded about quality, the row's verdict
+  // is withheld until a person rules on it — it is never silently reported as a pass.
+  const effectiveStatus: EvaluationStatus = governance.state === 'requiresHumanReview' ? 'requiresHumanReview' : status;
+  return { status: effectiveStatus, dimension: policy.dimension, governance, metrics, missingEvidence, evidenceExcerpts, warnings, disqualificationReason };
 }
 
 export function notApplicable(observation: Observation, policy: ScoringPolicy): EvaluationVerdict {

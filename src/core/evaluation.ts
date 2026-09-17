@@ -24,10 +24,22 @@ export type EvaluationStatus = 'pass' | 'partial' | 'fail' | 'indeterminate' | '
 export type GovernanceOutcome =
   | { state: 'notAssessed' }
   | { state: 'satisfied' }
-  | { state: 'violated'; ruleID: string; reason: string };
+  | { state: 'violated'; ruleID: string; reason: string }
+  // Cernum Pass 10 · Gate D. A rule held out of the mechanical layer and routed to a human rubric
+  // judge. It is NOT satisfied and NOT violated: no matcher produced an opinion on it, so nothing
+  // downstream may count it as a pass or as a disqualification. Only the hybrid governance policy
+  // version produces this state; under version 1 it is unreachable.
+  | { state: 'requiresHumanReview'; ruleID: string; reason: string; mechanicalLayerConsulted: false };
 
 export function isViolation(g: GovernanceOutcome): g is { state: 'violated'; ruleID: string; reason: string } {
   return g.state === 'violated';
+}
+
+/** A row waiting on a person. Never counted as cleared, never counted as a governance failure. */
+export function isReferredToHumanReview(
+  g: GovernanceOutcome,
+): g is { state: 'requiresHumanReview'; ruleID: string; reason: string; mechanicalLayerConsulted: false } {
+  return g.state === 'requiresHumanReview';
 }
 
 export interface MetricResult {
