@@ -215,9 +215,9 @@ verifies both before it mounts anything:
 
 ```
 cd ~/Downloads
-curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/49ca9478b4eacb61347cf99ae08a09e5d7bfc683/scripts/releases/install-cernum-v0.2.4-macos-arm64.sh
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/11cbd2a2c2a6d9bbc976d0b8c3242b12bddcec1b/scripts/releases/install-cernum-v0.2.4-macos-arm64.sh
 shasum -a 256 install-cernum-v0.2.4-macos-arm64.sh
-#  02ba83fa959a1f7602e936037c27ca2e76b6c49e9b441ae6a3511430cbd4ae93
+#  0ab7cb23aac516428805a06787eeb309ddfb679c23ba56ede4a343800986899a
 less install-cernum-v0.2.4-macos-arm64.sh
 bash install-cernum-v0.2.4-macos-arm64.sh
 ```

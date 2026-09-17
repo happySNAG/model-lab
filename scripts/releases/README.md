@@ -11,14 +11,14 @@ GitHub release, and refuses to install anything that does not match.
 ## `install-cernum-v0.2.4-macos-arm64.sh`
 
 **The current one.** Upgrades an **Apple Silicon** Mac to **Cernum v0.2.4** (build commit
-`6315cb1`), verifies the v0.2.4 corrections without sending a single provider request, and still
+`79992bb`), verifies the v0.2.4 corrections without sending a single provider request, and still
 carries the v0.2.1 migration repair because it is idempotent and this machine may never have run it.
 
 ### Use it
 
 ```bash
 cd ~/Downloads
-curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/49ca9478b4eacb61347cf99ae08a09e5d7bfc683/scripts/releases/install-cernum-v0.2.4-macos-arm64.sh
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/11cbd2a2c2a6d9bbc976d0b8c3242b12bddcec1b/scripts/releases/install-cernum-v0.2.4-macos-arm64.sh
 shasum -a 256 install-cernum-v0.2.4-macos-arm64.sh   # compare against the digest in the release notes
 less install-cernum-v0.2.4-macos-arm64.sh            # read it before running it
 bash install-cernum-v0.2.4-macos-arm64.sh
