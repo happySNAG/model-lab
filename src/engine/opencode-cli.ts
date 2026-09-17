@@ -219,14 +219,53 @@ export const OPENCODE_LISTING_IS_A_CATALOGUE =
   + 'that this credential may call it, so every OpenCode model is recorded as DISCOVERED and UNPROVEN.';
 
 /**
- * How an OpenCode model could become `proven`, and why none is today.
+ * HOW AN OPENCODE MODEL BECOMES PROVEN, AND EXACTLY HOW FAR ONE REQUEST CAN CARRY IT.
  *
- * Cernum has no OpenCode execution adapter — `adaptersFor` in `host-factory.ts` binds `claudeCLI`,
- * `codexCLI`, `anthropicAPI` and `openaiAPI` and nothing else — so there is at present NO path by
- * which an OpenCode model can be proven. Saying that plainly is the point: a person who reads
- * `unproven` here should not go looking for a command that would fix it.
+ * WHAT THIS REPLACES, AND WHY. v0.2.2 shipped `OPENCODE_NO_PROOF_PATH`, which said Cernum "cannot
+ * prove an OpenCode model today: it has no OpenCode execution adapter". That was true when it was
+ * written and stopped being true in v0.2.3, when `OpenCodeAdapter` landed and `cernum smoke
+ * opencodeCLI` began driving it. The sentence stayed. Worse, it is a DISCOVERY string: it was
+ * written into `discovered.json` beside every OpenCode model on every run, so the store filled up
+ * with a claim the same build could disprove, and a person reading `unproven` was told not to go
+ * looking for a command that had existed for a release. See `supersedeStaleOpenCodeEvidence` in
+ * `discovery-store.ts` for what happens to the rows that already carry it: they are corrected in
+ * place and the original text is KEPT, because a record that was wrong is still a record.
+ *
+ * THE THREE STATES, AND THE DISTANCE BETWEEN THEM.
+ *
+ *   DISCOVERED       `opencode models` named it. This is a cached catalogue and it is not evidence
+ *                    about this credential. Never selectable.
+ *   EXECUTION PROVEN a request was AUTHORIZED, sent, and came back. That establishes that this
+ *                    credential reached this service and something answered it. It is a fact about
+ *                    execution, and on its own it is not a fact about identity.
+ *   IDENTITY PROVEN  the assistant message carried `providerID` and `modelID`, and they matched what
+ *                    was asked for. OpenCode does return these, which is why an OpenCode smoke can
+ *                    reach a state a Codex smoke cannot — and it is read from the reply, never
+ *                    copied from the request. A reply naming a different model is a substitution and
+ *                    is recorded as refused. A reply naming nothing stays unproven.
+ *
+ * So an authorized successful request proves execution, and proves identity ONLY to the degree the
+ * returned identity evidence supports. Nothing about holding a credential, and nothing about the
+ * length of a listing, moves a model between these states.
  */
-export const OPENCODE_NO_PROOF_PATH =
+export const OPENCODE_PROOF_PATH =
+  'An OpenCode model becomes selectable only through an AUTHORIZED request that was sent and came back: '
+  + '`cernum smoke opencodeCLI --models <id> --pricing <file> --authorize-metered <dollars>`, or with no prices, '
+  + '`--authorize-unpriced-metered` for exactly one request. OpenCode is billed per token against your own '
+  + 'credential, so that request costs money and is refused without the authorization. A successful request proves '
+  + 'EXECUTION; it proves IDENTITY only as far as the returned `providerID`/`modelID` support, and a reply that names '
+  + 'no model leaves the candidate unproven.';
+
+/**
+ * The v0.2.2 sentence, kept verbatim so contaminated rows can be RECOGNISED rather than guessed at.
+ *
+ * It is matched on a distinctive fragment rather than on the whole string, because the discovery
+ * evidence interpolates it into a longer sentence and a later edit to the surrounding prose must not
+ * make the stale rows unfindable.
+ */
+export const OPENCODE_SUPERSEDED_NO_PROOF_PATH_FRAGMENT = 'no OpenCode execution adapter';
+
+export const OPENCODE_SUPERSEDED_NO_PROOF_PATH =
   'Cernum cannot prove an OpenCode model today: it has no OpenCode execution adapter, so there is no '
   + 'authorized request it could make and record. Until one exists, no OpenCode model is selectable for '
   + 'a campaign. `cernum smoke` drives the subscription CLIs only and will refuse opencodeCLI by name.';
@@ -234,5 +273,6 @@ export const OPENCODE_NO_PROOF_PATH =
 /** Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it". */
 export const OPENCODE_SUPPORT_MATURITY =
   'UNTESTED METERED API. Cernum can discover OpenCode, read its version, list its models and see whether '
-  + 'a credential is configured -- all without spending anything. No scored Cernum campaign has been run '
-  + 'through OpenCode, and no OpenCode result is published anywhere in this repository.';
+  + 'a credential is configured -- all without spending anything -- and, under an explicit metered authorization, '
+  + 'send it a single identity request. No scored Cernum campaign has been run through OpenCode, no live OpenCode '
+  + 'request has been made by this engine, and no OpenCode result is published anywhere in this repository.';

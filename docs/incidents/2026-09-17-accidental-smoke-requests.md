@@ -59,3 +59,25 @@ bought nothing is worth remembering accurately.
 A test that ran `cernum smoke --help` as a subprocess with a recording fake on PATH and asserted the
 fake was never invoked. `test/engine/cli-argument-safety.test.ts` is now exactly that, and it fails
 against v0.2.2.
+
+---
+
+## Addendum, v0.2.4: what v0.2.3 left
+
+A dry-run audit on the same MacBook Pro, before any live request was sent, found that **one spelling
+of the question was still unanswered**. v0.2.3 fixed `cernum smoke --help` and `-h`; it did not touch
+`cernum help smoke`, which parsed the topic into the positional list and then called a function that
+took no arguments. That spelling printed the general index, in which `smoke` had a two-line entry
+naming `--evidence` and nothing else — while `--models`, `--dry-run` and `--all-ladder` were all
+implemented and none of them appeared.
+
+**It never spent anything.** The general index is free to print, so this was not a recurrence of the
+incident. It was the same failure of shape: help was a thing one code path answered and another did
+not, and the path that did not was the one a person looking for the SAFE way to preview a spending
+command is most likely to type.
+
+v0.2.4 routes all three spellings — `help <command>`, `<command> --help`, `<command> -h` — through
+one renderer reading one table, with a test asserting the pages are byte-for-byte identical.
+
+The four accidental requests of 2026-09-17 remain classified exactly as recorded above: **accidental
+requests, not benchmark evidence.** Nothing in v0.2.4 amends, reinterprets or admits them.

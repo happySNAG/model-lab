@@ -63,6 +63,12 @@ async function cernum(...args: string[]): Promise<string> {
   return stdout;
 }
 
+/** Run and capture the refusal instead of throwing, for the paths whose point IS the refusal. */
+async function cernumRefused(...args: string[]): Promise<string> {
+  return cernum(...args).then((stdout) => `UNEXPECTEDLY SUCCEEDED:\n${stdout}`,
+    (error: { stdout?: string; stderr?: string }) => `${error.stdout ?? ''}${error.stderr ?? ''}`);
+}
+
 const invocations = (): string[] => {
   const log = path.join(fakeBin, 'opencode.invocations');
   if (!fs.existsSync(log)) return [];
@@ -127,16 +133,45 @@ test('a dry-run names the request it would send, and sends none', async () => {
   expect(output).toContain(MODEL);
   expect(output).toContain('requests to be sent   1');
   expect(output).toContain('meteredAPI');
+  // v0.2.4: the preview also says, before anything is sent, that a live run of this scope would be
+  // refused as it stands — rather than letting a person find that out by typing the live command.
+  expect(output).toContain('AUTHORIZATION REQUIRED');
   expect(invocations().length).toBe(before);
 });
 
-test('a smoke executes through OpenCode, and proves the model because the reply named it', async () => {
-  const output = await cernum('smoke', 'opencodeCLI', '--models', MODEL);
+test('v0.2.4 · a live metered smoke with no authorization is refused, and sends nothing', async () => {
+  const before = invocations().length;
+  const refused = await cernumRefused('smoke', 'opencodeCLI', '--models', MODEL);
+
+  expect(refused).toContain('this run is not authorized');
+  expect(refused).toContain('MAY BILL YOU');
+  expect(refused).toContain('Nothing was sent');
+  // THE ASSERTION THAT MATTERS: the fake `opencode` was never asked to run anything.
+  expect(invocations().length).toBe(before);
+});
+
+test('v0.2.4 · a priced metered smoke is refused when the worst case exceeds the ceiling', async () => {
+  const before = invocations().length;
+  const refused = await cernumRefused('smoke', 'opencodeCLI', '--models', MODEL,
+    '--pricing', pricingFile, '--authorize-metered', '0.000001');
+
+  expect(refused).toContain('worst case for this scope');
+  expect(refused).toContain('Nothing was sent');
+  expect(invocations().length).toBe(before);
+});
+
+test('a smoke executes through OpenCode under an explicit authorization, and proves the model because the reply named it', async () => {
+  const output = await cernum('smoke', 'opencodeCLI', '--models', MODEL,
+    '--pricing', pricingFile, '--authorize-metered', '1.00');
 
   // The pre-flight disclosure precedes the request, every time.
   expect(output).toContain('About to send real requests');
   expect(output).toContain('authorization class   meteredAPI');
+  expect(output).toContain('authorization         pricedCeiling');
   expect(output).toContain(`proven       ${MODEL}`);
+  // The record agrees with the preview about what this request was: metered, and never a subscription.
+  expect(output).toContain('binding meteredAPI · auth toolManagedCredential');
+  expect(output).toContain('plan allowance consumed: none — this is not a subscription');
 
   // The invocation itself: explicit model, JSON events, an isolated directory, no plugins.
   const runCall = invocations().find((line) => line.startsWith('run'));

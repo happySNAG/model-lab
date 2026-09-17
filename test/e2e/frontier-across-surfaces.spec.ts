@@ -172,8 +172,12 @@ test('an identity smoke proves a model — discovery alone cannot — and then a
   expect(providerRequests).toEqual([]);
 
   // The smoke test is what proves one, by asking it who it is. It says out loud that it spends.
-  const smoked = await cernum('smoke', 'claudeCLI');
-  expect(smoked).toContain('consumes subscription allowance');
+  //
+  // THE SCOPE IS NAMED. v0.2.3 removed this command's default candidate set — naming a provider is
+  // not consent to its whole ladder — and this spec was not updated with it, so it has been failing
+  // on a refusal since that release rather than on anything it was written to check.
+  const smoked = await cernum('smoke', 'claudeCLI', '--all-ladder');
+  expect(smoked).toContain('About to send real requests');
   expect(smoked).toContain('proven       claude-haiku-4-5');
   // Every model on the CLAUDE half of the ladder is a Claude model, so this fake proves all of
   // them. The refusal path is exercised against its real captured 404 in the unit suite, and the
@@ -184,7 +188,10 @@ test('an identity smoke proves a model — discovery alone cannot — and then a
   expect(smoked).toContain('No campaign was created');
   // A zero marginal charge is never presented as a zero cost.
   expect(smoked).toContain('marginal API charge $0.000000');
-  expect(smoked).toContain('a zero charge is not a zero cost');
+  expect(smoked).toContain('plan allowance consumed');
+  // v0.2.4: the binding the record carries is the one the preview described.
+  expect(smoked).toContain('authorization class   subscriptionIncluded');
+  expect(smoked).toContain('binding subscriptionIncluded · auth subscriptionCLISession');
   expect(providerRequests).toEqual([]);
 
   const created = await cernum('create', 'sub-run', '--frontier', 'claudeCLI:claude-haiku-4-5', '--suites', SUITE, '--repeats', '1');

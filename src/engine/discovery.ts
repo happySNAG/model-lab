@@ -38,7 +38,7 @@ import {
   OPENCODE_EXECUTABLE, OPENCODE_VERSION_ARGUMENTS, OPENCODE_MODELS_ARGUMENTS, OPENCODE_CREDENTIALS_ARGUMENTS,
   UNION_ALPHA_MODEL_ID, parseOpenCodeVersion, parseOpenCodeModels, parseOpenCodeCredentials,
   opencodeHasCredential, opencodeCredentialDisclosure, OPENCODE_SUPPORT_MATURITY, OPENCODE_COST_EXPLANATION,
-  OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_NO_PROOF_PATH,
+  OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_PROOF_PATH,
 } from './opencode-cli';
 
 /** How far the truth about a provider has actually been established. */
@@ -94,6 +94,18 @@ export interface DiscoveredFrontierModel {
   /** Effort levels this project intends to exercise. Desired, not confirmed. */
   desiredEfforts: string[];
   discoveredAt: string;
+  /**
+   * THE EVIDENCE THIS ROW USED TO CARRY, kept verbatim when a later release established that it was
+   * wrong.
+   *
+   * A record that was wrong is still a record. Correcting the `evidence` field in place and throwing
+   * the old text away would leave a store that has always agreed with the current build, which is
+   * indistinguishable from a store nobody ever had to correct. See `supersedeStaleOpenCodeEvidence`.
+   */
+  supersededEvidence?: string;
+  /** When the correction was applied, and by which release. Absent on a row that was never corrected. */
+  evidenceCorrectedAt?: string;
+  evidenceCorrectedBy?: string;
 }
 
 /**
@@ -810,7 +822,7 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
       displayName: planned?.displayName ?? modelID,
       availability: 'unproven' as const,
       evidence: `\`${OPENCODE_EXECUTABLE} models\` named ${modelID} at ${checkedAt}: DISCOVERED, NOT PROVEN. `
-        + `${OPENCODE_LISTING_IS_A_CATALOGUE} ${OPENCODE_NO_PROOF_PATH} `
+        + `${OPENCODE_LISTING_IS_A_CATALOGUE} ${OPENCODE_PROOF_PATH} `
         + OPENCODE_COST_EXPLANATION,
       verifiedModelID: '',
       desiredEfforts: planned?.desiredEfforts ?? [],
@@ -844,7 +856,7 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
     models,
     detail: `OpenCode ${version} named ${listed.length} models at ${checkedAt}, none of them proven. `
       + `${UNION_ALPHA_MODEL_ID} was ${unionAlpha && unionAlpha.availability !== 'refused' ? 'DISCOVERED (unproven)' : 'NOT named'}. `
-      + `${OPENCODE_LISTING_IS_A_CATALOGUE} ${OPENCODE_NO_PROOF_PATH} `
+      + `${OPENCODE_LISTING_IS_A_CATALOGUE} ${OPENCODE_PROOF_PATH} `
       + `${disclosure} ${OPENCODE_SUPPORT_MATURITY}`,
   };
 }

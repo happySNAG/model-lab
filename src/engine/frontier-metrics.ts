@@ -225,6 +225,14 @@ export function costBreakdown(options: {
   meteredChargeProvenance?: Provenance;
   /** A subscription CLI's own list valuation of this request, when it reports one. */
   providerReportedUsageMicroUSD?: number;
+  /**
+   * Why a metered charge is unknown, when the caller knows something more specific than the default.
+   *
+   * The default reason blames the provider for reporting no usage, which is the usual cause and is
+   * the WRONG sentence when the provider reported its tokens perfectly well and this engine simply
+   * holds no price to apply to them. An unavailable figure is only as useful as the reason beside it.
+   */
+  meteredChargeUnavailableReason?: string;
 }): CostBreakdown {
   if (options.billingBasis === 'local') {
     return {
@@ -245,7 +253,8 @@ export function costBreakdown(options: {
     };
   }
   const charge: Quantity = options.meteredChargeMicroUSD === undefined
-    ? unavailableQuantity('the provider reported no usage for this metered request, so its charge is not known and '
+    ? unavailableQuantity(options.meteredChargeUnavailableReason
+      ?? 'the provider reported no usage for this metered request, so its charge is not known and '
       + 'this engine will not write a budget in place of a bill')
     : { provenance: options.meteredChargeProvenance ?? 'estimated', value: options.meteredChargeMicroUSD };
   return {

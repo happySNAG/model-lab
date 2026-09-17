@@ -27,12 +27,21 @@
 //
 // THE MEASUREMENTS IT TAKES ARE MINIMAL AND HONEST. A single tiny request is not a benchmark and
 // nothing here pretends otherwise: `providerReportedGenerationTokensPerSecond` is `unavailable` for
-// both subscription CLIs because neither reports a generation duration, and what IS recorded is
+// every CLI this engine drives because none reports a generation duration, and what IS recorded is
 // labelled as the client-observed or end-to-end figure it actually is.
+//
+// v0.2.4: WHAT IT COSTS IS READ OFF THE BINDING, NOT ASSUMED. Until v0.2.4 the caller built the
+// binding by hand and wrote `subscriptionIncluded` into it for every provider, so a metered OpenCode
+// smoke would have recorded a $0 marginal charge against a request the provider bills for. The
+// binding now comes from `smoke-binding.ts`, which derives billing from the provider registry, and
+// a metered request with no price records its cost as UNAVAILABLE — never as zero.
 
 import { CanonicalValue } from './canonical';
 import { FrontierAdapter, FrontierRequest, FrontierResponse, totalInputTokens } from './frontier-adapter';
-import { ProviderBinding, isMetered } from './provider';
+import {
+  BindingIdentityState, IDENTITY_ADMISSIBLE_PROVIDER, ProviderBinding,
+  REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isMetered,
+} from './provider';
 import {
   Quantity, clientObservedOutputThroughputMilli, costBreakdown, endToEndOutputThroughputMilli,
   measuredQuantity, providerReportedGenerationThroughputMilli, reportedQuantity, unavailableQuantity,
@@ -54,8 +63,13 @@ export const IDENTITY_SMOKE_PROMPT = 'Reply with only: ok';
 export interface IdentitySmokeResult {
   candidate: string;
   provider: string;
+  /** DERIVED FROM THE PROVIDER REGISTRY, never written by hand. See `smoke-binding.ts`. */
   executionClass: string;
   billingBasis: string;
+  /** How the caller was authorised for this request — the shape of it, never a credential. */
+  authorizationMode: string;
+  /** Where the prices behind any cost figure came from, or null when there were none. */
+  pricingSource: string | null;
 
   /** What was asked for. */
   requestedModelID: string;
@@ -66,6 +80,15 @@ export interface IdentitySmokeResult {
   effort: string;
 
   verdict: IdentityVerdict;
+  /**
+   * WHAT THIS REQUEST ESTABLISHED ABOUT IDENTITY, in the engine's own vocabulary.
+   *
+   * `verified` only when the provider named the model and it matched. For `codexCLI` — whose `exec`
+   * names no model in any reply — a request the provider ACCEPTED and answered lands on
+   * `requestAcceptedIdentityUnverifiable`: weaker than `unverifiable`, not stronger, and never a
+   * claim about which model answered. Everything else stays `unverifiable`.
+   */
+  identityState: BindingIdentityState;
   /** In words, always populated: what established this verdict, or what is missing. */
   evidence: string;
 
@@ -91,11 +114,46 @@ export interface IdentitySmokeResult {
   retryCount: number;
   wastedTokens: number;
 
+  /**
+   * What the provider said about the effort or thinking it APPLIED, when it said anything.
+   *
+   * Empty string means it reported nothing, which is not the same as reporting that it applied none.
+   */
+  reportedEffort: string;
+  /**
+   * THE TOOL'S OWN TELEMETRY ABOUT THIS TURN, when a collector was asked for.
+   *
+   * Codex only, opt-in only. It carries the reasoning effort the CLI says it applied — which `codex
+   * exec --json` never echoes — and its token decomposition. IT ESTABLISHES NO IDENTITY: the `model`
+   * attribute in that telemetry is the identifier this client SENT, so a Codex row stays
+   * `requestAcceptedIdentityUnverifiable` however complete the telemetry is.
+   */
+  telemetry?: IdentitySmokeTelemetry;
+
   /** Settings the tool could not enforce, carried so an unbounded request is visible as one. */
   notEnforceable: string[];
   /** The provider's own usage block, verbatim, for reconciling against a bill or a usage page. */
   providerReportedUsage?: CanonicalValue;
   attemptedAt: string;
+}
+
+/** The subset of a tool's own telemetry an identity smoke records. Never an identity claim. */
+export interface IdentitySmokeTelemetry extends Record<string, CanonicalValue | undefined> {
+  /** The redactor's placeholder for this conversation. Stable within a run, meaningless outside it. */
+  correlationKey: string;
+  /** True when a turn span had already arrived while the request was still open. Often false. */
+  correlated: boolean;
+  /** `codex.turn.reasoning_effort` — the effort the CLI says it APPLIED. */
+  turnReasoningEffort?: string;
+  /** `codex.request.reasoning_effort` — the effort it says it SENT. */
+  requestReasoningEffort?: string;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
+  /** How many telemetry records mentioned this conversation. Zero means it was never seen. */
+  recordCount: number;
 }
 
 export interface IdentitySmokeOptions {
@@ -131,10 +189,12 @@ export async function identitySmokeTest(binding: ProviderBinding, adapter: Front
 }
 
 const NO_GENERATION_DURATION_FROM_CLI =
-  'neither subscription CLI reports the duration it spent GENERATING. The `claude` envelope carries `duration_ms` '
+  'no CLI this engine drives reports the duration it spent GENERATING. The `claude` envelope carries `duration_ms` '
   + '(the turn\'s wall clock) and `duration_api_ms` (a sum across concurrent API calls, observed larger than the turn '
-  + 'itself), and neither is a generation duration. A tokens-per-second computed from either would be presented as the '
-  + 'provider\'s speed while actually measuring this machine, this network and the provider\'s queue.';
+  + 'itself); `codex exec` reports no duration at all; and the OpenCode assistant message carries created and completed '
+  + 'timestamps, which bound the whole turn rather than its generation. None of them is a generation duration. A '
+  + 'tokens-per-second computed from any of them would be presented as the provider\'s speed while actually measuring '
+  + 'this machine, this network and the provider\'s queue.';
 
 /** Fold one response into a verdict and its measurements. Exported so a fixture can be read directly. */
 export function readSmoke(binding: ProviderBinding, response: FrontierResponse, attemptedAt: string): IdentitySmokeResult {
@@ -153,10 +213,24 @@ export function readSmoke(binding: ProviderBinding, response: FrontierResponse, 
     ? unavailableQuantity('at least one half of this request\'s token count is unknown, so its total is not known')
     : { provenance: input.provenance, value: (input.value ?? 0) + (visible.value ?? 0) + (reasoning.value ?? 0) };
 
+  // THE COST OF A METERED REQUEST IS NEVER ZERO BY DEFAULT.
+  //
+  // `meteredChargeMicroUSD: undefined` is what makes `costBreakdown` record `unavailable` with a
+  // reason. A price is used only where prices were SUPPLIED and the provider reported the tokens to
+  // apply them to; the result is labelled `estimated`, because a computed charge is a derivation
+  // from a published rate and not the figure on anybody's bill. With no price, or with no reported
+  // tokens, the answer is UNAVAILABLE — which is not zero, and is not free.
+  const metered = isMetered(binding);
   const costs = costBreakdown({
     billingBasis: binding.billingBasis,
-    meteredChargeMicroUSD: isMetered(binding) ? undefined : 0,
-    meteredChargeProvenance: 'measured',
+    meteredChargeMicroUSD: metered ? meteredChargeFrom(binding, input, visible, reasoning) : 0,
+    meteredChargeProvenance: metered ? 'estimated' : 'measured',
+    meteredChargeUnavailableReason: !metered ? undefined
+      : binding.pricing ? 'this request is billed per token and prices were supplied, but the provider reported no '
+        + 'token count to apply them to, so what it will charge is not known and no budget is written in place of a bill'
+        : 'this request is billed per token against your own credential and Cernum holds no price for this candidate, '
+        + 'so its charge is UNAVAILABLE — not zero, not free, and not estimated. The amount exists only on your '
+        + 'provider account.',
     providerReportedUsageMicroUSD: response.subscriptionIncludedUsageMicroUSD,
   });
 
@@ -167,11 +241,14 @@ export function readSmoke(binding: ProviderBinding, response: FrontierResponse, 
     provider: binding.provider,
     executionClass: binding.executionClass,
     billingBasis: binding.billingBasis,
+    authorizationMode: binding.authorizationMode,
+    pricingSource: binding.pricing ? `${binding.pricing.source} (captured ${binding.pricing.capturedAt})` : null,
     requestedModelID: binding.requestedModelID,
     reportedModelID: response.reportedModelID,
     participatingModelIDs: response.participatingModelIDs ?? [],
     effort: binding.effort,
     verdict,
+    identityState: identityStateFrom(binding, response, verdict),
     evidence,
     answerText: redactSecrets(response.answerText).trim().slice(0, 200),
     inputTokens: input,
@@ -193,10 +270,66 @@ export function readSmoke(binding: ProviderBinding, response: FrontierResponse, 
     effectiveUserCostMicroUSD: costs.effectiveUserCostMicroUSD,
     retryCount: response.retryCount,
     wastedTokens: response.wastedTokens,
+    reportedEffort: response.reportedEffort ?? '',
+    telemetry: response.otlpTurn === undefined ? undefined : {
+      correlationKey: response.otlpTurn.correlationKey,
+      correlated: response.otlpTurn.correlated,
+      turnReasoningEffort: response.otlpTurn.turnReasoningEffort,
+      requestReasoningEffort: response.otlpTurn.requestReasoningEffort,
+      inputTokens: response.otlpTurn.inputTokens,
+      cachedInputTokens: response.otlpTurn.cachedInputTokens,
+      outputTokens: response.otlpTurn.outputTokens,
+      reasoningOutputTokens: response.otlpTurn.reasoningOutputTokens,
+      totalTokens: response.otlpTurn.totalTokens,
+      recordCount: response.otlpTurn.recordCount,
+    },
     notEnforceable: response.notEnforceable ?? [],
     providerReportedUsage: response.rawUsage,
     attemptedAt,
   };
+}
+
+/**
+ * The charge for one metered request, where there is honestly one to compute.
+ *
+ * Returns `undefined` — which `costBreakdown` turns into `unavailable` WITH A REASON — whenever
+ * either half of the input is missing. That is the whole point: an OpenCode request whose price
+ * Cernum does not hold has an unknown cost, and an unknown cost written as `0` is the single most
+ * misleading number this engine could produce about somebody's money.
+ */
+function meteredChargeFrom(binding: ProviderBinding, input: Quantity, visible: Quantity,
+                           reasoning: Quantity): number | undefined {
+  // `?? null` rather than `=== null`: a binding assembled by a caller that simply omitted the field
+  // has no price either, and reading `undefined.source` to find that out would be a crash where the
+  // honest answer is "unavailable".
+  const price = binding.pricing ?? null;
+  if (price === null) return undefined;
+  if (input.provenance === 'unavailable' || visible.provenance === 'unavailable') return undefined;
+  const reasoningTokens = reasoning.provenance === 'unavailable' ? 0 : (reasoning.value ?? 0);
+  const reasoningRate = price.reasoningMicroUSDPerMillionTokens ?? price.outputMicroUSDPerMillionTokens;
+  return Math.ceil(((input.value ?? 0) * price.inputMicroUSDPerMillionTokens) / 1_000_000)
+    + Math.ceil(((visible.value ?? 0) * price.outputMicroUSDPerMillionTokens) / 1_000_000)
+    + Math.ceil((reasoningTokens * reasoningRate) / 1_000_000);
+}
+
+/**
+ * What this request established about identity, as a binding state rather than only as a verdict.
+ *
+ * THE CODEX CASE IS THE REASON THIS FUNCTION EXISTS. `codex exec` answers and names no model, so a
+ * Codex smoke can never reach `verified` — and recording it as plain `unverifiable` loses the one
+ * fact it DID establish: the provider accepted this identifier and something answered. That is
+ * exactly what `requestAcceptedIdentityUnverifiable` means, and it is the state the Pass 6 admission
+ * machinery reads. It is never a claim about which model answered, it never reaches
+ * `verifiedModelID`, and it never makes a candidate selectable on its own.
+ */
+function identityStateFrom(binding: ProviderBinding, response: FrontierResponse,
+                           verdict: IdentityVerdict): BindingIdentityState {
+  if (verdict === 'proven') return 'verified';
+  if (verdict !== 'unverifiable') return 'unverifiable';
+  // A request that never completed established nothing, not even acceptance.
+  if (response.failure) return 'unverifiable';
+  if (binding.provider !== IDENTITY_ADMISSIBLE_PROVIDER) return 'unverifiable';
+  return REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
 }
 
 /** The verdict, and the sentence that has to survive being read back a year later. */
@@ -215,8 +348,19 @@ function judge(binding: ProviderBinding, response: FrontierResponse): { verdict:
   if (response.reportedModelID.length === 0) {
     return {
       verdict: 'unverifiable',
-      evidence: 'the provider answered but named no model, so which model produced this answer is not known. It is '
-        + 'recorded as unverifiable rather than assumed to be the model that was requested.',
+      evidence: binding.provider === IDENTITY_ADMISSIBLE_PROVIDER
+        // The Codex CLI names no model in any reply, so this is the strongest true statement there is
+        // about a Codex request: the provider ACCEPTED the identifier and something answered. It is
+        // recorded as `requestAcceptedIdentityUnverifiable`, which is weaker than unverifiable rather
+        // than stronger, and it is never a claim that the model asked for is the model that answered.
+        ? `${binding.requestedModelID} was accepted and something answered, but the provider named no model in its `
+          + 'reply — `codex exec` never does. WHICH model produced this answer is not known, and it is recorded as '
+          + 'unverifiable rather than assumed to be the model that was requested. The state is '
+          + 'requestAcceptedIdentityUnverifiable: the request was ACCEPTED and the identity is UNVERIFIABLE. That is '
+          + 'not proof, it makes nothing selectable, and putting such a candidate under measurement takes a separate '
+          + 'sealed authorization.'
+        : 'the provider answered but named no model, so which model produced this answer is not known. It is '
+          + 'recorded as unverifiable rather than assumed to be the model that was requested.',
     };
   }
   if (response.reportedModelID !== binding.requestedModelID

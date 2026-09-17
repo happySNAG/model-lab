@@ -357,15 +357,28 @@ export class OpenCodeAdapter implements FrontierAdapter {
       // `reported` only when a tokens block was actually present, so a genuine zero is not
       // indistinguishable from a silence.
       usageProvenance: turn.usageReported ? 'providerReported' : 'unavailable',
-      rawUsage: turn.usageReported ? (turn.usage as unknown as Record<string, number>) : undefined,
+      // OPENCODE'S OWN COST FIGURE IS PRESERVED HERE AND NOWHERE ELSE. The comment below claimed it
+      // was "preserved in the raw usage instead" and it was not — it was read off the message and
+      // dropped. It is carried now, under a name that says whose number it is, and it is NOT turned
+      // into a charge: `AssistantMessage.cost` is a bare number in the generated types with no unit
+      // declared, and a figure whose currency and scale nobody established is not a cost this engine
+      // may put in a cost column.
+      rawUsage: turn.usageReported || turn.reportedCost !== undefined ? {
+        ...(turn.usageReported ? (turn.usage as unknown as Record<string, number>) : {}),
+        ...(turn.reportedCost === undefined ? {} : { openCodeReportedCostUnitUnverified: turn.reportedCost }),
+      } : undefined,
       firstVisibleTokenMilliseconds,
       totalElapsedMilliseconds: result.elapsedMilliseconds,
       retryCount: turn.retryCount,
       wastedTokens: 0,
-      reportedEffort: turn.finishReason,
+      // A FINISH REASON IS NOT AN EFFORT LEVEL. `reportedEffort` is where a provider says what
+      // reasoning effort it APPLIED; `finish` says why generation stopped, and putting `stop` there
+      // made every OpenCode smoke print "effort applied, as the provider reported it: stop".
+      // OpenCode reports no applied effort, so the honest answer is that it reported none.
+      reportedEffort: undefined,
       // OPENCODE'S COST FIGURE IS NOT CARRIED INTO A SUBSCRIPTION FIELD. OpenCode is metered, so what
       // it reports is a charge and not plan allowance; `subscriptionIncludedUsageMicroUSD` would say
-      // the opposite of the truth. The number is preserved in the raw usage instead.
+      // the opposite of the truth. The number is preserved in the raw usage above.
       participatingModelIDs: turn.reportedModelID.length > 0 ? [turn.reportedModelID] : [],
     };
   }

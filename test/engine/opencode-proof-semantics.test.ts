@@ -20,7 +20,7 @@ import {
   discoverOpenCodeCLI, discoverProvider, selectableModels, DESIRED_CANDIDATE_LADDER,
 } from '../../src/engine/discovery';
 import {
-  UNION_ALPHA_MODEL_ID, OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_NO_PROOF_PATH,
+  UNION_ALPHA_MODEL_ID, OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_PROOF_PATH,
 } from '../../src/engine/opencode-cli';
 
 const ESC = '\x1b';
@@ -82,13 +82,25 @@ describe('v0.2.2 · a listing is a catalogue, and a catalogue is not permission'
     expect(union.evidence).toContain('not evidence that this credential may call it');
   });
 
-  it('tells a reader there is no command that would fix it, rather than implying one', async () => {
-    // The cruelty of a bare `unproven` is that it reads like a chore. There is no OpenCode execution
-    // adapter, so there is no request Cernum could make — and the status says so.
+  it('names the command that WOULD establish it, and what that command costs', async () => {
+    // CORRECTED IN v0.2.4. Until v0.2.3 there was no OpenCode execution adapter and this text said
+    // so; the adapter shipped and the sentence did not change, so discovery kept writing a claim the
+    // same build could disprove. The honest version names the route and the fact that it is billed.
     const status = await discoverOpenCodeCLI({ findExecutable: here, now: NOW, run: READY });
-    expect(status.detail).toContain('no OpenCode execution adapter');
-    expect(OPENCODE_NO_PROOF_PATH).toContain('no OpenCode execution adapter');
+    expect(status.detail).not.toContain('no OpenCode execution adapter');
+    expect(status.detail).toContain('cernum smoke opencodeCLI');
+    expect(OPENCODE_PROOF_PATH).toContain('AUTHORIZED request');
+    expect(OPENCODE_PROOF_PATH).toContain('billed per token');
+    expect(OPENCODE_PROOF_PATH).toContain('--authorize-metered');
     expect(OPENCODE_LISTING_IS_A_CATALOGUE).toContain('DISCOVERED and UNPROVEN');
+  });
+
+  it('still refuses to call discovery a proof, now that a proof path exists', async () => {
+    // The risk of naming a route is that a reader takes the route's existence for its outcome.
+    const status = await discoverOpenCodeCLI({ findExecutable: here, now: NOW, run: READY });
+    expect(status.models.every((model) => model.availability !== 'proven')).toBe(true);
+    expect(OPENCODE_PROOF_PATH).toContain('proves EXECUTION');
+    expect(OPENCODE_PROOF_PATH).toContain('names no model leaves the candidate unproven');
   });
 });
 

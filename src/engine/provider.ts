@@ -259,6 +259,31 @@ export function billingBasisOf(executionClass: ExecutionClass): BillingBasis {
   }
 }
 
+/**
+ * How a provider authorises a request, fixed by what the provider IS.
+ *
+ * THE THIRD THING THE REGISTRY HAS TO OWN. `executionClassOf` and `billingBasisOf` were already
+ * derived here, and `validateBinding` already refuses a binding whose authorization mode does not
+ * match its execution class — but there was no function that ANSWERED the question, so every caller
+ * that had to build a binding wrote the answer out by hand. The identity smoke path wrote
+ * `subscriptionCLISession` for every provider it was given, including a metered one, and nothing
+ * caught it because nothing validated a smoke binding.
+ *
+ * Derived from the execution class rather than listed per provider, so a provider added later is
+ * answered by the class it is reached through and cannot be forgotten here.
+ */
+export function authorizationModeForProvider(provider: ProviderID): AuthorizationMode {
+  switch (executionClassOf(provider)) {
+    case 'localRuntime': return 'none';
+    case 'subscriptionCLI': return 'subscriptionCLISession';
+    case 'meteredAPI':
+      // OpenCode is the one metered provider that holds its own credential: Cernum never reads it,
+      // never passes one, and cannot say where it lives. The published HTTP APIs are reached with a
+      // key the user supplied, which this engine looks for in the environment first.
+      return provider === 'opencodeCLI' ? 'toolManagedCredential' : 'apiKeyEnvironment';
+  }
+}
+
 export function isFrontier(binding: ProviderBinding): boolean {
   return binding.executionClass !== 'localRuntime';
 }
@@ -328,7 +353,24 @@ export function describeBinding(binding: ProviderBinding): string {
  * filled in with a plausible number, or its execution class corrected to match its provider, would
  * be a binding that says something nobody checked.
  */
-export function validateBinding(binding: ProviderBinding): void {
+export interface BindingValidationOptions {
+  /**
+   * Permit a metered binding that carries no pricing snapshot.
+   *
+   * THE ONLY CALLER ALLOWED TO PASS THIS IS THE IDENTITY SMOKE PATH, and only when the person
+   * running it typed `--authorize-unpriced-metered` for an exactly-one-request scope. A campaign
+   * never passes it: a campaign is many requests whose total cannot be bounded without a price, and
+   * refusing to run one it cannot price is the guard `meteredWithoutPricing` exists to be.
+   *
+   * It relaxes the PRICE requirement and nothing else. The binding is still metered, still records
+   * `meteredAPI`, and its cost is still recorded as UNAVAILABLE rather than as zero — see
+   * `smoke-binding.ts`, where the acknowledgement that the provider may bill an amount nobody can
+   * state is written down beside the request it authorises.
+   */
+  allowUnpricedMetered?: boolean;
+}
+
+export function validateBinding(binding: ProviderBinding, options: BindingValidationOptions = {}): void {
   const expectedClass = executionClassOf(binding.provider);
   if (binding.executionClass !== expectedClass) {
     throw new ProviderBindingError('executionClassMismatch',
@@ -366,7 +408,7 @@ export function validateBinding(binding: ProviderBinding): void {
         + 'no exception. Never backfill the requested identifier into the returned-model field.');
     }
   }
-  if (isMetered(binding) && binding.pricing === null) {
+  if (isMetered(binding) && binding.pricing === null && !options.allowUnpricedMetered) {
     throw new ProviderBindingError('meteredWithoutPricing',
       `${binding.candidate}: a metered binding without a pricing snapshot cannot have its cost estimated, and Cernum `
       + 'refuses a paid run it cannot price rather than guessing at what it will spend');

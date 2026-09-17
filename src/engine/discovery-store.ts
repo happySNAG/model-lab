@@ -17,6 +17,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DiscoveredFrontierModel } from './discovery';
 import { IdentitySmokeResult } from './identity-smoke';
+import {
+  OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_PROOF_PATH, OPENCODE_SUPERSEDED_NO_PROOF_PATH_FRAGMENT,
+} from './opencode-cli';
 import { ProviderID } from './provider';
 
 /**
@@ -38,14 +41,17 @@ export function discoveryStorePath(root: string): string {
   return path.join(root, '.providers', 'discovered.json');
 }
 
-export function readDiscoveryStore(root: string): DiscoveryEvidence {
+export function readDiscoveryStore(root: string, now = new Date()): DiscoveryEvidence {
   const file = discoveryStorePath(root);
   if (!fs.existsSync(file)) return { writtenAt: '', models: [] };
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DiscoveryEvidence>;
+    // CORRECTED ON THE WAY OUT, so every surface reads the same corrected text and no caller has to
+    // remember to ask. The original is preserved on the row; the next write persists both.
+    const { models } = supersedeStaleOpenCodeEvidence(Array.isArray(parsed.models) ? parsed.models : [], now);
     return {
       writtenAt: typeof parsed.writtenAt === 'string' ? parsed.writtenAt : '',
-      models: Array.isArray(parsed.models) ? parsed.models : [],
+      models,
     };
   } catch {
     // A store that does not parse establishes NOTHING. Returning an empty one makes every candidate
@@ -60,6 +66,61 @@ export function writeDiscoveryStore(root: string, models: DiscoveredFrontierMode
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const evidence: DiscoveryEvidence = { writtenAt: at.toISOString(), models };
   fs.writeFileSync(file, JSON.stringify(evidence, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * THE RELEASE THAT ESTABLISHED THE CORRECTION. Written onto every row it touches, so a reader can
+ * tell a row that was never wrong from one that was fixed, and by what.
+ */
+export const OPENCODE_EVIDENCE_CORRECTION_RELEASE = 'v0.2.4';
+
+export const OPENCODE_EVIDENCE_CORRECTION_NOTE =
+  // DELIBERATELY DOES NOT QUOTE THE SUPERSEDED SENTENCE. The matcher above looks for that exact
+  // fragment, and a correction note containing it would be a row that looks contaminated forever —
+  // caught today only by the `supersededEvidence` guard, which is one guard too few for a string that
+  // could be re-derived by any later code path. The old text is preserved on the row, where a reader
+  // who wants it can read it and no matcher trips over it.
+  'SUPERSEDED BY ' + OPENCODE_EVIDENCE_CORRECTION_RELEASE + '. The evidence this row was written with said Cernum had '
+  + 'no way to execute an OpenCode request and therefore no way to prove an OpenCode model. That was true when it was written '
+  + 'and stopped being true in v0.2.3, when the adapter shipped; the sentence was left behind and kept being written '
+  + 'into this store afterwards. The original text is preserved verbatim in `supersededEvidence` — a record that was '
+  + 'wrong is still a record — and the corrected statement of what does and does not prove an OpenCode model follows. '
+  + 'THE AVAILABILITY OF THIS ROW IS UNCHANGED: correcting a sentence proves nothing, and nothing here promotes a '
+  + 'model. Re-run discovery, or an authorized smoke, to establish the current position.';
+
+/**
+ * Correct OpenCode rows whose evidence carries the superseded v0.2.2 sentence.
+ *
+ * FOUR THINGS IT DELIBERATELY DOES NOT DO.
+ *
+ *   It does not delete a row. The contaminated records are evidence of what this tool said and when,
+ *   and deleting them would make the store agree with the current build retroactively.
+ *   It does not change `availability`. A wrong sentence about the proof PATH says nothing about
+ *   whether this credential can call this model, so correcting it promotes nothing.
+ *   It does not change `discoveredAt`. The row still describes the moment it was written; a
+ *   correction is not a re-observation, and backdating freshness through an edit would be worse than
+ *   the sentence it fixed.
+ *   It does not touch a row it has already corrected, so reading the store a hundred times produces
+ *   one correction rather than a hundred nested ones.
+ */
+export function supersedeStaleOpenCodeEvidence(models: DiscoveredFrontierModel[], now = new Date()):
+  { models: DiscoveredFrontierModel[]; supersededCount: number } {
+  const correctedAt = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  let supersededCount = 0;
+  const corrected = models.map((model) => {
+    if (model.provider !== 'opencodeCLI') return model;
+    if (model.supersededEvidence !== undefined) return model;
+    if (!model.evidence.includes(OPENCODE_SUPERSEDED_NO_PROOF_PATH_FRAGMENT)) return model;
+    supersededCount += 1;
+    return {
+      ...model,
+      supersededEvidence: model.evidence,
+      evidenceCorrectedAt: correctedAt,
+      evidenceCorrectedBy: OPENCODE_EVIDENCE_CORRECTION_RELEASE,
+      evidence: `${OPENCODE_EVIDENCE_CORRECTION_NOTE} ${OPENCODE_LISTING_IS_A_CATALOGUE} ${OPENCODE_PROOF_PATH}`,
+    };
+  });
+  return { models: corrected, supersededCount };
 }
 
 /** How old one row's evidence is, in milliseconds, or undefined when it carries no usable timestamp. */
@@ -134,7 +195,16 @@ export function modelsFromSmokes(results: IdentitySmokeResult[],
       displayName: displayNames.get(result.requestedModelID) ?? result.requestedModelID,
       availability: keepExisting ? existing.availability : availability,
       evidence: keepExisting ? existing.evidence
-        : `identity smoke test at ${result.attemptedAt} (effort ${result.effort}): ${result.evidence}`,
+        : `identity smoke test at ${result.attemptedAt} (effort ${result.effort}, ${result.billingBasis}, `
+          + `identity state ${result.identityState}): ${result.evidence}`
+          // A metered proof COST SOMETHING, and the row says so beside the proof rather than leaving a
+          // later reader to discover from a bill that the evidence was not free to obtain.
+          + (result.billingBasis === 'meteredAPI'
+            ? ` This request was billed per token against your own credential; its charge is `
+              + `${result.marginalAPIChargeMicroUSD.provenance === 'unavailable'
+                ? 'UNAVAILABLE — not zero' : `$${((result.marginalAPIChargeMicroUSD.value ?? 0) / 1_000_000).toFixed(6)} `
+                  + `(${result.marginalAPIChargeMicroUSD.provenance})`}.`
+            : ''),
       verifiedModelID: result.verdict === 'proven' ? result.reportedModelID : (keepExisting ? existing.verifiedModelID : ''),
       desiredEfforts: [...efforts].sort(),
       discoveredAt: result.attemptedAt,

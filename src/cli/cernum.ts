@@ -32,6 +32,8 @@ import {
   guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink,
   modelStoreBaseline, normalizeEndpoint, offlineProviderStatuses, DISCOVERABLE_PROVIDERS, parseCeilingToMicroUSD,
   providersWithExecutionAdapter, billingBasisOf, executionClassOf, buildAdapter,
+  METERED_AUTHORIZATION_NOTE, UNPRICED_METERED_DISCLOSURE, authorizationClassOf, authorizeSmoke,
+  buildSmokeBinding, isSmokeAuthorizationRefusal, projectedMeteredBoundMicroUSD, renderMicroUSD,
   plannedWorkFor, pricingFor, privacyDisclosure, residencyDisclosure, steppingClock, syntheticCandidate,
   terminateAllCLIProcesses,
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
@@ -44,7 +46,7 @@ import {
   applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
-import { CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
+import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
 const DEFAULT_ENDPOINT = environmentOverride('OLLAMA_ENDPOINT') ?? 'http://127.0.0.1:11434';
@@ -132,6 +134,60 @@ function parse(argv: string[]): { command: string; positional: string[]; options
     else options[name] = true;
   }
   return { command, positional, options, unknown };
+}
+
+/**
+ * Options whose VALUE has a shape, and what that shape is.
+ *
+ * `parse` knows whether an option takes a value. It cannot know that `--max-attempts banana` is not
+ * a count, and before v0.2.4 nothing else looked either: `Number(options['max-attempts'] ?? 0)`
+ * turned it into `NaN`, `NaN > 0` is false, and the cap silently did not apply — on a command whose
+ * whole purpose for a cap is to keep a spending run small. A malformed value is refused here, beside
+ * the unknown-option refusal, before any command body exists to misread it.
+ */
+const OPTION_VALUE_SHAPES: Record<string, { kind: 'positiveInteger' | 'dollars'; hint: string }> = {
+  'max-attempts': { kind: 'positiveInteger', hint: 'a whole number of requests, like 1 or 6' },
+  repeats: { kind: 'positiveInteger', hint: 'a whole number of passes per case, like 1' },
+  ceiling: { kind: 'dollars', hint: 'an amount in dollars, like 5 or 5.00' },
+  'authorize-metered': { kind: 'dollars', hint: 'an amount in dollars, like 0.50 or 5.00' },
+};
+
+/**
+ * Refuse a malformed option before dispatch. Prints, and does nothing else.
+ *
+ * Three refusals, and every one of them is a refusal rather than a repair: a value-taking option
+ * given no value, a bare flag given a value, and a value that is not the shape the option is read
+ * as. Repairing any of them would mean deciding what somebody meant by something they did not type.
+ */
+function validateOptionValues(command: string, spec: CommandSpec, options: Options): void {
+  const declared = new Map(acceptedOptions(spec).map((option) => [option.name, option]));
+  for (const [name, value] of Object.entries(options)) {
+    const option = declared.get(name);
+    if (!option) continue;
+    if (option.takesValue && value === true) {
+      fail(`${command}: --${name} needs a value and was given none.\n`
+        + `  ${option.summary}\n`
+        + `nothing was run. See '${TERMINAL_COMMAND} ${command} --help'.`, 2);
+    }
+    if (!option.takesValue && typeof value === 'string') {
+      fail(`${command}: --${name} is a flag and takes no value, but was given '${value}'.\n`
+        + `nothing was run. See '${TERMINAL_COMMAND} ${command} --help'.`, 2);
+    }
+    if (typeof value !== 'string') continue;
+    if (value.trim().length === 0) {
+      fail(`${command}: --${name} was given an empty value.\n`
+        + `nothing was run. See '${TERMINAL_COMMAND} ${command} --help'.`, 2);
+    }
+    const shape = OPTION_VALUE_SHAPES[name];
+    if (!shape) continue;
+    const ok = shape.kind === 'positiveInteger'
+      ? /^\d+$/.test(value.trim()) && Number(value.trim()) > 0
+      : /^\$?\d+(\.\d{1,6})?$/.test(value.trim());
+    if (!ok) {
+      fail(`${command}: --${name} was given '${value}', which is not ${shape.hint}.\n`
+        + `nothing was run. See '${TERMINAL_COMMAND} ${command} --help'.`, 2);
+    }
+  }
 }
 
 /** `<command> --help`: what it is, what it costs, and every option it will accept. Prints nothing else. */
@@ -381,7 +437,11 @@ async function commandProviders(options: Options): Promise<void> {
     say('');
   }
   say(`Run discovery explicitly: ${TERMINAL_COMMAND} discover [${DISCOVERABLE_PROVIDERS.join('|')}]`);
-  say(`Prove a subscription model by asking it once:  ${TERMINAL_COMMAND} smoke [claudeCLI|codexCLI]   (spends allowance)`);
+  // DERIVED, AND WITH THE SCOPE IN IT. This line named two providers by hand — so it omitted
+  // OpenCode, which this build can execute — and its bracket syntax implied a default this command
+  // does not have and will not get.
+  say(`Prove a model by asking it once:  ${TERMINAL_COMMAND} smoke <${SMOKEABLE_PROVIDERS.join('|')}> --models <id,…>`);
+  say(`  See what that would send without sending it:  add --dry-run.   Full options: ${TERMINAL_COMMAND} help smoke`);
 }
 
 /** Credential configuration, masked. Shows that something is set and how long it is, and nothing else. */
@@ -409,16 +469,6 @@ async function commandCredentials(): Promise<void> {
  * here rather than failing later with an adapter that was never built.
  */
 const SMOKEABLE_PROVIDERS: ProviderID[] = providersWithExecutionAdapter();
-
-/** What running this provider costs, in the words the manifest uses. Printed before anything is sent. */
-function authorizationClassOf(provider: ProviderID): string {
-  const basis = billingBasisOf(executionClassOf(provider));
-  return basis === 'subscriptionIncluded'
-    ? 'subscriptionIncluded — consumes a finite plan allowance you already pay for. Not free.'
-    : basis === 'meteredAPI'
-      ? 'meteredAPI — billed per token against your own credential.'
-      : String(basis);
-}
 
 /**
  * What `discover` with no argument asks.
@@ -479,18 +529,31 @@ async function commandDiscover(positional: string[], options: Options): Promise<
 /**
  * Prove — or fail to prove — that this account can call a model, by asking it once who it is.
  *
- * THIS SPENDS ALLOWANCE. One request per candidate and effort level, carrying a nine-word prompt.
- * It is a separate command from `discover` for exactly that reason: `discover` runs a tool's own
- * read-only subcommands and costs nothing, and this one talks to a model.
+ * THIS SENDS REAL REQUESTS. One per candidate and effort level, carrying a nine-word prompt. It is a
+ * separate command from `discover` for exactly that reason: `discover` runs a tool's own read-only
+ * subcommands and costs nothing, and this one talks to a model.
  *
- * It exists because NEITHER subscription CLI can answer "which models may this account call", though
- * they fail to answer it differently. `claude` has no model-listing command at all. `codex` has one
- * — `codex debug models` — but it renders a CATALOGUE of what the client knows about, and the
- * service refuses models that appear in it, so a listing proves nothing about this account.
+ * It exists because no CLI this engine drives can answer "which models may this account call", though
+ * they fail to answer it differently. `claude` has no model-listing command at all. `codex` has one —
+ * `codex debug models` — but it renders a CATALOGUE of what the client knows about, and the service
+ * refuses models that appear in it. `opencode models` is read from a cached catalogue of thousands of
+ * models nobody has called. So the only honest route is to ask, once, and write down what came back.
  *
- * So the only honest route is to ask, once, and write down what came back — and for Codex even that
- * stops short of proof, because `codex exec` names no model in its reply. A Codex smoke establishes
- * that SOMETHING answered; it cannot establish what.
+ * -- WHAT v0.2.4 CHANGED, AND THE AUDIT THAT FOUND IT -------------------------------------------
+ *
+ * A dry-run audit on a MacBook Pro read this command's preview against the record it would write and
+ * found them describing different requests. The preview derived the billing basis from the provider
+ * registry; the request was built by a local helper that wrote `subscriptionCLI`,
+ * `subscriptionIncluded` and `subscriptionCLISession` as literals for every provider. A live OpenCode
+ * smoke would therefore have spent metered money and recorded a $0 marginal charge covered by a
+ * subscription. Nothing caught it, because the smoke path was the one binding-building path in this
+ * engine that never ran `validateBinding`.
+ *
+ * There is now ONE binding per request, built by `buildSmokeBinding`, validated where it is built.
+ * The preview renders it, the request is sent under it, the evidence file carries it, and the
+ * discovery row is derived from it. And a metered request is refused outright unless it was
+ * authorized by name — with a ceiling where a price exists, and with an explicit written
+ * acknowledgement of an unknown amount, for exactly one request, where none does.
  */
 async function commandSmoke(positional: string[], options: Options): Promise<void> {
   const root = String(options.root ?? defaultCampaignRoot());
@@ -546,53 +609,179 @@ async function commandSmoke(positional: string[], options: Options): Promise<voi
   const pairs = requested.flatMap((entry) => entry.desiredEfforts.map((effort) => ({ entry, effort })));
   const planned = budget > 0 ? pairs.slice(0, budget) : pairs;
 
-  // WHAT WOULD BE SENT, ALWAYS PRINTED BEFORE ANYTHING IS SENT. Under --dry-run this is the whole
-  // command; otherwise it is the disclosure that precedes the first request.
+  // THE BINDINGS, BUILT ONCE, HERE. Everything below — the preview, the authorization decision, the
+  // requests themselves, the evidence file and the discovery rows — reads these objects. There is no
+  // second description of this run for any of them to disagree with.
+  const pricingFile = readPricingFile(options);
+  const bindings = planned.map(({ entry, effort }) => {
+    if (!EFFORT_LEVELS.includes(effort as EffortLevel)) {
+      fail(`'${effort}' is not an effort level this engine models. Valid: ${EFFORT_LEVELS.join(', ')}.`, 2);
+    }
+    try {
+      return buildSmokeBinding({
+        provider: entry.provider,
+        modelID: entry.modelID,
+        effort: effort as EffortLevel,
+        pricing: pricingFor(pricingFile, entry.provider, entry.modelID) ?? null,
+      });
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error), 2);
+    }
+  });
+
+  // TELEMETRY IS CODEX-ONLY, AND IS REFUSED BEFORE ANYTHING IS SENT RATHER THAN IGNORED IN FLIGHT.
+  // Until v0.2.4 `--otlp-observer` was not even accepted here, and the adapter this command built was
+  // constructed with no options at all — so the flag would have been inert had it been.
+  const otlpDirectory = options['otlp-observer'] === undefined ? undefined : String(options['otlp-observer']);
+  if (otlpDirectory !== undefined && provider !== 'codexCLI') {
+    fail(`--otlp-observer was given for ${provider}. Only the Codex CLI exposes an exporter this engine reads, so `
+      + 'nothing would export telemetry to the collector. No collector was started and nothing was sent.', 2);
+  }
+
   const dryRun = options['dry-run'] === true;
+  const metered = bindings.some((binding) => binding.billingBasis === 'meteredAPI');
+  const ceilingMicroUSD = options['authorize-metered'] === undefined ? undefined
+    : parseSmokeCeiling(String(options['authorize-metered']));
+  const authorization = authorizeSmoke({
+    bindings,
+    ceilingMicroUSD,
+    unpricedAcknowledged: options['authorize-unpriced-metered'] === true,
+  });
+
+  // WHAT WOULD BE SENT, ALWAYS PRINTED BEFORE ANYTHING IS SENT. Under --dry-run this is the whole
+  // command; otherwise it is the disclosure that precedes the first request. ONE renderer, so the
+  // preview and the live disclosure cannot drift.
   say(dryRun ? 'DRY RUN — nothing below is sent, and no allowance is consumed.' : 'About to send real requests.');
   say('');
   say(`  provider              ${PROVIDER_LABELS[provider]} (${provider})`);
   say(`  candidates            ${requested.length} (${named.length > 0 ? 'named with --models' : "--all-ladder: this provider's whole ladder"})`);
   say(`  requests to be sent   ${planned.length}${budget > 0 && pairs.length > planned.length ? ` (capped by --max-attempts from ${pairs.length})` : ''}`);
-  say(`  authorization class   ${authorizationClassOf(provider)}`);
+  say(`  execution class       ${bindings[0].executionClass}`);
+  say(`  authorization class   ${authorizationClassOf(bindings[0])}`);
+  say(`  authorization mode    ${bindings[0].authorizationMode}`);
+  if (otlpDirectory !== undefined) say(`  telemetry             loopback OTLP collector in ${path.resolve(otlpDirectory)}`);
   say('');
-  for (const { entry, effort } of planned) {
-    say(`    ${entry.modelID.padEnd(24)} effort ${String(effort).padEnd(8)} 1 request`);
+  for (const binding of bindings) {
+    const bound = projectedMeteredBoundMicroUSD(binding);
+    say(`    ${binding.requestedModelID.padEnd(24)} effort ${binding.effort.padEnd(8)} 1 request`
+      + `   ${binding.billingBasis}`
+      + (binding.billingBasis !== 'meteredAPI' ? ''
+        : bound === undefined ? '  cost UNAVAILABLE (no price supplied)'
+          : `  worst case ${renderMicroUSD(bound)}`));
+    if (binding.pricing) say(`      prices: ${binding.pricing.source} (captured ${binding.pricing.capturedAt})`);
   }
-  say('');
-  if (dryRun) {
-    say('No request was sent. Re-run without --dry-run to send the requests listed above.');
-    return;
-  }
-  say(`${planned.length} identity smoke test(s). Each one sends a single minimal prompt to a real model and`);
-  say('consumes subscription allowance. Nothing here is a benchmark and no campaign is created.');
   say('');
 
-  const results: IdentitySmokeResult[] = [];
-  for (const { entry, effort } of planned) {
-    if (!EFFORT_LEVELS.includes(effort as EffortLevel)) {
-      fail(`'${effort}' is not an effort level this engine models. Valid: ${EFFORT_LEVELS.join(', ')}.`);
+  // THE AUTHORIZATION POSITION, STATED IN BOTH MODES. A dry-run reports what a live run would need
+  // rather than refusing: the whole point of a preview is that a person can read the requirement
+  // before they are standing in front of it.
+  if (isSmokeAuthorizationRefusal(authorization)) {
+    if (!dryRun) {
+      fail(`this run is not authorized.\n${authorization.message}`, 6);
     }
-    const binding = smokeBinding(entry.provider, entry.modelID, effort as EffortLevel);
-    // THE ADAPTER COMES FROM THE SAME FACTORY A CAMPAIGN USES. This line used to construct a
-    // SubscriptionCLIAdapter unconditionally, which is why adding OpenCode support to the engine
-    // would not have reached this command: a smoke test would have driven `opencode` with Claude's
-    // arguments. `buildAdapter` is refused above for any provider it cannot build.
-    const adapter = buildAdapter(entry.provider);
-    if (!adapter) fail(`no execution adapter for ${entry.provider}; this is a bug, and nothing was sent.`, 70);
-    const result = await identitySmokeTest(binding, adapter);
-    results.push(result);
-    say(`  ${describeSmoke(result)}`);
-    for (const line of wrap(result.evidence, 74)) say(`      ${line}`);
-    say(`      tokens in ${renderQuantity(result.inputTokens)} · visible out ${renderQuantity(result.visibleOutputTokens)}`
-      + ` · reasoning ${renderQuantity(result.reasoningTokens)}`);
-    say(`      wall ${renderQuantity(result.totalWallClockMilliseconds)}ms · first visible output `
-      + `${renderQuantity(result.timeToFirstVisibleTokenMilliseconds)}ms`);
-    say(`      marginal API charge ${renderMoney(result.marginalAPIChargeMicroUSD)} (no card is billed)`);
-    say(`      plan allowance consumed, at list value: ${renderMoney(result.subscriptionIncludedUsageMicroUSD)}`
-      + (result.subscriptionIncludedUsageMicroUSD.provenance === 'unavailable' ? '' : ' — a zero charge is not a zero cost'));
-    for (const note of result.notEnforceable) for (const line of wrap(note, 70)) say(`      ! ${line}`);
+    say('  AUTHORIZATION REQUIRED — a live run of this scope would be REFUSED as it stands:');
+    for (const paragraph of authorization.message.split('\n')) {
+      if (paragraph.trim().length === 0) { say(''); continue; }
+      // Indented lines in these messages are already laid out as commands to type; wrapping them
+      // would break the thing a person is meant to copy.
+      if (paragraph.startsWith('  ')) { say(`    ${paragraph}`); continue; }
+      for (const line of wrap(paragraph, 72)) say(`    ${line}`);
+    }
     say('');
+  } else {
+    say(`  authorization         ${authorization.kind}`);
+    for (const line of wrap(authorization.statement, 70)) say(`    ${line}`);
+    say('');
+  }
+
+  if (dryRun) {
+    say(isSmokeAuthorizationRefusal(authorization)
+      ? 'No request was sent, and none would be: this scope is not authorized as it stands. Supply the '
+        + 'authorization named above, then re-run with --dry-run again to confirm before sending anything.'
+      : 'No request was sent. Re-run without --dry-run to send the requests listed above.');
+    return;
+  }
+
+  if (metered) {
+    // Said again, immediately before the first request, because the line between "previewed" and
+    // "sent" is the line money crosses.
+    for (const line of wrap(METERED_AUTHORIZATION_NOTE, 74)) say(`  ${line}`);
+    if (!isSmokeAuthorizationRefusal(authorization) && authorization.kind === 'unpricedAcknowledged') {
+      say('');
+      for (const line of wrap(UNPRICED_METERED_DISCLOSURE, 74)) say(`  ${line}`);
+    }
+    say('');
+  }
+  say(`${planned.length} identity smoke test(s). Each one sends a single minimal prompt to a real model.`);
+  say('Nothing here is a benchmark and no campaign is created.');
+  say('');
+
+  const observer = otlpDirectory === undefined ? undefined : await OTLPObserver.start({
+    evidenceFile: path.join(otlpDirectory, 'smoke-otlp-payloads.redacted.jsonl'),
+  });
+  if (observer) {
+    say(`OTLP observer on ${observer.endpoint} — loopback only, no outbound connection.`);
+    say('  Reading: the reasoning effort the tool says it applied, and its token decomposition.');
+    say('  NOT reading identity: the telemetry names the model this client REQUESTED, which is not');
+    say('  a model naming itself. A Codex smoke stays requestAcceptedIdentityUnverifiable.');
+    say('  Spans arrive a few seconds after a request closes, so a turn may still be pending when');
+    say('  its result prints; the correlation key on each result is how it is collected afterwards.');
+    say('  Identifiers (user.email, user.account_id, conversation.id) are redacted at ingest.');
+    say('');
+  }
+
+  const results: IdentitySmokeResult[] = [];
+  try {
+    for (const binding of bindings) {
+      // THE ADAPTER COMES FROM THE SAME FACTORY A CAMPAIGN USES, AND NOW WITH THE SAME OPTIONS. This
+      // line used to construct one with no options, which is why `--otlp-observer` could not have
+      // worked here even once it was accepted.
+      const adapter = buildAdapter(binding.provider, process.env, { otlp: observer });
+      if (!adapter) fail(`no execution adapter for ${binding.provider}; this is a bug, and nothing was sent.`, 70);
+      const result = await identitySmokeTest(binding, adapter);
+      results.push(result);
+      say(`  ${describeSmoke(result)}`);
+      for (const line of wrap(result.evidence, 74)) say(`      ${line}`);
+      say(`      identity state ${result.identityState} · binding ${result.billingBasis} · auth ${result.authorizationMode}`);
+      say(`      tokens in ${renderQuantity(result.inputTokens)} · visible out ${renderQuantity(result.visibleOutputTokens)}`
+        + ` · reasoning ${renderQuantity(result.reasoningTokens)}`);
+      say(`      wall ${renderQuantity(result.totalWallClockMilliseconds)}ms · first visible output `
+        + `${renderQuantity(result.timeToFirstVisibleTokenMilliseconds)}ms · retries ${result.retryCount}`);
+      say(`      effort applied, as the provider reported it: ${result.reportedEffort.length > 0 ? result.reportedEffort : 'not reported'}`);
+      if (result.telemetry) {
+        say(`      telemetry ${result.telemetry.correlated ? 'observed in flight' : 'pending — collect by correlation key'}`
+          + ` · key ${result.telemetry.correlationKey} · records ${result.telemetry.recordCount}`);
+        say(`      telemetry effort: turn ${result.telemetry.turnReasoningEffort ?? 'not reported'}`
+          + ` · request ${result.telemetry.requestReasoningEffort ?? 'not reported'}`);
+      }
+      say(`      marginal API charge ${renderMoney(result.marginalAPIChargeMicroUSD)}`
+        + (result.billingBasis === 'meteredAPI' ? ' — billed to your own credential' : ' (no card is billed)'));
+      // The allowance line is printed only where there IS an allowance. Rendering
+      // `subscriptionIncludedUsageMicroUSD` for a metered row under the words "plan allowance
+      // consumed" would describe a subscription this candidate does not have.
+      if (result.billingBasis === 'subscriptionIncluded') {
+        say(`      plan allowance consumed, at list value: ${renderMoney(result.subscriptionIncludedUsageMicroUSD)}`
+          + (result.subscriptionIncludedUsageMicroUSD.provenance === 'unavailable' ? '' : ' — a zero charge is not a zero cost'));
+      } else {
+        say('      plan allowance consumed: none — this is not a subscription, it is billed per token');
+      }
+      for (const note of result.notEnforceable) for (const line of wrap(note, 70)) say(`      ! ${line}`);
+      say('');
+    }
+  } finally {
+    if (observer) {
+      const summary = await observer.stop();
+      say('OTLP observer stopped.');
+      say(`  payloads ${summary.payloadCount} · conversations ${summary.conversationCount} · `
+        + `observed in-flight ${summary.correlatedCount} · identifiers redacted ${summary.redactionCount} `
+        + `(${summary.distinctIdentifiers} distinct)`);
+      say(`  evidence: ${summary.evidenceFile}`);
+      say(`  join table: ${summary.indexFile} — keyed by the correlation key on each result`);
+      say(`  leak audit: ${summary.leakAuditClean ? 'clean — nothing email-shaped survived redaction'
+        : `FAILED — ${summary.leaks.length} identifier(s) reached the file`}`);
+      if (!summary.leakAuditClean) say('  *** The evidence file must not be shared until that is resolved. ***');
+      say('');
+    }
   }
 
   // Written through the store, with the timestamp a later campaign checks for staleness. Nothing
@@ -607,17 +796,22 @@ async function commandSmoke(positional: string[], options: Options): Promise<voi
   //
   // It is written OUTSIDE the repository by whoever runs this, and it carries no account identifier:
   // the session fields are dropped at the parser, and every answer and error string has already been
-  // through redaction. What it does carry is each verdict with the numbers behind it, which is what
-  // a later reader needs to check a claim rather than take it.
+  // through redaction. What it does carry is each verdict with the numbers behind it, THE BINDING
+  // EACH REQUEST WAS SENT UNDER, and the authorization it was sent on — which is what a later reader
+  // needs to check a claim rather than take it.
   const evidencePath = options.evidence === undefined ? undefined : String(options.evidence);
   if (evidencePath) {
     fs.mkdirSync(path.dirname(path.resolve(evidencePath)), { recursive: true });
     fs.writeFileSync(path.resolve(evidencePath), JSON.stringify({
       writtenAt: new Date().toISOString(),
+      cernumVersion: PRODUCT.version,
       note: 'Identity smoke evidence. No credential, session token, email address, organisation id or '
         + 'organisation name appears here: the authentication parser keeps only whether the session is signed in, '
-        + 'how, and the plan tier.',
+        + 'how, and the plan tier. The bindings below are the objects these requests were actually sent under, and '
+        + 'the same objects the preview was rendered from.',
       prompt: IDENTITY_SMOKE_PROMPT,
+      authorization,
+      bindings,
       results,
     }, null, 2) + '\n', 'utf8');
     say(`Evidence written to ${path.resolve(evidencePath)}`);
@@ -629,31 +823,14 @@ async function commandSmoke(positional: string[], options: Options): Promise<voi
   say('No campaign was created. A preflight establishes who answers; it does not measure anything.');
 }
 
-/** A binding for one smoke test: the smallest honest request this engine can describe. */
-function smokeBinding(provider: ProviderID, modelID: string, effort: EffortLevel) {
-  return {
-    candidate: `${provider}:${modelID}:${effort}`,
-    provider,
-    executionClass: 'subscriptionCLI' as const,
-    requestedModelID: modelID,
-    // UNVERIFIABLE IS THE HONEST STARTING STATE, and the whole point of the exercise is to change it.
-    // A smoke binding that claimed a verified identity before asking would be assuming its answer.
-    identityState: 'unverifiable' as const,
-    verifiedModelID: '',
-    identityEvidence: 'nothing has established this identity yet; that is what this request is for',
-    effort,
-    thinkingMode: 'runtimeDefault' as ThinkingMode,
-    sampling: { temperatureMilli: null, topPMilli: null, seed: null },
-    maxInputTokens: 1_024,
-    // The smallest budget worth naming. This CLI cannot enforce it — recorded on every attempt
-    // rather than pretended otherwise — but the prompt asks for one word.
-    maxOutputTokens: 16,
-    timeoutMilliseconds: 120_000,
-    retry: { maxRetries: 0, backoffMilliseconds: 0, retryOn: [] },
-    billingBasis: 'subscriptionIncluded' as const,
-    pricing: null,
-    authorizationMode: 'subscriptionCLISession' as const,
-  };
+/** A spending ceiling, in the dollars a person types. Refused rather than coerced. */
+function parseSmokeCeiling(text: string): number {
+  try {
+    return parseCeilingToMicroUSD(text);
+  } catch (error) {
+    return fail(`--authorize-metered ${text}: ${error instanceof Error ? error.message : String(error)}\n`
+      + 'Nothing was sent.', 2);
+  }
 }
 
 function renderQuantity(quantity: { provenance: string; value?: number }): string {
@@ -1102,8 +1279,11 @@ async function commandRun(positional: string[], options: Options, resuming: bool
     if (external.length === 0) {
       say('  Every candidate runs on this machine. No prompt would leave it.');
     } else {
-      const providers = [...new Set(external.map((binding) => binding.provider))];
-      say(`  authorization classes ${providers.map((provider) => `${provider}: ${authorizationClassOf(provider)}`).join('\n                        ')}`);
+      // One line per provider, rendered from an ACTUAL BINDING of that provider rather than from its
+      // id, so what is printed here describes the requests this campaign froze — pricing included.
+      const perProvider = external.filter((binding, index) =>
+        external.findIndex((other) => other.provider === binding.provider) === index);
+      say(`  authorization classes ${perProvider.map((binding) => `${binding.provider}: ${authorizationClassOf(binding)}`).join('\n                        ')}`);
       say('');
       say('  A real run would send prompts to an external provider and consume allowance.');
     }
@@ -1582,14 +1762,50 @@ async function commandUninstallCommand(): Promise<void> {
   }
 }
 
-function commandHelp(): void {
+/**
+ * `cernum help`, and `cernum help <command>`.
+ *
+ * THE TOPIC USED TO BE READ AND THROWN AWAY. `cernum help smoke` parsed `smoke` into the positional
+ * list and then called a function that took no arguments, so it printed the general index — a
+ * two-line entry mentioning only `--evidence` — for the one command in this program that spends
+ * money. --models, --dry-run and --all-ladder were all implemented and none of them appeared. A
+ * person looking for the safe way to preview a spending command was shown the least informative page
+ * the program has, which is how somebody ends up typing the command to find out what it does.
+ *
+ * It routes to `printCommandHelp` now: the SAME renderer `<command> --help` uses, reading the SAME
+ * table, so the three spellings cannot describe a command differently.
+ */
+function commandHelp(topic: string[] = []): void {
+  if (topic.length > 1) {
+    fail(`one topic at a time, but ${topic.length} were named: ${topic.join(', ')}.\n`
+      + `Try '${TERMINAL_COMMAND} help ${topic[0]}'.`, 2);
+  }
+  if (topic.length === 1) {
+    const name = topic[0];
+    // `help help` is the one topic that prints the general index rather than a page about itself,
+    // because that is what a person typing it means.
+    if (name === 'help') return commandGeneralHelp();
+    const spec = commandSpec(name);
+    if (!spec) {
+      fail(`no command named '${name}', so there is no help for it.\n`
+        + `Commands: ${COMMAND_SPECS.map((entry) => entry.name).join(', ')}\n`
+        + 'Nothing was run.', 2);
+    }
+    return printCommandHelp(spec);
+  }
+  return commandGeneralHelp();
+}
+
+function commandGeneralHelp(): void {
   say(`${PRODUCT.name} benchmark engine · ${TERMINAL_COMMAND} ${PRODUCT.version}`);
   say('');
   say('  providers                       every provider\'s status, WITHOUT contacting any of them');
   say('  discover [<provider>]           ask a provider what it is and what this account may call');
   say(`                                  ${DISCOVERABLE_PROVIDERS.join(', ')}; default ${DEFAULT_DISCOVERY.join(' and ')}`);
-  say('  smoke [<provider>]              prove a model by asking it once who it is — SPENDS ALLOWANCE');
-  say('                                  --evidence <file>  write the full per-request evidence there');
+  say('  smoke <provider> --models a,b   prove a model by asking it once who it is — SENDS REAL REQUESTS');
+  say('                                  --dry-run first: it prints every request and sends none.');
+  say('                                  A metered provider is refused without --authorize-metered.');
+  say(`                                  Full options: ${TERMINAL_COMMAND} help smoke`);
   say('  credentials                     which API keys are configured (masked; never printed)');
   say('  models                          list the models installed locally (read-only)');
   say('  suites                          list the benchmark suites this engine can plan');
@@ -1620,6 +1836,7 @@ function commandHelp(): void {
   say('  endpoints                       which benchmark endpoints are leased, and by which campaign');
   say('  unlock --endpoint <url>         release a crashed campaign\'s hold on an endpoint');
   say('');
+  say(`  help <command>                  everything one command accepts — same page as \`<command> --help\``);
   say('  where                           where campaigns live, and whether this command is installed');
   say('  install-command                 install this command for your account (one file, no PATH change)');
   say('  uninstall-command               remove exactly the file install-command wrote');
@@ -1876,21 +2093,26 @@ export async function main(argv: string[]): Promise<void> {
   // real allowance because help was a thing a command had to remember to check for, and `smoke`
   // reached its live default first.
   const spec = commandSpec(command);
-  if (command === 'help' || command === '--help' || command === '-h') return commandHelp();
-  if (!spec) {
+  const helpAsked = command === 'help' || command === '--help' || command === '-h';
+  if (!helpAsked && !spec) {
     fail(`unknown command '${command}'. Try '${TERMINAL_COMMAND} help'.`);
   }
-  if (options.help === true) {
-    printCommandHelp(spec);
-    return;
-  }
-  if (unknown.length > 0) {
-    // REFUSED, not ignored. An option this build does not understand may be the one carrying the
-    // limit, the ceiling or the scope, and guessing which is not something a parser may do.
+  if (spec && unknown.length > 0) {
+    // REFUSED, not ignored, AND REFUSED BEFORE HELP IS PRINTED. An option this build does not
+    // understand may be the one carrying the limit, the ceiling or the scope, and guessing which is
+    // not something a parser may do — including guessing that a person who also typed `--help` did
+    // not mean the flag it could not read. Refusing prints a message and sends nothing, so this is
+    // no less safe than answering help; it is only more honest about what was typed.
     const accepted = acceptedOptions(spec).map((option) => `--${option.name}`).join(', ');
     fail(`${command}: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}\n`
       + `accepted here: ${accepted}\n`
       + `nothing was run. See '${TERMINAL_COMMAND} ${command} --help'.`, 2);
+  }
+  if (spec) validateOptionValues(command, spec, options);
+  if (helpAsked) return commandHelp(positional);
+  if (options.help === true) {
+    printCommandHelp(spec!);
+    return;
   }
 
   switch (command) {
