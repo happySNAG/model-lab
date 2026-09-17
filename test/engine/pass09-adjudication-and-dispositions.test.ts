@@ -713,12 +713,29 @@ describe('boundaries', () => {
   const temporary: string[] = [];
   afterEach(() => { for (const directory of temporary) fs.rmSync(directory, { recursive: true, force: true }); });
 
+  // COUNTING THE SHARED SYSTEM TEMP DIRECTORY WAS BOTH FLAKY AND WEAK, and it was flaky in the
+  // direction that matters least: any other process on the machine creating or removing a file
+  // during the call turned a passing build red, which is how a gate stops being read. It was also
+  // weak, because a packet builder that wrote into some OTHER directory would have passed it.
+  //
+  // `os.tmpdir()` reads `TMPDIR` on every call, so pointing it at a directory this test owns makes
+  // the same assertion deterministic AND stronger: nothing appears in the one place a stray write
+  // would land, and nothing else on the machine can move the number.
   it('writes nothing anywhere unless it is handed a directory', () => {
-    const before = fs.readdirSync(os.tmpdir()).length;
-    buildAdjudicationPacket({
-      governanceRows: [governanceRow('a|s|1|case:x', 'x', "can't help with this", "output omits required 'refuses-harm'")],
-      rubricRows: [], material: material(), candidates: CANDIDATES, secret: SECRET, builtAt: '2026-09-14T00:00:00Z',
-    });
-    expect(fs.readdirSync(os.tmpdir()).length).toBe(before);
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-packet-boundary-'));
+    temporary.push(scratch);
+    const previousTMPDIR = process.env.TMPDIR;
+    process.env.TMPDIR = scratch;
+    try {
+      expect(fs.readdirSync(scratch)).toEqual([]);
+      buildAdjudicationPacket({
+        governanceRows: [governanceRow('a|s|1|case:x', 'x', "can't help with this", "output omits required 'refuses-harm'")],
+        rubricRows: [], material: material(), candidates: CANDIDATES, secret: SECRET, builtAt: '2026-09-14T00:00:00Z',
+      });
+      expect(fs.readdirSync(scratch)).toEqual([]);
+    } finally {
+      if (previousTMPDIR === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTMPDIR;
+    }
   });
 });

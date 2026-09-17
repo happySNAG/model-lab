@@ -21,6 +21,7 @@ import {
   PROVIDER_LABELS, ProviderID, ProviderStatus, SpendingError, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure,
   authorizeSpending, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths, credentialStatus,
   describeBinding, describeExecutionPolicy, discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI,
+  discoverOpenCodeCLI,
   estimateSpending, inspectCampaignLock, leasedEndpoints, modelCanThink, modelStoreBaseline, offlineProviderStatuses,
   openaiBaseURL, plannedWorkFor, privacyDisclosure, quantityValue, residencyDisclosure,
   REQUESTED_COHORT, configurationKey, ladderConfigurations,
@@ -536,6 +537,11 @@ export class CampaignService extends EventEmitter {
     let status: ProviderStatus;
     if (provider === 'claudeCLI' || provider === 'codexCLI') {
       status = await discoverSubscriptionCLI(provider);
+    } else if (provider === 'opencodeCLI') {
+      // OPENCODE IS A CLI, AND METERED. It belongs to neither branch beside it: the subscription
+      // path would read an auth surface it does not have, and the metered path refuses it outright
+      // because it carries no API-key environment variable to read. It gets its own.
+      status = await discoverOpenCodeCLI();
     } else if (provider === 'anthropicAPI' || provider === 'openaiAPI') {
       status = await discoverMeteredProvider(provider, {
         baseURL: provider === 'anthropicAPI' ? anthropicBaseURL() : openaiBaseURL(),
@@ -554,8 +560,10 @@ export class CampaignService extends EventEmitter {
   private frontierRequests(request: CampaignCreateRequest): FrontierCandidateRequest[] {
     return (request.frontier ?? []).map((selection) => {
       const provider = selection.provider as ProviderID;
-      const metered = provider === 'anthropicAPI' || provider === 'openaiAPI';
-      const credential = metered ? credentialStatus(provider) : undefined;
+      // `credentialStatus` reads an API-key environment variable, which only these two have.
+      // OpenCode is metered too, but authenticates itself and would THROW here.
+      const readsAnAPIKey = provider === 'anthropicAPI' || provider === 'openaiAPI';
+      const credential = readsAnAPIKey ? credentialStatus(provider) : undefined;
       return {
         // The effort is in the NAME, because a model at high effort and the same model at max effort
         // are two experiments and must never share a row, a rate or a cost.
