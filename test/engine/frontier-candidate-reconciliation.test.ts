@@ -20,7 +20,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  FORBIDDEN_SUBSTITUTIONS, HISTORICAL_IDENTITY_EVIDENCE, RECONCILED_IN_PASS_5C, REQUESTED_COHORT,
+  AUTHORIZED_COHORT, CERNUM_V2_ADDITIONS, FORBIDDEN_SUBSTITUTIONS, HISTORICAL_IDENTITY_EVIDENCE,
+  RECONCILED_IN_PASS_5C, REQUESTED_COHORT,
   assertCohortComplete, configurationKey, historicalEvidenceFor, ladderConfigurations, reconcileCohort,
 } from '../../src/engine/reconciliation';
 import {
@@ -82,10 +83,25 @@ describe('the requested cohort survives being forgotten', () => {
     expect(result.requestedCount).toBe(12);
   });
 
-  it('expands the ladder to the same 12 configurations the request names', () => {
-    expect(ladderConfigurations()).toHaveLength(12);
+  it('expands the ladder to exactly the authorised set: the 12 requested, plus what was added since', () => {
+    expect(ladderConfigurations()).toHaveLength(AUTHORIZED_COHORT.length);
     expect(new Set(ladderConfigurations().map(configurationKey)))
-      .toEqual(new Set(REQUESTED_COHORT.map(configurationKey)));
+      .toEqual(new Set(AUTHORIZED_COHORT.map(configurationKey)));
+  });
+
+  // THE FROZEN REQUEST IS NOT A PLACE TO PUT NEW THINGS. Accommodating a new candidate by editing
+  // Pass 5C's list would erase the baseline the whole comparison depends on, in the way hardest to
+  // notice -- by making a test go green.
+  it('keeps the Pass 5C request frozen at 12, and declares later additions separately', () => {
+    expect(REQUESTED_COHORT).toHaveLength(12);
+    expect(REQUESTED_COHORT.some((e) => e.provider === 'opencodeCLI')).toBe(false);
+    expect(CERNUM_V2_ADDITIONS.map((e) => e.modelID)).toEqual(['opencode/union-alpha']);
+    expect(AUTHORIZED_COHORT).toHaveLength(REQUESTED_COHORT.length + CERNUM_V2_ADDITIONS.length);
+  });
+
+  it('still reports a ladder entry nobody authorised as extra', () => {
+    const authorized = new Set(AUTHORIZED_COHORT.map(configurationKey));
+    expect(authorized.has(configurationKey({ provider: 'opencodeCLI', modelID: 'opencode/big-pickle', effort: 'none' } as any))).toBe(false);
   });
 
   it('does not throw while the cohort is whole', () => {

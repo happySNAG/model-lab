@@ -16,16 +16,16 @@ import { FIXTURE_ANTHROPIC_KEY } from '../secret-fixtures';
 const NEVER = () => { throw new Error('a provider was contacted by something that promised not to'); };
 
 describe('offline status contacts nothing', () => {
-  it('answers for all five providers without invoking anything', () => {
+  it('answers for all six providers without invoking anything', () => {
     const statuses = offlineProviderStatuses({
       environment: {},
       readKeychain: () => undefined,
       findExecutable: () => undefined,
     });
-    expect(statuses).toHaveLength(5);
+    expect(statuses).toHaveLength(6);
     for (const status of statuses) expect(status.probe).toBe('offline');
     expect(statuses.map((status) => status.provider))
-      .toEqual(['ollama', 'claudeCLI', 'codexCLI', 'anthropicAPI', 'openaiAPI']);
+      .toEqual(['ollama', 'claudeCLI', 'codexCLI', 'opencodeCLI', 'anthropicAPI', 'openaiAPI']);
   });
 
   it('reports a missing CLI as not installed, and names what Cernum will and will not do', () => {

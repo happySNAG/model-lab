@@ -49,6 +49,31 @@ export const REQUESTED_COHORT: RequestedConfiguration[] = [
 ];
 
 /**
+ * Candidates authorised for Cernum V2, AFTER and SEPARATE FROM the frozen Pass 5C request.
+ *
+ * WHY THIS IS NOT APPENDED TO `REQUESTED_COHORT`. That list is the Pass 5C request as it was
+ * approved, and the whole point of declaring it independently is that it can be compared against
+ * what the ladder later became. Editing it to accommodate a new candidate would erase the very
+ * baseline the comparison depends on -- and it would do it in the way that is hardest to notice,
+ * by making the test go green.
+ *
+ * So a new candidate is declared here, under its own authority, and the ladder is reconciled against
+ * BOTH lists. Nothing is missing, nothing is extra, and an entry that appears in the ladder without
+ * appearing in either list is still reported as extra.
+ *
+ * UNION ALPHA IS NOT A MEMBER OF THE PASS 5C COHORT and must never be counted as one. It is reached
+ * through a METERED API rather than a subscription CLI, nothing has benchmarked it, and no Cernum
+ * campaign has ever run through OpenCode. Its presence here authorises Cernum to OFFER it; only
+ * discovery can make it selectable, and only a person can put it in a campaign.
+ */
+export const CERNUM_V2_ADDITIONS: RequestedConfiguration[] = [
+  { provider: 'opencodeCLI', modelID: 'opencode/union-alpha', displayName: 'Union Alpha', effort: 'none' },
+];
+
+/** Everything the ladder is allowed to contain: the frozen request, plus what was added since. */
+export const AUTHORIZED_COHORT: RequestedConfiguration[] = [...REQUESTED_COHORT, ...CERNUM_V2_ADDITIONS];
+
+/**
  * The two models Pass 5B lost, named explicitly.
  *
  * A test asserts these are in `REQUESTED_COHORT`, which is circular-looking and deliberate: it makes
@@ -97,10 +122,13 @@ export function ladderConfigurations(): { provider: ProviderID; modelID: string;
 /** Compare what was requested against what the ladder plans to ask for. */
 export function reconcileCohort(): CohortReconciliation {
   const ladder = new Set(ladderConfigurations().map(configurationKey));
-  const requested = new Set(REQUESTED_COHORT.map(configurationKey));
+  // MISSING is measured against the FROZEN Pass 5C request, because that is the list that must never
+  // quietly shrink. EXTRA is measured against everything authorised since, because a ladder entry
+  // nobody authorised is exactly as much of a defect as a requested one that vanished.
+  const authorized = new Set(AUTHORIZED_COHORT.map(configurationKey));
   return {
     missingFromLadder: REQUESTED_COHORT.filter((entry) => !ladder.has(configurationKey(entry))),
-    extraInLadder: ladderConfigurations().filter((entry) => !requested.has(configurationKey(entry))),
+    extraInLadder: ladderConfigurations().filter((entry) => !authorized.has(configurationKey(entry))),
     complete: REQUESTED_COHORT.every((entry) => ladder.has(configurationKey(entry))),
     requestedCount: REQUESTED_COHORT.length,
   };

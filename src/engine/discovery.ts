@@ -33,6 +33,11 @@ import { CredentialStatus, CredentialLookupOptions, credentialStatus, isMeteredP
 import { CLIResult, findExecutable, runCLI } from './cli-process';
 import { CodexAuthStatus, codexSubscriptionUsable, parseCodexDoctorAuth } from './codex-cli';
 import { redactSecrets } from './redaction';
+import {
+  OPENCODE_EXECUTABLE, OPENCODE_VERSION_ARGUMENTS, OPENCODE_MODELS_ARGUMENTS, OPENCODE_CREDENTIALS_ARGUMENTS,
+  UNION_ALPHA_MODEL_ID, parseOpenCodeVersion, parseOpenCodeModels, parseOpenCodeCredentials,
+  opencodeHasCredential, opencodeCredentialDisclosure, OPENCODE_SUPPORT_MATURITY, OPENCODE_COST_EXPLANATION,
+} from './opencode-cli';
 
 /** How far the truth about a provider has actually been established. */
 export type Reachability =
@@ -121,6 +126,11 @@ export interface ProviderStatus {
 const CLI_EXECUTABLE: Partial<Record<ProviderID, string>> = {
   claudeCLI: 'claude',
   codexCLI: 'codex',
+  // OPENCODE IS A CLI THAT IS BILLED LIKE AN API. It belongs in this map because it is reached by
+  // running an executable, and it is NOT `subscriptionCLI` because the credential it carries is a
+  // metered API key. Both halves matter, and the two branches below read this map rather than the
+  // execution class so neither half is lost. See `opencode-cli.ts`.
+  opencodeCLI: OPENCODE_EXECUTABLE,
 };
 
 /**
@@ -171,6 +181,19 @@ export const DESIRED_CANDIDATE_LADDER: { provider: ProviderID; modelID: string; 
   { provider: 'codexCLI', modelID: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', desiredEfforts: ['medium'] },
   { provider: 'codexCLI', modelID: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', desiredEfforts: ['medium', 'max'] },
   { provider: 'codexCLI', modelID: 'gpt-6-astra', displayName: 'GPT-6 Astra', desiredEfforts: ['medium', 'max'] },
+  // UNION ALPHA, ADDRESSED THE WAY OPENCODE ADDRESSES IT.
+  //
+  // `opencode/union-alpha` is not a Cernum convention laid over OpenCode's: OpenCode's own `--model`
+  // flag takes `provider/model`, and `opencode models` prints this exact string. The identifier is
+  // carried through unchanged so that what Cernum asks for and what OpenCode was told are the same
+  // bytes.
+  //
+  // It is born `unproven` like every other row here, and it is reached through a METERED API, so a
+  // campaign that selects it spends the user's own money per token. `desiredEfforts` is `none`
+  // because nothing has established which variants OpenCode accepts for this model, and asking for
+  // an effort level a provider does not have is how Pass 5 turned a correct 404 into a wrong
+  // conclusion.
+  { provider: 'opencodeCLI', modelID: UNION_ALPHA_MODEL_ID, displayName: 'Union Alpha', desiredEfforts: ['none'] },
 ];
 
 const LADDER_CAVEAT =
@@ -241,14 +264,19 @@ export function offlineProviderStatuses(options: OfflineStatusOptions = {}): Pro
       };
     }
 
-    if (executionClass === 'subscriptionCLI') {
-      const executable = CLI_EXECUTABLE[provider]!;
-      const executablePath = locate(executable);
+    // ANY provider reached by running an executable, whether it is billed as a subscription or as a
+    // metered API. Keyed off the executable map rather than the execution class, because OpenCode is
+    // both a CLI and metered, and an execution-class test would send it to the API-key branch below —
+    // where `credentialStatus` THROWS for a provider that has no environment variable to read.
+    const cliExecutable = CLI_EXECUTABLE[provider];
+    if (cliExecutable) {
+      const executablePath = locate(cliExecutable);
+      const metered = executionClass === 'meteredAPI';
       if (!executablePath) {
         return {
           ...base,
           reachability: 'notInstalled',
-          detail: `\`${executable}\` is not on this machine's PATH. Cernum drives the official CLI you installed and `
+          detail: `\`${cliExecutable}\` is not on this machine's PATH. Cernum drives the official CLI you installed and `
             + 'authenticated yourself — it never installs one, never reads its stored session, and never reaches the '
             + 'service any other way.',
         };
@@ -257,9 +285,9 @@ export function offlineProviderStatuses(options: OfflineStatusOptions = {}): Pro
         ...base,
         reachability: 'unknown',
         executablePath,
-        detail: `\`${executable}\` is installed at ${executablePath}. Whether it is signed in, and which models this `
-          + 'subscription may call, can only be learned by running it — so nothing here has, and nothing will until '
-          + 'you ask for discovery.',
+        detail: `\`${cliExecutable}\` is installed at ${executablePath}. Whether it is signed in, and which models it `
+          + `may call, can only be learned by running it — so nothing here has, and nothing will until you ask for `
+          + `discovery.${metered ? ' Requests through this provider are billed per token against your own key.' : ''}`,
       };
     }
 
@@ -639,6 +667,150 @@ export async function discoverMeteredProvider(provider: ProviderID, options: Dis
       detail: `the provider could not be reached: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
     };
   }
+}
+
+/**
+ * Ask OpenCode what it is, what it can reach, and whether it holds a credential.
+ *
+ * THREE READ-ONLY SUBCOMMANDS, NONE OF WHICH REACHES A MODEL: `--version`, `models`, and
+ * `providers list`. No inference is run and no token is spent, which is the same promise
+ * `discoverSubscriptionCLI` makes -- and it matters more here, because OpenCode is METERED and a
+ * discovery call that quietly invoked a model would spend the user's money to answer a status query.
+ *
+ * Every parser this calls refuses input it does not recognise rather than guessing. OpenCode has no
+ * `--json` on either listing, and `opencode models --json` prints the HELP SCREEN and exits 0 -- so a
+ * tolerant parser would read `Positionals:` as a model. See `opencode-cli.ts`.
+ */
+export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promise<ProviderStatus> {
+  const provider: ProviderID = 'opencodeCLI';
+  const now = options.now ?? (() => new Date());
+  const checkedAt = iso(now);
+  const executionClass = executionClassOf(provider);
+  const base = {
+    provider,
+    label: PROVIDER_LABELS[provider],
+    executionClass,
+    billingBasis: billingBasisOf(executionClass),
+    probe: 'invoked' as const,
+    models: [] as DiscoveredFrontierModel[],
+    checkedAt,
+  };
+
+  const locate = options.findExecutable ?? ((name: string) => findExecutable(name));
+  const executablePath = locate(OPENCODE_EXECUTABLE);
+  if (!executablePath) {
+    return {
+      ...base,
+      probe: 'offline',
+      reachability: 'notInstalled',
+      detail: `\`${OPENCODE_EXECUTABLE}\` is not on this machine's PATH, so there was nothing to run and nothing was run. `
+        + OPENCODE_SUPPORT_MATURITY,
+    };
+  }
+
+  const run = options.run ?? runCLI;
+  const timeoutMilliseconds = options.timeoutMilliseconds ?? 30_000;
+
+  const versionResult = await run({ executable: executablePath, args: OPENCODE_VERSION_ARGUMENTS, timeoutMilliseconds });
+  if (versionResult.failure) {
+    return {
+      ...base,
+      executablePath,
+      reachability: 'unreachable',
+      detail: `\`${OPENCODE_EXECUTABLE} --version\` did not answer: ${redactSecrets(versionResult.failure.detail)}`,
+    };
+  }
+  const version = parseOpenCodeVersion(versionResult.stdout);
+  if (!version) {
+    return {
+      ...base,
+      executablePath,
+      reachability: 'unreachable',
+      detail: `\`${OPENCODE_EXECUTABLE} --version\` answered something that is not a version, so the build is unknown. `
+        + 'Nothing is recorded rather than recording the raw line as if it were one.',
+    };
+  }
+
+  const credentialsResult = await run({ executable: executablePath, args: OPENCODE_CREDENTIALS_ARGUMENTS, timeoutMilliseconds });
+  const parsedCredentials = parseOpenCodeCredentials(credentialsResult.stdout);
+  const disclosure = opencodeCredentialDisclosure(parsedCredentials);
+  if (!opencodeHasCredential(parsedCredentials)) {
+    return {
+      ...base,
+      executablePath,
+      version,
+      reachability: 'noCredential',
+      detail: `${disclosure} ${OPENCODE_SUPPORT_MATURITY}`,
+    };
+  }
+
+  const modelsResult = await run({ executable: executablePath, args: OPENCODE_MODELS_ARGUMENTS, timeoutMilliseconds });
+  if (modelsResult.failure) {
+    return {
+      ...base,
+      executablePath,
+      version,
+      reachability: 'unreachable',
+      detail: `\`${OPENCODE_EXECUTABLE} models\` did not answer: ${redactSecrets(modelsResult.failure.detail)}`,
+    };
+  }
+  const listed = parseOpenCodeModels(modelsResult.stdout);
+  if (listed.length === 0) {
+    return {
+      ...base,
+      executablePath,
+      version,
+      reachability: 'unreachable',
+      detail: `\`${OPENCODE_EXECUTABLE} models\` listed nothing this parser recognises as \`provider/model\`. An empty `
+        + 'list is NOT reported as "no models exist" -- it is reported as a question that did not get an answer.',
+    };
+  }
+
+  // A MODEL IS PROVEN ONLY IF OPENCODE ITSELF NAMED IT. The desired ladder is a plan; this listing is
+  // evidence. A ladder entry OpenCode did not list comes back `refused`, which is a different and
+  // weaker thing than `unproven` -- something asked, and was told no.
+  const desired = DESIRED_CANDIDATE_LADDER.filter((entry) => entry.provider === provider);
+  const models: DiscoveredFrontierModel[] = listed.map((modelID) => {
+    const planned = desired.find((entry) => entry.modelID === modelID);
+    return {
+      provider,
+      modelID,
+      displayName: planned?.displayName ?? modelID,
+      availability: 'proven' as const,
+      evidence: `\`${OPENCODE_EXECUTABLE} models\` listed ${modelID} at ${checkedAt}. That OpenCode can address it is `
+        + 'not a claim that the credential is funded, that the model will answer, or that Cernum has ever benchmarked it. '
+        + OPENCODE_COST_EXPLANATION,
+      verifiedModelID: modelID,
+      desiredEfforts: planned?.desiredEfforts ?? [],
+      discoveredAt: checkedAt,
+    };
+  });
+  for (const entry of desired) {
+    if (listed.includes(entry.modelID)) continue;
+    models.push({
+      provider,
+      modelID: entry.modelID,
+      displayName: entry.displayName,
+      availability: 'refused' as const,
+      evidence: `\`${OPENCODE_EXECUTABLE} models\` did not list ${entry.modelID} at ${checkedAt}, though it listed `
+        + `${listed.length} others. It is recorded as refused rather than quietly omitted.`,
+      verifiedModelID: '',
+      desiredEfforts: entry.desiredEfforts,
+      discoveredAt: checkedAt,
+    });
+  }
+
+  const unionAlpha = models.find((m) => m.modelID === UNION_ALPHA_MODEL_ID);
+  return {
+    ...base,
+    executablePath,
+    version,
+    reachability: 'ready',
+    models,
+    detail: `OpenCode ${version} listed ${listed.length} models at ${checkedAt}. `
+      + `${UNION_ALPHA_MODEL_ID} was ${unionAlpha?.availability === 'proven' ? 'listed' : 'NOT listed'}. `
+      + `${disclosure} ${OPENCODE_SUPPORT_MATURITY}`,
+  };
 }
 
 /** Only what something actually proved. This is what a campaign builder is allowed to offer. */

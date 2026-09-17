@@ -38,9 +38,9 @@ import { CanonicalValue, digestObject } from './canonical';
 import type { ThinkingMode } from './execution';
 
 /** A provider Cernum can reach. Adding one here does not make it available; discovery decides that. */
-export type ProviderID = 'ollama' | 'claudeCLI' | 'codexCLI' | 'anthropicAPI' | 'openaiAPI';
+export type ProviderID = 'ollama' | 'claudeCLI' | 'codexCLI' | 'opencodeCLI' | 'anthropicAPI' | 'openaiAPI';
 
-export const PROVIDER_IDS: ProviderID[] = ['ollama', 'claudeCLI', 'codexCLI', 'anthropicAPI', 'openaiAPI'];
+export const PROVIDER_IDS: ProviderID[] = ['ollama', 'claudeCLI', 'codexCLI', 'opencodeCLI', 'anthropicAPI', 'openaiAPI'];
 
 /** How a provider is reached, and therefore what its numbers mean. */
 export type ExecutionClass = 'localRuntime' | 'subscriptionCLI' | 'meteredAPI';
@@ -226,6 +226,11 @@ export function executionClassOf(provider: ProviderID): ExecutionClass {
   switch (provider) {
     case 'ollama': return 'localRuntime';
     case 'claudeCLI': case 'codexCLI': return 'subscriptionCLI';
+    // OPENCODE IS A CLI YOU INSTALL, BILLED LIKE AN API. The execution class describes BILLING, and
+    // the credential OpenCode reports is an API key against a metered service. Calling it
+    // `subscriptionCLI` would stamp every OpenCode row `subscriptionIncluded` with a zero marginal
+    // charge -- the same misreport `codexCLI` already refuses by hand. See `opencode-cli.ts`.
+    case 'opencodeCLI': return 'meteredAPI';
     case 'anthropicAPI': case 'openaiAPI': return 'meteredAPI';
   }
 }
@@ -255,6 +260,7 @@ export const PROVIDER_LABELS: Record<ProviderID, string> = {
   ollama: 'Local Models',
   claudeCLI: 'Claude Subscription',
   codexCLI: 'Codex Subscription',
+  opencodeCLI: 'OpenCode (metered API)',
   anthropicAPI: 'Anthropic API',
   openaiAPI: 'OpenAI API',
 };
