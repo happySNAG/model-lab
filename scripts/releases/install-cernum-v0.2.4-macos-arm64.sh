@@ -11,10 +11,10 @@
 
 set -uo pipefail
 
-VERSION="0.2.4"; COMMIT="6315cb1"
+VERSION="0.2.4"; COMMIT="79992bb"
 ARTIFACT="Cernum-${VERSION}-macos-arm64.dmg"
 BASE="https://github.com/happySNAG/model-lab/releases/download/v${VERSION}"
-EXPECTED_SHA="f1c0ce9ed8673e6f32b5e03a2e0ca4c58792514e99d8053622c5e85d3e0d50ff"
+EXPECTED_SHA="1c113773aa7947fd55e837d5dd3b0d06e10d0b875b88be5aa7f2d486e1e19d73"
 
 APP="/Applications/Cernum.app"; LAUNCHER="${APP}/Contents/Resources/cernum"
 SUPPORT="${HOME}/Library/Application Support"

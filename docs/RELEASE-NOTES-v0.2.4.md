@@ -194,10 +194,10 @@ never updated for. That is fixed here; it now reaches the same disk guard as the
 ## Checksums
 
 ```
-f1c0ce9ed8673e6f32b5e03a2e0ca4c58792514e99d8053622c5e85d3e0d50ff  Cernum-0.2.4-macos-arm64.dmg
-f19f84b3536fac5fedf7c37425984cea972864be5f63a0a2c599ee68283001e7  Cernum-0.2.4-macos-arm64.zip
-2bb5351253454299900c5f9eef2a22a4386f18d5ef3794ff2e169601ac913aa3  Cernum-0.2.4-macos-x64.dmg
-e5053f70bd0c23d36aac39b24f1b84b342e87c29ffebb1abf0d825f83fb1878a  Cernum-0.2.4-macos-x64.zip
+1c113773aa7947fd55e837d5dd3b0d06e10d0b875b88be5aa7f2d486e1e19d73  Cernum-0.2.4-macos-arm64.dmg
+0c634fd0a0dd15039246c62eaf172ea140ba5ed01c081bb69cc9691fad0ec340  Cernum-0.2.4-macos-arm64.zip
+20b2728cb9e4f5f48506a1076f9a5c4a3e4c6be08d98568e533ea979f8ff9917  Cernum-0.2.4-macos-x64.dmg
+132140331707ed5e7d40202a10869e9ad50509eb0b2b688fe239f3558d0f7f18  Cernum-0.2.4-macos-x64.zip
 ```
 
 Verify before installing:
@@ -206,7 +206,7 @@ Verify before installing:
 shasum -a 256 -c Cernum-0.2.4-SHA256SUMS.txt --ignore-missing
 ```
 
-Built from commit `6315cb1`, which the bundle carries and the install script asserts.
+Built from commit `79992bb`, which the bundle carries and the install script asserts.
 
 ## Upgrading a second Mac without trusting the one that built this
 
