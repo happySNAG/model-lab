@@ -555,7 +555,7 @@ helpers with it, and a tool that ignores `SIGTERM` is killed after a grace perio
 | Platform | Where |
 |---|---|
 | macOS, Linux | `~/.local/bin/cernum` |
-| Windows | `%LOCALAPPDATA%\Model Lab\bin\cernum.cmd` |
+| Windows | `%LOCALAPPDATA%\Cernum\bin\cernum.cmd` |
 
 That is the whole of it. It does **not** edit `PATH`, a shell profile, the registry, `/usr/local`, or
 anything requiring elevation, and it adds nothing that runs at login. If the directory is not on your
@@ -597,7 +597,7 @@ ignored — residency management is the default now, so there is nothing to reme
 nothing to forget.
 
 Campaigns are written where the desktop application reads them
-(`~/Library/Application Support/Model Lab/campaigns` on macOS), so a run started in the terminal
+(`~/Library/Application Support/Cernum/campaigns` on macOS), so a run started in the terminal
 appears on the Campaigns screen while it runs, and one started there can be resumed here.
 
 ---
@@ -617,7 +617,7 @@ window for two starters to race in.
 
 A second starter is refused by name:
 
-> `contested` is already running in the desktop process 4821 on this-machine.local (Model Lab ·
+> `contested` is already running in the desktop process 4821 on this-machine.local (Cernum ·
 > Campaigns screen), which last reported 3s ago. Two runners against one ledger would interleave
 > guard verdicts and residency unloads, so the second is refused. Pause the first one and try again.
 

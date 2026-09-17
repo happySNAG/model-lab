@@ -1,7 +1,7 @@
 {
   "name": "cernum",
   "productName": "Cernum",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Test. Discern. Decide. A desktop benchmarking environment for comparing AI models \u2014 local runtimes and frontier CLIs \u2014 on repeatable, deterministic evaluations.",
   "keywords": [
     "llm",

@@ -137,7 +137,7 @@ test('a second runner is refused while a live one holds the campaign, and a cras
   fs.writeFileSync(holderScript, `
     import { acquireCampaignLock } from '${path.join(root, 'src/engine/lock')}';
     const handle = acquireCampaignLock(process.argv[2], {
-      processType: 'desktop', command: 'Model Lab · Campaigns screen', campaignID: 'campaign:contested', campaignName: 'contested',
+      processType: 'desktop', command: 'Cernum · Campaigns screen', campaignID: 'campaign:contested', campaignName: 'contested',
     });
     process.stdout.write('held ' + handle.record.pid + '\\n');
     setInterval(() => handle.heartbeat(), 1_000);
@@ -159,7 +159,7 @@ test('a second runner is refused while a live one holds the campaign, and a cras
     const refused = cernumExpectingFailure('run', 'contested', '--synthetic');
     expect(refused.status).toBe(4);
     expect(refused.stderr).toContain(`desktop process ${heldByPID}`);
-    expect(refused.stderr).toContain('Model Lab · Campaigns screen');
+    expect(refused.stderr).toContain('Cernum · Campaigns screen');
     expect(refused.stderr).toMatch(/Pause the first one/);
     expect(JSON.parse(fs.readFileSync(path.join(directory, 'ledger', 'checkpoint.json'), 'utf8')).terminalCount).toBe(0);
 

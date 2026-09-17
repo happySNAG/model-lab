@@ -20,17 +20,17 @@ test('window, name, user-data location, and the application menu', async () => {
   const app = await launch();
   const page = await app.firstWindow();
   await page.waitForSelector('.shell');
-  expect(await page.title()).toBe('Model Lab');
+  expect(await page.title()).toBe('Cernum');
   const facts = await app.evaluate(({ app: a, Menu }) => ({
     name: a.getName(), userData: a.getPath('userData'), menu: Menu.getApplicationMenu()?.items.map((i) => i.label) ?? [],
   }));
-  expect(facts.name).toBe('Model Lab');
+  expect(facts.name).toBe('Cernum');
   expect(facts.userData).toBe(userData);
   expect(facts.menu).toContain('File');
   expect(facts.menu).toContain('View');
   expect(facts.menu).toContain('Ollama');
   if (process.platform === 'darwin') {
-    expect(facts.menu[0]).toBe('Model Lab');
+    expect(facts.menu[0]).toBe('Cernum');
     await expect(page.locator('.shell.mac')).toBeVisible();
   }
   // Menu-driven navigation (View → History) reaches the renderer.
@@ -42,7 +42,9 @@ test('window, name, user-data location, and the application menu', async () => {
   await app.evaluate(({ Menu }) => { Menu.getApplicationMenu()!.items.find((i) => i.label === 'File')!.submenu!.items.find((i) => i.label === 'New Benchmark…')!.click(); });
   await expect(page.getByRole('heading', { name: 'Benchmark', exact: true })).toBeVisible();
   // Log file exists at the advertised path.
-  expect(fs.existsSync(path.join(userData, 'model-lab.log'))).toBe(true);
+  // The log is named after the product, so the rename renamed it too. A pre-rename
+  // `model-lab.log` is carried across by the migration and kept as history beside this one.
+  expect(fs.existsSync(path.join(userData, 'cernum.log'))).toBe(true);
   await app.close();
 });
 

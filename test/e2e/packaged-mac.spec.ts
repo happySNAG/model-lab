@@ -41,7 +41,7 @@ test('Cernum.app launches from its bundle, names itself, and stores data under A
   const plist = (key: string) => execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, path.join(bundle, 'Contents/Info.plist')]).toString().trim();
   expect(plist('CFBundleName')).toBe('Cernum');
   expect(plist('CFBundleDisplayName')).toBe('Cernum');
-  expect(plist('CFBundleIdentifier')).toBe('org.modellab.desktop');
+  expect(plist('CFBundleIdentifier')).toBe('org.cernum.desktop');
   expect(plist('CFBundleShortVersionString')).toMatch(/^\d+\.\d+\.\d+$/);
   expect(fs.existsSync(path.join(bundle, 'Contents/Resources', plist('CFBundleIconFile').replace(/\.icns$/, '') + '.icns'))).toBe(true);
   expect(fs.existsSync(path.join(bundle, 'Contents/Resources/README.md'))).toBe(true);
