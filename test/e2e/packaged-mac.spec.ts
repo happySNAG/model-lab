@@ -20,8 +20,14 @@ const root = path.resolve(__dirname, '../..');
 const forThisArchitecture = process.arch === 'arm64'
   ? ['dist/mac-arm64/Cernum.app', 'dist/mac/Cernum.app']
   : ['dist/mac/Cernum.app', 'dist/mac-arm64/Cernum.app'];
-const candidates = [process.env.MODEL_LAB_APP, ...forThisArchitecture.map((relative) => path.join(root, relative))]
-  .filter((p): p is string => !!p);
+// `CERNUM_APP` is canonical; `MODEL_LAB_APP` keeps working, because a rename must not break a
+// script somebody already wrote.
+// Resolved against the repository root, so `CERNUM_APP=dist/mac/Cernum.app` works. The test runs
+// child processes from a temporary directory, where a relative bundle path resolves to nothing.
+const candidates = [process.env.CERNUM_APP, process.env.MODEL_LAB_APP,
+  ...forThisArchitecture]
+  .filter((p): p is string => !!p)
+  .map((p) => path.resolve(root, p));
 const appBundle = candidates.find((p) => fs.existsSync(p) && runsHere(p));
 
 /** True when this machine can actually execute the bundle's binary. */
