@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
-import { TAGLINE } from '../shared/product';
+import { BRAND_MARK, TAGLINE } from '../shared/product';
 import type { OllamaStatus, SessionProgress, BuildInfo, ScreenID } from '../shared/ipc';
 import { isMac, here } from './components';
 import { HomeView } from './views/Home';
@@ -75,7 +75,7 @@ export function App() {
     <div className={`shell${isMac ? ' mac' : ''}`}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden>ML</div>
+          <div className="brand-mark" aria-hidden>{BRAND_MARK}</div>
           <div><div className="brand-name">Cernum</div><div className="brand-sub">{TAGLINE}</div></div>
         </div>
         <nav aria-label="Screens">

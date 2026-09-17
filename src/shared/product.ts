@@ -43,6 +43,14 @@ export const PRODUCT: ProductIdentity = {
  */
 export const TAGLINE = 'Test. Discern. Decide.';
 
+/**
+ * The two letters in the sidebar mark, derived rather than typed.
+ *
+ * It read `ML` for a while after the product stopped being called Model Lab, which is exactly the
+ * kind of leftover a rename leaves behind: too small to notice, and in the corner of every screenshot.
+ */
+export const BRAND_MARK: string = PRODUCT.name.trim().slice(0, 2).toUpperCase();
+
 /** The command a person types to drive a campaign from a terminal. */
 export const TERMINAL_COMMAND = 'cernum';
 

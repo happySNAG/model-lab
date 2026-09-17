@@ -18,7 +18,7 @@ side, and pick the right model for each job with evidence instead of vibes.
 
 </div>
 
-![The Results screen: two models ranked within one benchmark, with quality, pass/partial/fail counts, reliability, median and p95 latency, tokens per second, and how many hard boundaries each model crossed.](docs/screenshots/model-lab-results.png)
+![The Results screen: two models ranked within one benchmark, with quality, pass/partial/fail counts, reliability, median and p95 latency, tokens per second, and how many hard boundaries each model crossed.](docs/screenshots/cernum-results.png)
 
 ## What it is
 
@@ -70,7 +70,7 @@ Cernum answers those questions instead:
 - **Did anything change?** Every run is kept forever, so you can compare a model against its own past
   self after an update — and Cernum tells you plainly when two runs are not like-for-like.
 
-![Comparing two benchmarks: a "Directly comparable" verdict, both runs' machine and date, and quality, median latency and boundaries crossed for each model side by side.](docs/screenshots/model-lab-comparison.png)
+![Comparing two benchmarks: a "Directly comparable" verdict, both runs' machine and date, and quality, median latency and boundaries crossed for each model side by side.](docs/screenshots/cernum-comparison.png)
 
 ## Who it is for
 
@@ -133,9 +133,9 @@ kept. You can export the whole store as a single JSON bundle with a digest at an
 - **A recommendation changes nothing.** It is evidence for your decision. Cernum does not
   configure anything, anywhere.
 
-![The Recommendation view: the fixed policy stated in full, then a per-model outcome with every governance failure named — the rule, the case, and what the answer did wrong.](docs/screenshots/model-lab-recommendation.png)
+![The Recommendation view: the fixed policy stated in full, then a per-model outcome with every governance failure named — the rule, the case, and what the answer did wrong.](docs/screenshots/cernum-recommendation.png)
 
-![The Side-by-side view: a capability grid comparing two models across the twelve capabilities, with sample sizes and human-review counts.](docs/screenshots/model-lab-side-by-side.png)
+![The Side-by-side view: a capability grid comparing two models across the twelve capabilities, with sample sizes and human-review counts.](docs/screenshots/cernum-side-by-side.png)
 
 ## Supported models and runtimes
 
@@ -149,6 +149,8 @@ kept. You can export the whole store as a single JSON bundle with a digest at an
 | **[OpenCode](https://opencode.ai)**, via the official `opencode` CLI | ⚠️ Discovery only, untested | Cernum can find OpenCode, read its version, list the models it can address and see whether a credential is configured — all without spending anything. It is classed as a **metered API**, because the credential OpenCode carries is an API key, so requests are billed per token against your own key. **No scored Cernum campaign has ever been run through OpenCode**, and no OpenCode result is published in this repository. |
 | **Anthropic API / OpenAI API**, with your own key | ⚠️ Implemented, not exercised | Key handling, metered billing and spending authorization exist and are tested. No published campaign has used them. Treat them as untested metered API support. |
 | **llama.cpp, LM Studio, vLLM, MLX, …** | ❌ Not yet | The engine has a clean adapter boundary (`src/core/adapter.ts`) and Ollama is one implementation of it, so another local runtime is a tractable contribution. None exists today. |
+
+![The Providers screen: each provider's execution class and billing basis, whether its CLI is installed, and what — if anything — has actually proven a model. Nothing here contacts a provider until you ask it to.](docs/screenshots/cernum-providers.png)
 
 ## Privacy
 
@@ -238,9 +240,9 @@ Please read [Windows verification status](#windows-verification-status) before r
 
 ## Using Cernum
 
-![The Home screen: this computer's hardware as the operating system reports it, Ollama's status, the models installed, and recent benchmarks.](docs/screenshots/model-lab-home.png)
+![The Home screen: this computer's hardware as the operating system reports it, Ollama's status, the models installed, and recent benchmarks.](docs/screenshots/cernum-home.png)
 
-![The Benchmark screen: three numbered steps — choose models, choose suites, start — with a per-suite breakdown of what will be tested.](docs/screenshots/model-lab-benchmark.png)
+![The Benchmark screen: three numbered steps — choose models, choose suites, start — with a per-suite breakdown of what will be tested.](docs/screenshots/cernum-benchmark.png)
 
 | Screen | What it does |
 | --- | --- |
@@ -259,18 +261,18 @@ Please read [Windows verification status](#windows-verification-status) before r
 2. Go to **Models**. If the list is empty, use *Add a model* — `gemma3:270m` and `qwen3:0.6b` are both
    small and quick to try.
 
-   ![The Models screen: every model Ollama has installed with its size, parameter count, quantization and family, an Add a model field, and the built-in reference model.](docs/screenshots/model-lab-models.png)
+   ![The Models screen: every model Ollama has installed with its size, parameter count, quantization and family, an Add a model field, and the built-in reference model.](docs/screenshots/cernum-models.png)
 3. Go to **Benchmark**. Tick two models, leave *Quick check* selected, press **Start benchmark**, read
    the pre-flight dialog, and confirm.
 4. Watch the **Live run**. Every attempt is written to disk as it finishes, so nothing is lost if the
    application closes.
 
-   ![The Live run screen: overall progress, per-model progress, outcomes so far, and the most recent attempts with their judgments as they land.](docs/screenshots/model-lab-live-run.png)
+   ![The Live run screen: overall progress, per-model progress, outcomes so far, and the most recent attempts with their judgments as they land.](docs/screenshots/cernum-live-run.png)
 5. Open **Results**. Start with the verdict paragraph, then the ranking table, then click any case to
    see the exact prompt, the exact answer and exactly why it was judged the way it was.
 6. Run it again — or run the *Full lab* — and compare the two in **History**.
 
-![The Every case view: every attempt in the run listed with the model, the case, what it checks, whether an answer arrived, the rule's judgment, latency and speed.](docs/screenshots/model-lab-every-case.png)
+![The Every case view: every attempt in the run listed with the model, the case, what it checks, whether an answer arrived, the rule's judgment, latency and speed.](docs/screenshots/cernum-every-case.png)
 
 Clicking any row opens the attempt in full: the exact prompt that was sent, the exact answer that came
 back, every rule that was applied and what each one decided, the timing breakdown, and whether the
@@ -293,7 +295,7 @@ runtime's reported model identity matched what was asked for.
 Both are shown in *Settings & diagnostics* with *Open* buttons, and you can point the evidence store
 somewhere else. History survives updates and reinstalls.
 
-![Settings & diagnostics: the loopback-only Ollama endpoint, model thinking mode, the evidence store's location and record count, this computer's facts, and the build and catalog versions.](docs/screenshots/model-lab-settings.png)
+![Settings & diagnostics: the loopback-only Ollama endpoint, model thinking mode, the evidence store's location and record count, this computer's facts, and the build and catalog versions.](docs/screenshots/cernum-settings.png)
 
 ## Troubleshooting
 

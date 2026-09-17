@@ -143,5 +143,7 @@ New, and stated plainly:
 - **A frontier candidate's latency and throughput are not reproducible.** They measure a network and
   somebody else's fleet on the day you asked. Cernum records them and labels the execution class on
   every row so local and frontier numbers are never averaged together by accident.
-- **Screenshots in the README still show the previous branding.** They are accurate as to layout and
-  behaviour.
+- **Screenshots are regenerated from the running application** by `npm run screenshots`, which drives
+  the built app against a scripted loopback runtime. They show a real benchmark in which one model
+  fails three different ways, because a screenshot where everything passes is the least useful one
+  available.

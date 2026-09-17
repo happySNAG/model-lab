@@ -49,7 +49,8 @@
     "dist:all": "npm run build && electron-builder --mac --win",
     "dist:dir": "npm run build && electron-builder --dir",
     "smoke:mac": "bash scripts/macos-smoke.sh",
-    "cernum": "tsx src/cli/cernum.ts"
+    "cernum": "tsx src/cli/cernum.ts",
+    "screenshots": "npm run build && playwright test -c test/e2e/screenshots.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
