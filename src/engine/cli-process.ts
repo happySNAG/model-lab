@@ -271,17 +271,56 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
 }
 
 /**
+ * The directories a CLI installer writes to that a GUI-launched process never hears about.
+ *
+ * THE BUG THIS EXISTS TO CLOSE. `findExecutable` used to read `PATH` and stop there, which is
+ * correct for a command started from a terminal and wrong for every other way this engine runs.
+ * A macOS app launched from Finder, the Dock or `open` inherits `launchd`'s PATH —
+ * `/usr/bin:/bin:/usr/sbin:/sbin` — and not one line of the user's shell profile. So does a
+ * non-interactive `sh -c`. Anything a CLI installer appended to `.zshrc` is invisible to both.
+ *
+ * OpenCode installs itself to `~/.opencode/bin` and adds that directory to the shell profile. The
+ * result on this machine: `opencode models` listed `opencode/union-alpha` in Terminal, and Cernum's
+ * own provider view called the same CLI `notInstalled` on the same machine at the same moment — a
+ * status view reporting on where it was launched from rather than on what the person installed.
+ *
+ * These are searched ONLY after PATH misses, and each is a stat of one filename. Widening where we
+ * LOOK changes nothing about what Cernum does: it still drives only a CLI the person installed and
+ * authenticated themselves, still never installs one, and still never reads its stored session.
+ * The absolute path found here is what every status surface prints, so a fallback hit is always
+ * visible as the unusual location it came from.
+ */
+function installerDirectories(environment: NodeJS.ProcessEnv): string[] {
+  if (process.platform === 'win32') return [];
+  const home = environment.HOME ?? '';
+  const perUser = home.length === 0 ? [] : [
+    path.join(home, '.opencode', 'bin'),   // OpenCode
+    path.join(home, '.local', 'bin'),      // Codex, pipx, and most `curl | sh` installers
+    path.join(home, '.bun', 'bin'),        // anything installed through Bun
+    path.join(home, '.npm-global', 'bin'), // npm with a user-owned prefix
+  ];
+  return [...perUser, '/opt/homebrew/bin', '/usr/local/bin'];
+}
+
+/**
  * Where an executable is, without running it.
  *
  * This is a PATH lookup and a stat, so it can be called from a status view: knowing whether a tool
  * is installed must not cost a provider request, an authentication check or a rate-limit slot.
+ *
+ * PATH is searched first and wins, so a person who has deliberately put one build ahead of another
+ * keeps that choice. Only when PATH has nothing does the search widen to the installer directories
+ * above, because a truncated PATH is a fact about the launcher, not about the machine.
  */
 export function findExecutable(name: string, environment: NodeJS.ProcessEnv = process.env): string | undefined {
-  const pathValue = environment.PATH ?? '';
   const separator = process.platform === 'win32' ? ';' : ':';
   const extensions = process.platform === 'win32' ? (environment.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
-  for (const directory of pathValue.split(separator)) {
-    if (directory.length === 0) continue;
+  const fromPath = (environment.PATH ?? '').split(separator);
+  const seen = new Set<string>();
+
+  for (const directory of [...fromPath, ...installerDirectories(environment)]) {
+    if (directory.length === 0 || seen.has(directory)) continue;
+    seen.add(directory);
     for (const extension of extensions) {
       const candidate = path.join(directory, name + extension);
       try {

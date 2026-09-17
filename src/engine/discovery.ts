@@ -28,11 +28,12 @@
 // installed and authenticated. There is no browser session, no cookie jar, no private endpoint, and
 // no credential read out of another tool's files.
 
-import { ExecutionClass, PROVIDER_LABELS, ProviderID, billingBasisOf, executionClassOf } from './provider';
+import { ExecutionClass, PROVIDER_IDS, PROVIDER_LABELS, ProviderID, billingBasisOf, executionClassOf } from './provider';
 import { CredentialStatus, CredentialLookupOptions, credentialStatus, isMeteredProvider } from './credentials';
 import { CLIResult, findExecutable, runCLI } from './cli-process';
 import { CodexAuthStatus, codexSubscriptionUsable, parseCodexDoctorAuth } from './codex-cli';
 import { redactSecrets } from './redaction';
+import { anthropicBaseURL, openaiBaseURL } from './host-factory';
 import {
   OPENCODE_EXECUTABLE, OPENCODE_VERSION_ARGUMENTS, OPENCODE_MODELS_ARGUMENTS, OPENCODE_CREDENTIALS_ARGUMENTS,
   UNION_ALPHA_MODEL_ID, parseOpenCodeVersion, parseOpenCodeModels, parseOpenCodeCredentials,
@@ -228,6 +229,18 @@ function iso(now: () => Date): string {
 }
 
 /**
+ * How to say "it is not here" without saying something that is not true.
+ *
+ * This sentence used to read "is not on this machine's PATH", which was accurate while
+ * `findExecutable` read PATH and stopped. It no longer does -- see `installerDirectories` in
+ * `cli-process.ts` -- so the sentence would now understate the search and invite the reader to fix a
+ * PATH that was never the problem. It names what was actually looked at.
+ */
+export function notFoundPhrase(executable: string): string {
+  return `\`${executable}\` was not found on PATH, nor in the directories CLI installers write to`;
+}
+
+/**
  * What can be said about every provider WITHOUT contacting any of them.
  *
  * This is what a settings screen, a status command and application startup call. It performs a PATH
@@ -276,7 +289,7 @@ export function offlineProviderStatuses(options: OfflineStatusOptions = {}): Pro
         return {
           ...base,
           reachability: 'notInstalled',
-          detail: `\`${cliExecutable}\` is not on this machine's PATH. Cernum drives the official CLI you installed and `
+          detail: `${notFoundPhrase(cliExecutable)}. Cernum drives the official CLI you installed and `
             + 'authenticated yourself — it never installs one, never reads its stored session, and never reaches the '
             + 'service any other way.',
         };
@@ -348,7 +361,7 @@ export async function discoverSubscriptionCLI(provider: ProviderID, options: Dis
       ...base,
       probe: 'offline',
       reachability: 'notInstalled',
-      detail: `\`${executable}\` is not on this machine's PATH, so there was nothing to run and nothing was run.`,
+      detail: `${notFoundPhrase(executable)}, so there was nothing to run and nothing was run.`,
     };
   }
 
@@ -703,7 +716,7 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
       ...base,
       probe: 'offline',
       reachability: 'notInstalled',
-      detail: `\`${OPENCODE_EXECUTABLE}\` is not on this machine's PATH, so there was nothing to run and nothing was run. `
+      detail: `${notFoundPhrase(OPENCODE_EXECUTABLE)}, so there was nothing to run and nothing was run. `
         + OPENCODE_SUPPORT_MATURITY,
     };
   }
@@ -811,6 +824,75 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
       + `${UNION_ALPHA_MODEL_ID} was ${unionAlpha?.availability === 'proven' ? 'listed' : 'NOT listed'}. `
       + `${disclosure} ${OPENCODE_SUPPORT_MATURITY}`,
   };
+}
+
+/**
+ * Every provider Cernum can discover by asking it, and the one function that decides which is which.
+ *
+ * THE DEFECT THIS CLOSES. Until v0.2.1 this decision was written out twice -- once in
+ * `src/cli/cernum.ts` and once in `src/main/campaign-service.ts` -- and the two had drifted. The
+ * desktop application routed `opencodeCLI` to `discoverOpenCodeCLI`; the terminal did not, so
+ * `cernum discover opencodeCLI` answered "'opencodeCLI' is not a provider" about a provider the same
+ * build supports, listed in its own `cernum providers` output, on a machine where the CLI was
+ * installed and authenticated. Union Alpha could not be proven from a terminal at all, and so could
+ * not enter a manifest.
+ *
+ * Adding the missing branch would have fixed the symptom and left the shape that produced it. A
+ * router two surfaces share cannot disagree with itself, and `discoverableProviders` below is
+ * derived from `PROVIDER_IDS`, so a provider added later is either routed here or named by the test
+ * that walks every id -- it cannot be silently unreachable from one surface.
+ */
+export const DISCOVERABLE_PROVIDERS: ProviderID[] = PROVIDER_IDS.filter((provider) => provider !== 'ollama');
+
+/**
+ * True for a provider `discoverProvider` will route.
+ *
+ * `ollama` is excluded on purpose and not by omission: the local runtime is not asked what models it
+ * may call, it is listed directly by `discoverLocalModels`, and `refuseToDiscover` says so by name
+ * rather than calling it unknown.
+ */
+export function isDiscoverableProvider(provider: string): provider is ProviderID {
+  return DISCOVERABLE_PROVIDERS.includes(provider as ProviderID);
+}
+
+/** What to tell a person who named something this cannot discover. Never a bare "not a provider". */
+export function refuseToDiscover(provider: string): string {
+  if (provider === 'ollama') {
+    return 'the local runtime is not discovered this way: it is listed directly. Run `cernum models`.';
+  }
+  return `'${provider}' is not a provider Cernum can discover. Try ${DISCOVERABLE_PROVIDERS.join(', ')}.`;
+}
+
+/**
+ * Ask ONE provider what it is and what this account may call. THIS INVOKES SOMETHING.
+ *
+ * Each branch below costs what its own documentation says it costs, and no branch reaches a model:
+ * the two subscription CLIs and OpenCode run their tool's read-only subcommands, and the metered API
+ * branch reads a model listing with the user's key. Nothing here spends inference allowance.
+ *
+ * The three branches are not interchangeable and none of them is a default. A CLI sent to the
+ * metered branch would have `credentialStatus` THROW on it for want of an API-key environment
+ * variable, and a metered API sent to the CLI branch would be looked for on PATH as an executable
+ * that does not exist. OpenCode is both a CLI and metered, which is exactly why it needs its own
+ * branch and exactly how it fell through the terminal's copy of this decision.
+ */
+export async function discoverProvider(provider: ProviderID, options: DiscoveryOptions & {
+  baseURL?: string;
+  fetchImplementation?: typeof fetch;
+} = {}): Promise<ProviderStatus> {
+  if (provider === 'claudeCLI' || provider === 'codexCLI') {
+    return discoverSubscriptionCLI(provider, options);
+  }
+  if (provider === 'opencodeCLI') {
+    return discoverOpenCodeCLI(options);
+  }
+  if (provider === 'anthropicAPI' || provider === 'openaiAPI') {
+    return discoverMeteredProvider(provider, {
+      ...options,
+      baseURL: options.baseURL ?? (provider === 'anthropicAPI' ? anthropicBaseURL() : openaiBaseURL()),
+    });
+  }
+  throw new Error(refuseToDiscover(provider));
 }
 
 /** Only what something actually proved. This is what a campaign builder is allowed to offer. */

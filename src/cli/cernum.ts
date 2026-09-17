@@ -22,15 +22,15 @@ import {
   DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, ProviderID, ProviderStatus, REQUESTED_COHORT, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
   configurationKey, ladderConfigurations, reconcileCohort,
   DIVERGENCE_MEANS, FinalRankings, OTLPObserver, OTLPTurnSource,
-  ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure, authorizeSpending,
+  ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, authorizationDisclosure, authorizeSpending,
   breakCampaignLock, breakRuntimeLease, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths,
   SubscriptionCLIAdapter, credentialStatus, describeBinding, describeCandidateMetrics, describeExecutionPolicy,
   IDENTITY_SMOKE_PROMPT, describeExpiry, describeSmoke, desiredCandidates, discoveryStorePath,
   identitySmokeTest, modelsFromSmokes,
   readDiscoveryStore, selectableFromStore, writeDiscoveryStore,
-  discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI, estimateSpending, formatMicroUSD,
+  discoverLocalModels, discoverProvider, isDiscoverableProvider, refuseToDiscover, estimateSpending, formatMicroUSD,
   guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink,
-  modelStoreBaseline, normalizeEndpoint, offlineProviderStatuses, openaiBaseURL, parseCeilingToMicroUSD,
+  modelStoreBaseline, normalizeEndpoint, offlineProviderStatuses, DISCOVERABLE_PROVIDERS, parseCeilingToMicroUSD,
   plannedWorkFor, pricingFor, privacyDisclosure, residencyDisclosure, steppingClock, syntheticCandidate,
   terminateAllCLIProcesses,
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
@@ -327,7 +327,7 @@ async function commandProviders(options: Options): Promise<void> {
     }
     say('');
   }
-  say(`Run discovery explicitly: ${TERMINAL_COMMAND} discover [claudeCLI|codexCLI|anthropicAPI|openaiAPI]`);
+  say(`Run discovery explicitly: ${TERMINAL_COMMAND} discover [${DISCOVERABLE_PROVIDERS.join('|')}]`);
   say(`Prove a subscription model by asking it once:  ${TERMINAL_COMMAND} smoke [claudeCLI|codexCLI]   (spends allowance)`);
 }
 
@@ -349,6 +349,16 @@ async function commandCredentials(): Promise<void> {
 }
 
 /**
+ * What `discover` with no argument asks.
+ *
+ * The two subscription CLIs, because they are the providers a Cernum campaign is normally run
+ * through and neither costs anything to ask. Every other provider is discovered by NAMING it —
+ * including OpenCode, which is metered, and whose listing should be asked for deliberately rather
+ * than swept up by a bare command.
+ */
+const DEFAULT_DISCOVERY = ['claudeCLI', 'codexCLI'];
+
+/**
  * Ask a provider what it is and what this account may call. THIS INVOKES SOMETHING.
  *
  * Running the CLI's `--version` and its model listing costs no inference and spends no tokens.
@@ -357,21 +367,19 @@ async function commandCredentials(): Promise<void> {
  */
 async function commandDiscover(positional: string[], options: Options): Promise<void> {
   const root = String(options.root ?? defaultCampaignRoot());
-  const wanted = positional.length > 0 ? positional as ProviderID[] : ['claudeCLI', 'codexCLI'] as ProviderID[];
+  const wanted = positional.length > 0 ? positional : DEFAULT_DISCOVERY;
+  // NAMES ARE CHECKED BEFORE ANYTHING RUNS. `discover claudeCLI opencode` used to discover Claude
+  // and then fail, leaving half a run's evidence written and the person unsure which half.
+  for (const provider of wanted) if (!isDiscoverableProvider(provider)) fail(refuseToDiscover(provider));
+  const providers = wanted as ProviderID[];
   const discovered: DiscoveredFrontierModel[] = readDiscovered(root)
-    .filter((model) => !wanted.includes(model.provider));
+    .filter((model) => !providers.includes(model.provider));
 
-  for (const provider of wanted) {
-    let status: ProviderStatus;
-    if (provider === 'claudeCLI' || provider === 'codexCLI') {
-      status = await discoverSubscriptionCLI(provider);
-    } else if (provider === 'anthropicAPI' || provider === 'openaiAPI') {
-      status = await discoverMeteredProvider(provider, {
-        baseURL: provider === 'anthropicAPI' ? anthropicBaseURL() : openaiBaseURL(),
-      });
-    } else {
-      fail(`'${provider}' is not a provider. Try claudeCLI, codexCLI, anthropicAPI or openaiAPI.`);
-    }
+  for (const provider of providers) {
+    // One router, shared with the desktop application. This file used to decide for itself which
+    // provider went to which discovery function, and its copy of that decision had no branch for
+    // OpenCode — so `cernum discover opencodeCLI` denied a provider this same build supports.
+    const status: ProviderStatus = await discoverProvider(provider);
     renderProviderStatus(status);
     discovered.push(...status.models);
   }
@@ -1411,6 +1419,7 @@ function commandHelp(): void {
   say('');
   say('  providers                       every provider\'s status, WITHOUT contacting any of them');
   say('  discover [<provider>]           ask a provider what it is and what this account may call');
+  say(`                                  ${DISCOVERABLE_PROVIDERS.join(', ')}; default ${DEFAULT_DISCOVERY.join(' and ')}`);
   say('  smoke [<provider>]              prove a model by asking it once who it is — SPENDS ALLOWANCE');
   say('                                  --evidence <file>  write the full per-request evidence there');
   say('  credentials                     which API keys are configured (masked; never printed)');
@@ -1479,6 +1488,9 @@ function commandHelp(): void {
   say('  --frontier <spec>,… provider:model[:effort], e.g. claudeCLI:claude-sonnet-5:high');
   say('                      providers: claudeCLI, codexCLI (your own signed-in CLI, subscription-included)');
   say('                                 anthropicAPI, openaiAPI (billed per token against your key)');
+  say('                                 opencodeCLI (your own OpenCode CLI, billed per token by a');
+  say('                                 metered service — UNTESTED: no scored Cernum campaign has');
+  say('                                 been run through it)');
   say('                      A model that provider discovery has not PROVEN this account can call is');
   say('                      refused here. A model name is a plan, not a capability.');
   say('  --admit-identity-unverifiable <file>');

@@ -18,12 +18,12 @@ import { app } from 'electron';
 import {
   Campaign, CampaignBuildError, CampaignConfiguration, CampaignStatus, DEFAULT_EXECUTION_POLICY, DiscoveredFrontierModel,
   EffortLevel, ExecutionPolicy, FrontierCandidateRequest, Ledger, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS,
-  PROVIDER_LABELS, ProviderID, ProviderStatus, SpendingError, allRankableSuiteIDs, anthropicBaseURL, authorizationDisclosure,
+  PROVIDER_LABELS, ProviderID, ProviderStatus, SpendingError, allRankableSuiteIDs, authorizationDisclosure,
   authorizeSpending, buildCampaignPlan, buildEngineCatalogue, buildHostForCampaign, campaignPaths, credentialStatus,
-  describeBinding, describeExecutionPolicy, discoverLocalModels, discoverMeteredProvider, discoverSubscriptionCLI,
-  discoverOpenCodeCLI,
+  describeBinding, describeExecutionPolicy, discoverLocalModels, discoverProvider,
+  isDiscoverableProvider, refuseToDiscover,
   estimateSpending, inspectCampaignLock, leasedEndpoints, modelCanThink, modelStoreBaseline, offlineProviderStatuses,
-  openaiBaseURL, plannedWorkFor, privacyDisclosure, quantityValue, residencyDisclosure,
+  plannedWorkFor, privacyDisclosure, quantityValue, residencyDisclosure,
   REQUESTED_COHORT, configurationKey, ladderConfigurations,
 } from '../engine/index';
 import type { FrontierCandidateMetrics } from '../engine/frontier-metrics';
@@ -534,21 +534,12 @@ export class CampaignService extends EventEmitter {
 
   /** Ask one provider what it is and what this account may call. THIS INVOKES SOMETHING. */
   async discoverProvider(provider: string): Promise<ProviderStatusRow> {
-    let status: ProviderStatus;
-    if (provider === 'claudeCLI' || provider === 'codexCLI') {
-      status = await discoverSubscriptionCLI(provider);
-    } else if (provider === 'opencodeCLI') {
-      // OPENCODE IS A CLI, AND METERED. It belongs to neither branch beside it: the subscription
-      // path would read an auth surface it does not have, and the metered path refuses it outright
-      // because it carries no API-key environment variable to read. It gets its own.
-      status = await discoverOpenCodeCLI();
-    } else if (provider === 'anthropicAPI' || provider === 'openaiAPI') {
-      status = await discoverMeteredProvider(provider, {
-        baseURL: provider === 'anthropicAPI' ? anthropicBaseURL() : openaiBaseURL(),
-      });
-    } else {
-      throw new CampaignServiceError(`'${provider}' is not a provider Cernum can discover`);
-    }
+    // WHICH PROVIDER IS DISCOVERED HOW is decided once, in the engine, and this surface no longer
+    // holds an opinion about it. The branches used to be written out here AND in the terminal, and
+    // the terminal's copy was missing OpenCode — so the same build supported a provider from the
+    // application and denied it existed from a shell. See `discoverProvider` in `discovery.ts`.
+    if (!isDiscoverableProvider(provider)) throw new CampaignServiceError(refuseToDiscover(provider));
+    const status: ProviderStatus = await discoverProvider(provider);
     const kept = this.readDiscovered().filter((model) => model.provider !== provider);
     this.writeDiscovered([...kept, ...status.models]);
     return providerRow(status);

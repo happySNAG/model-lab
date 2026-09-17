@@ -130,10 +130,20 @@ campaign builder refuses an unproven model outright — in the terminal and in t
 same function — so editing that list can never make a model runnable.
 
 Discovery is always something you ask for by name. Reading the Providers screen, checking status, or
-opening the application performs a PATH lookup and a credential check and **contacts nobody**; every
-row says so, and `test/e2e/providers-offline.spec.ts` asserts it by launching the application with
-fake CLIs that log every invocation and a loopback recorder that logs every request, then checking
-both logs are empty.
+opening the application performs an executable lookup and a credential check and **contacts nobody**;
+every row says so, and `test/e2e/providers-offline.spec.ts` asserts it by launching the application
+with fake CLIs that log every invocation and a loopback recorder that logs every request, then
+checking both logs are empty.
+
+**Where a CLI is looked for.** `PATH` first, and `PATH` wins — a build you deliberately put ahead of
+another is the one that runs. When `PATH` has nothing, the search widens to the directories CLI
+installers write to: `~/.opencode/bin`, `~/.local/bin`, `~/.bun/bin`, `~/.npm-global/bin`,
+`/opt/homebrew/bin`, `/usr/local/bin`. This is not a convenience. An application launched from
+Finder, the Dock or `open` inherits `launchd`'s `PATH` and reads no shell profile, so until v0.2.1
+Cernum reported CLIs you had installed and authenticated as `notInstalled` — a status view reporting
+on how it was launched while appearing to report on your machine. Widening where Cernum looks changes
+nothing about what it does: it drives only a CLI you installed yourself, never installs one, never
+reads its stored session, and prints the absolute path it found on every surface.
 
 ### Who actually answered
 
