@@ -103,6 +103,22 @@ OpenCode model on every run, so the store filled with a claim the same build cou
 - **Seven verdict paths tested against fake executables**: Union Alpha success, missing identity,
   model mismatch, refusal, timeout, malformed JSON, and a secret echoed in an error message.
 
+### And the reason the correction had nowhere to go
+
+Correcting on read is only half of it: the correction reaches disk when the store is next written,
+and **the one command that rewrites the store was deleting the rows instead.**
+
+`cernum discover <provider>` dropped every row for each named provider and wrote back only what came
+out of that run. So on a machine where OpenCode is not installed — or is installed and signed out, or
+simply answered nothing — `cernum discover opencodeCLI` **deleted the entire record for that
+provider, including a `proven` row that a metered smoke had paid for.** Nothing warned. The store is
+the evidence, so nothing could recover it.
+
+A tool that did not answer is a fact about today, not a retraction of what was established before.
+Rows for a provider that returned nothing are now **kept, and said to be kept**, with their
+timestamps untouched — a run that learned nothing does not get to refresh anybody's freshness either,
+so a stale proof still ages out on its own schedule.
+
 ## D · Every spelling of "tell me about this command" is safe and complete
 
 v0.2.3 stopped `cernum smoke --help` from sending six live requests. It did not touch **`cernum help
@@ -151,15 +167,15 @@ there it would have started a collector that exported nothing.
 
 ## Tests
 
-**1457 unit and parity tests** (up from 1397), **24 E2E passing** (up from 22), typecheck clean, both
+**1461 unit and parity tests** (up from 1397), **24 E2E passing** (up from 22), typecheck clean, both
 macOS architectures built.
 
-60 tests added across four new files:
+64 tests added across four new files:
 
 | File | Covers |
 | --- | --- |
 | `v024-smoke-binding-invariants.test.ts` | A, B — the preview and the record cannot disagree; every metered refusal |
-| `v024-opencode-smoke-evidence.test.ts` | C — seven verdict paths against fake executables; superseding |
+| `v024-opencode-smoke-evidence.test.ts` | C — seven verdict paths against fake executables; superseding; the non-destructive discovery merge |
 | `v024-cli-help-safety.test.ts` | D — every help path, every malformed-option refusal, zero invocations |
 | `v024-smoke-telemetry.test.ts` | E — the collector endpoint reaching the tool, and identity holding |
 

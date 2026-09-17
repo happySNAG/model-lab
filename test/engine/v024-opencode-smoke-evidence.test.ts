@@ -243,3 +243,63 @@ describe('v0.2.4 · contaminated discovery evidence is superseded, never deleted
     expect(models[1]).toEqual(clean);
   });
 });
+
+describe('v0.2.4 · a discovery that reached nothing retracts nothing', () => {
+  // THE DEFECT: `commandDiscover` dropped every row for each named provider and wrote back only what
+  // came out of THIS run. On a machine where OpenCode is not installed — or is signed out, or
+  // answered nothing — `cernum discover opencodeCLI` therefore deleted the entire record for that
+  // provider, INCLUDING a `proven` row a metered smoke had paid for. Nothing warned, and the store
+  // is the evidence, so nothing could recover it. It is also the one route by which a superseded
+  // evidence string would ever have been rewritten to disk, so the correction above had no way to
+  // persist that did not destroy what it was correcting.
+  //
+  // The merge is exercised here directly, in the shape the command uses.
+  const proven: DiscoveredFrontierModel = {
+    provider: 'opencodeCLI', modelID: UNION_ALPHA_MODEL_ID, displayName: 'Union Alpha',
+    availability: 'proven', evidence: 'identity smoke test at 2026-09-16T00:00:00Z: the provider named it',
+    verifiedModelID: UNION_ALPHA_MODEL_ID, desiredEfforts: ['none'], discoveredAt: '2026-09-16T00:00:00Z',
+  };
+
+  /** The merge `commandDiscover` performs, as a function, so the rule can be asserted on. */
+  function merge(existing: DiscoveredFrontierModel[], provider: string,
+                 fresh: DiscoveredFrontierModel[]): DiscoveredFrontierModel[] {
+    const kept = existing.filter((model) => model.provider !== provider);
+    if (fresh.length > 0) return [...kept, ...fresh];
+    return [...kept, ...existing.filter((model) => model.provider === provider)];
+  }
+
+  it('keeps a paid-for proof when the tool could not be reached', () => {
+    const after = merge([proven], 'opencodeCLI', []);
+    expect(after).toHaveLength(1);
+    expect(after[0].availability).toBe('proven');
+    expect(after[0].verifiedModelID).toBe(UNION_ALPHA_MODEL_ID);
+  });
+
+  it('does not refresh what it did not observe', () => {
+    const after = merge([proven], 'opencodeCLI', []);
+    // A run that learned nothing does not get to renew anybody's freshness. The row ages out on its
+    // own schedule, which is the honest way for a stale proof to stop being selectable.
+    expect(after[0].discoveredAt).toBe('2026-09-16T00:00:00Z');
+  });
+
+  it('still replaces the rows when the tool DID answer', () => {
+    const fresh: DiscoveredFrontierModel = { ...proven, availability: 'unproven', verifiedModelID: '',
+      evidence: 'a fresh listing', discoveredAt: '2026-09-17T00:00:00Z' };
+    const after = merge([proven], 'opencodeCLI', [fresh]);
+    expect(after).toHaveLength(1);
+    expect(after[0].evidence).toBe('a fresh listing');
+  });
+
+  it('gives the correction a route to disk that does not delete what it corrects', () => {
+    // Read corrects; this merge preserves; the write persists. Before the merge fix, the only
+    // command that rewrote the store erased the rows instead of saving their correction.
+    const { models } = supersedeStaleOpenCodeEvidence([{
+      ...proven, availability: 'unproven', verifiedModelID: '',
+      evidence: `DISCOVERED, NOT PROVEN. ${OPENCODE_SUPERSEDED_NO_PROOF_PATH}`,
+    }]);
+    const after = merge(models, 'opencodeCLI', []);
+    expect(after[0].evidenceCorrectedBy).toBe('v0.2.4');
+    expect(after[0].supersededEvidence).toContain('no OpenCode execution adapter');
+    expect(after[0].evidence).not.toContain('no OpenCode execution adapter');
+  });
+});

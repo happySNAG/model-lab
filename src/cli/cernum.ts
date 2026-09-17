@@ -507,8 +507,21 @@ async function commandDiscover(positional: string[], options: Options): Promise<
     return;
   }
 
-  const discovered: DiscoveredFrontierModel[] = readDiscovered(root)
-    .filter((model) => !providers.includes(model.provider));
+  // A DISCOVERY THAT COULD NOT REACH A PROVIDER MUST NOT ERASE WHAT IT ESTABLISHED EARLIER.
+  //
+  // This used to drop every row for each named provider unconditionally and then write back only
+  // what came out of this run. So `cernum discover opencodeCLI` on a machine where OpenCode is not
+  // installed — or is installed and signed out, or answered nothing — DELETED the whole record for
+  // that provider, including a `proven` row that a metered smoke had paid for. Nothing warned, and
+  // nothing could recover it: the store is the evidence.
+  //
+  // A tool that did not answer is a fact about today, not a retraction of what was established
+  // before. Rows survive; they age out through `DISCOVERY_EVIDENCE_MAX_AGE_MILLISECONDS` like every
+  // other proof, because their `discoveredAt` is untouched — a run that learned nothing does not get
+  // to refresh anybody's freshness either.
+  const existing = readDiscovered(root);
+  const kept: DiscoveredFrontierModel[] = existing.filter((model) => !providers.includes(model.provider));
+  const discovered: DiscoveredFrontierModel[] = [...kept];
 
   for (const provider of providers) {
     // One router, shared with the desktop application. This file used to decide for itself which
@@ -516,13 +529,25 @@ async function commandDiscover(positional: string[], options: Options): Promise<
     // OpenCode — so `cernum discover opencodeCLI` denied a provider this same build supports.
     const status: ProviderStatus = await discoverProvider(provider);
     renderProviderStatus(status);
-    discovered.push(...status.models);
+    if (status.models.length > 0) { discovered.push(...status.models); continue; }
+    const previous = existing.filter((model) => model.provider === provider);
+    if (previous.length === 0) continue;
+    discovered.push(...previous);
+    say('');
+    say(`    ${previous.length} earlier row(s) for ${provider} were KEPT, not erased: this run learned nothing about`);
+    say('    them, which is not the same as establishing that they are gone. Their timestamps are unchanged,');
+    say('    so they still expire on their own schedule.');
   }
 
   writeDiscovered(root, discovered);
   const proven = discovered.filter((model) => model.availability === 'proven');
+  const corrected = discovered.filter((model) => model.evidenceCorrectedBy !== undefined);
   say('');
   say(`${proven.length} model(s) are now selectable. Anything not listed as 'proven' cannot be put in a campaign.`);
+  if (corrected.length > 0) {
+    say(`${corrected.length} row(s) carried evidence a later release superseded; the correction is now written to`);
+    say('disk beside the original text, which is preserved. No availability changed.');
+  }
   say(`Recorded in ${discoveryStorePath(root)}`);
 }
 
