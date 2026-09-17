@@ -8,6 +8,61 @@ GitHub release, and refuses to install anything that does not match.
 
 ---
 
+## `install-cernum-v0.2.4-macos-arm64.sh`
+
+**The current one.** Upgrades an **Apple Silicon** Mac to **Cernum v0.2.4** (build commit
+`6315cb1`), verifies the v0.2.4 corrections without sending a single provider request, and still
+carries the v0.2.1 migration repair because it is idempotent and this machine may never have run it.
+
+### Use it
+
+```bash
+cd ~/Downloads
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/v0.2.4/scripts/releases/install-cernum-v0.2.4-macos-arm64.sh
+shasum -a 256 install-cernum-v0.2.4-macos-arm64.sh   # compare against the digest in the release notes
+less install-cernum-v0.2.4-macos-arm64.sh            # read it before running it
+bash install-cernum-v0.2.4-macos-arm64.sh
+```
+
+Run it as yourself. It needs no `sudo`; everything it writes is in your own home directory or
+`/Applications`.
+
+### What it does, beyond what v0.2.3's did
+
+Steps 1–15 are the v0.2.3 script's, with the version, commit and checksum repinned: arch check,
+three-way checksum verification before mounting, install with the old app **moved aside rather than
+deleted**, shim repair, version/architecture/commit assertions, the migration repair proved by
+`diff -r` and SHA-256, read-only discovery, and a machine manifest.
+
+Step 14 additionally **fails if discovery still carries the superseded v0.2.2 sentence** ("no
+OpenCode execution adapter"), which v0.2.3 wrote into `discovered.json` on a build that had one.
+
+**Step 16 is new, and every check in it is free**:
+
+- `cernum help smoke`, `cernum smoke --help` and `cernum smoke -h` must be **the same page**, and it
+  must document `--models`, `--all-ladder`, `--dry-run`, `--pricing`, `--authorize-metered`,
+  `--authorize-unpriced-metered` and `--otlp-observer`.
+- `--max-attempts banana` must **refuse**, rather than silently dropping the cap.
+- A Claude dry-run must preview as `subscriptionIncluded` and confirm it sent nothing.
+- An OpenCode dry-run must preview as `meteredAPI`, warn that a live run of that scope would be
+  **REFUSED**, and report its cost as **UNAVAILABLE**.
+
+Any of those failing stops the script with "this is not a v0.2.4 build".
+
+### What it will not do
+
+Everything the v0.2.3 list below says, and one thing more: **it cannot accidentally spend.** The only
+`cernum` verbs it issues are `where`, `providers`, `discover`, `models`, `install-command`, `help` and
+`smoke --dry-run`. Even if `smoke` were reached without `--dry-run`, a metered provider would refuse
+without an explicit spending authorization the script never supplies.
+
+---
+
+## `install-cernum-v0.2.3-macos-arm64.sh`
+
+**Superseded by the v0.2.4 script above.** Kept because it is what was published, and a record of
+what was published is not improved by deleting it.
+
 ## `install-cernum-v0.2.3-macos-arm64.sh`
 
 Upgrades an **Apple Silicon** Mac to **Cernum v0.2.3** (commit `4604af3`), and repairs the data that
