@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cernum v0.2.2 — MacBook Pro (Apple Silicon): upgrade, and recover what v0.2.1's migration moved.
+# Cernum v0.2.3 — MacBook Pro (Apple Silicon): upgrade, and recover what v0.2.1's migration moved.
 #
 # Installs nothing until the download matches its published checksum. Copies your evidence back into
 # the Model Lab folder without ever writing to Cernum's copies. Sends no provider request, runs no
@@ -7,10 +7,10 @@
 
 set -uo pipefail
 
-VERSION="0.2.2"; COMMIT="ef1c6b9"
+VERSION="0.2.3"; COMMIT="4604af3"
 ARTIFACT="Cernum-${VERSION}-macos-arm64.dmg"
 BASE="https://github.com/happySNAG/model-lab/releases/download/v${VERSION}"
-EXPECTED_SHA="9eb3b1d991dda7bcadb2cc1b6805701a12f95e4bc575fa40c5f56048d0d09411"
+EXPECTED_SHA="ce243405bc7540297fc3e9b14ed436f30f95328d3dee9c21ed844ad4708aadc0"
 
 APP="/Applications/Cernum.app"; LAUNCHER="${APP}/Contents/Resources/cernum"
 SUPPORT="${HOME}/Library/Application Support"
@@ -135,7 +135,7 @@ for i in model-lab.log settings.json; do
   if [ "$a" = "$b" ]; then ok "${i} identical  (${a})"; else RECOVERY_OK=no; note "${i} DIFFERS: ${a} vs ${b}"; fi
 done
 
-step "10. Confirm v0.2.2 now leaves both sides alone"
+step "10. Confirm the migration now leaves both sides alone"
 note "opening Cernum once: its migration should report 'already carried across and still match'"
 cp "${CURRENT}/cernum.log" /tmp/cernum-log-before-$$ 2>/dev/null || : > /tmp/cernum-log-before-$$
 open -a "$APP"
@@ -172,17 +172,26 @@ step "14. opencode/union-alpha — discovered, and NOT proven"
 UNION_STATE="$(awk '$2 == "opencode/union-alpha" && ($1 == "proven" || $1 == "refused" || $1 == "unproven") {print $1; exit}' "$DISCOVERY_OUT")"
 UNION_STATE="${UNION_STATE:-not recorded}"
 case "$UNION_STATE" in
-  unproven) ok "opencode/union-alpha: DISCOVERED and unproven — correct for v0.2.2. It is not selectable."
-            note "A listing is read from OpenCode's cached catalogue. Only an authorized request that came"
-            note "back and was recorded proves a model, and Cernum has no OpenCode execution adapter yet." ;;
-  proven)   note "opencode/union-alpha reads 'proven' — that is the v0.2.1 defect. You are not running v0.2.2."
-            die "stale evidence or a stale build; re-check the version above" ;;
+  unproven) ok "opencode/union-alpha: DISCOVERED and unproven — correct after discovery alone."
+            note "A listing is read from OpenCode's cached catalogue and proves nothing. v0.2.3 CAN now send"
+            note "OpenCode a request, so this model can be proven — deliberately, and only when you ask:"
+            note "  cernum smoke opencodeCLI --models opencode/union-alpha --dry-run   (sends nothing)"
+            note "  cernum smoke opencodeCLI --models opencode/union-alpha             (SPENDS, per token)" ;;
+  proven)   ok "opencode/union-alpha reads proven — an authorized request was sent and OpenCode named it."
+            note "That is a valid v0.2.3 state if you ran a smoke yourself. If you did not, investigate:"
+            note "a listing must never produce it." ;;
   refused)  note "opencode/union-alpha: OpenCode does not name this identifier on this machine." ;;
   *)        note "opencode/union-alpha: ${UNION_STATE}. If OpenCode read notInstalled or noCredential above,"
             note "install and sign in to the OpenCode CLI yourself, then: cernum discover opencodeCLI" ;;
 esac
-if grep -qE '^ +proven +opencode/' "$DISCOVERY_OUT"; then die "an OpenCode model is recorded as proven; this build is not v0.2.2"; fi
-ok "no OpenCode model is marked proven"
+# A DISCOVERY RUN MUST STILL PROVE NOTHING. This checks the transcript of the `discover` above, which
+# sent no request: if a model came back proven from a LISTING, the build is older than v0.2.2 and the
+# catalogue defect is present. A model proven earlier by a smoke lives in the store, not in this
+# transcript, so this stays correct once you have run one.
+if grep -qE '^ +proven +opencode/' "$DISCOVERY_OUT"; then
+  die "discovery alone reported an OpenCode model as proven. A listing cannot prove a model; this build predates v0.2.2."
+fi
+ok "discovery proved no OpenCode model, which is what discovery is supposed to do"
 
 step "15. This machine's own manifest"
 note "MACHINE-SPECIFIC. The Mac mini's PRIOR-LIVE-CAMPAIGNS-BASELINE.sha256 records THAT machine's"

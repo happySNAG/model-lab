@@ -8,9 +8,9 @@ GitHub release, and refuses to install anything that does not match.
 
 ---
 
-## `install-cernum-v0.2.2-macos-arm64.sh`
+## `install-cernum-v0.2.3-macos-arm64.sh`
 
-Upgrades an **Apple Silicon** Mac to **Cernum v0.2.2** (commit `ef1c6b9`), and repairs the data that
+Upgrades an **Apple Silicon** Mac to **Cernum v0.2.3** (commit `4604af3`), and repairs the data that
 the v0.2.0/v0.2.1 migration moved out of the `Model Lab` folder.
 
 ### Use it
@@ -20,9 +20,9 @@ Download it, check it against the SHA-256 published with it, **read it**, then r
 ```bash
 cd ~/Downloads
 curl -fLO <raw URL pinned to a commit>
-shasum -a 256 install-cernum-v0.2.2-macos-arm64.sh   # compare against the published digest
-less install-cernum-v0.2.2-macos-arm64.sh            # read it before running it
-bash install-cernum-v0.2.2-macos-arm64.sh
+shasum -a 256 install-cernum-v0.2.3-macos-arm64.sh   # compare against the published digest
+less install-cernum-v0.2.3-macos-arm64.sh            # read it before running it
+bash install-cernum-v0.2.3-macos-arm64.sh
 ```
 
 Run it as yourself. It does not need `sudo`, and it will refuse to run with `sudo` doing anything
@@ -31,9 +31,9 @@ useful — everything it writes is in your own home directory or `/Applications`
 ### What it does
 
 1. **Refuses any machine that is not `arm64`**, before downloading a byte. For an Intel Mac use
-   `Cernum-0.2.2-macos-x64.dmg` from the same release.
+   `Cernum-0.2.3-macos-x64.dmg` from the same release.
 2. Records what the old migration moved, reading `migrated-from.json`, before changing anything.
-3. Downloads the DMG and `SHA256SUMS.txt` from the public `happySNAG/model-lab` v0.2.2 release.
+3. Downloads the DMG and `SHA256SUMS.txt` from the public `happySNAG/model-lab` v0.2.3 release.
 4. **Verifies the DMG three ways before mounting it** — a checksum pinned in the script, the checksum
    in the release's own sums file, and the bytes actually downloaded. All three must agree. A
    substituted sums file therefore cannot approve a substituted artifact.
@@ -47,11 +47,13 @@ useful — everything it writes is in your own home directory or `/Applications`
    are the *source* and are never written to; `cp -n` means anything already on the Model Lab side is
    left exactly as it is.
 9. Proves the restore by `diff -r` and SHA-256 rather than by eye.
-10. Opens Cernum once and reads its log, to confirm v0.2.2's migration now reports
+10. Opens Cernum once and reads its log, to confirm the copy-only migration now reports
     *"already been carried across and still match"* instead of moving anything.
 11-14. Runs **read-only** provider discovery and records whether `opencode/union-alpha` is present.
-    It must come back **`unproven`**. The script **fails deliberately if any OpenCode model is marked
-    `proven`**, because that is the v0.2.1 defect and means the build or the stored evidence is stale.
+    Discovery must prove **nothing**: the script fails deliberately if a *listing* reports any
+    OpenCode model as `proven`, because a catalogue cannot prove a model and a build that says
+    otherwise predates v0.2.2. From v0.2.3 OpenCode **can** be proven — by a smoke test you run
+    yourself, deliberately, which spends per token. The script never runs one.
 15. Writes a machine-specific manifest to `~/Library/Application Support/Cernum/manifests/`.
 
 ### What it will not do
