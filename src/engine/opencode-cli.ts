@@ -193,6 +193,44 @@ export const OPENCODE_COST_EXPLANATION =
   + 'charge to this interface, so the cost of an OpenCode attempt is UNAVAILABLE -- not zero, not free, '
   + 'and not estimated. Token counts are recorded where OpenCode reports them.';
 
+/**
+ * WHAT `opencode models` IS, ESTABLISHED BY LOOKING AT WHERE THE ANSWER COMES FROM.
+ *
+ * v0.2.1 recorded every model this listing returned as `proven` — the state that means "this account
+ * can invoke it" and the only state a campaign may select. That was wrong, and the evidence is on
+ * disk: OpenCode answers `models` out of `~/.cache/opencode/models.json`, a cached catalogue that on
+ * this machine held **7,850 models across 221 providers** — a description of the world, not of the
+ * account. `opencode models opencode` narrows it to one provider, and printed 70 of the 103 entries
+ * the catalogue carries there, so some filtering happens; none of it is a per-model entitlement
+ * check, and not one byte of it is a reply from a model.
+ *
+ * This is the SAME failure this engine already refuses for Codex, written down in `discovery.ts`:
+ * `codex debug models` renders a catalogue of what the client knows about, the service refuses
+ * models that appear in it, and so a listing proves nothing about this account. OpenCode was given
+ * the opposite treatment by accident.
+ *
+ * So an OpenCode model is DISCOVERED and UNPROVEN. Holding a credential is not proof either: a
+ * configured key says a service was signed into, never that a particular model will answer. Proof
+ * requires a request that was authorized, was sent, came back, and was written down.
+ */
+export const OPENCODE_LISTING_IS_A_CATALOGUE =
+  '`opencode models` is read from OpenCode\'s locally cached model catalogue, not from a per-model '
+  + 'entitlement check and not from any reply by a model. That OpenCode can name a model is not evidence '
+  + 'that this credential may call it, so every OpenCode model is recorded as DISCOVERED and UNPROVEN.';
+
+/**
+ * How an OpenCode model could become `proven`, and why none is today.
+ *
+ * Cernum has no OpenCode execution adapter — `adaptersFor` in `host-factory.ts` binds `claudeCLI`,
+ * `codexCLI`, `anthropicAPI` and `openaiAPI` and nothing else — so there is at present NO path by
+ * which an OpenCode model can be proven. Saying that plainly is the point: a person who reads
+ * `unproven` here should not go looking for a command that would fix it.
+ */
+export const OPENCODE_NO_PROOF_PATH =
+  'Cernum cannot prove an OpenCode model today: it has no OpenCode execution adapter, so there is no '
+  + 'authorized request it could make and record. Until one exists, no OpenCode model is selectable for '
+  + 'a campaign. `cernum smoke` drives the subscription CLIs only and will refuse opencodeCLI by name.';
+
 /** Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it". */
 export const OPENCODE_SUPPORT_MATURITY =
   'UNTESTED METERED API. Cernum can discover OpenCode, read its version, list its models and see whether '

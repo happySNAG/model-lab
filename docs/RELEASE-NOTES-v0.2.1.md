@@ -1,5 +1,21 @@
 # Cernum v0.2.1 — an installed CLI is reported as installed
 
+> ### ⚠️ Corrected by v0.2.2 (2026-09-17)
+>
+> Two claims below were verified against the code and found wrong. They are left in place because a
+> release note is a record of what was said; this banner is what is true.
+>
+> 1. **"The migration never overwrites and never deletes"** and **"a cross-volume move copies before
+>    removing the source"** — the migration **moved**. `fs.renameSync` takes the source away, and the
+>    cross-device fallback copied and then removed the original. On a real machine, `evidence/` and
+>    `model-lab.log` left the `Model Lab` folder on first launch. Nothing was lost; the old folder was
+>    not the intact backup this note describes. **v0.2.2 copies and preserves the source.**
+> 2. **OpenCode models described as available/listed** — v0.2.0 and v0.2.1 recorded every model
+>    `opencode models` returned as **`proven`**, the state a campaign may select. That listing is read
+>    from a locally cached catalogue and proves nothing about an account. **In v0.2.2 every OpenCode
+>    model is `unproven` and not selectable.**
+
+
 **This is a corrective release. It fixes two defects that, together, made v0.2.0 report a provider as
 absent on a machine where it was installed, authenticated and working.** There are no new features,
 no behaviour changes to campaigns, scoring or evidence, and no change to any stored result.

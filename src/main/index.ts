@@ -166,9 +166,14 @@ async function bootstrap(): Promise<void> {
   //
   // It runs BEFORE the settings store and the service are constructed, because both read from this
   // directory and either one would otherwise create a fresh empty file that the migration would then
-  // have to refuse to overwrite. It never overwrites and never deletes; see `user-data-migration.ts`.
+  // have to refuse to overwrite. It COPIES: the old directory keeps every byte it had, nothing is
+  // overwritten, and nothing is deleted. See `user-data-migration.ts`.
   const migration = migrateUserData(legacyUserDataDirectory(app.getPath('appData')), userData);
   log(`data directory: ${migration.reason}`);
+  if (migration.copied.length > 0) {
+    log(`the previous data directory was left intact at ${migration.legacyDirectory}; `
+      + 'every item carried across was copied, not moved. Delete it yourself if you want the space back.');
+  }
   if (migration.conflicts.length > 0 || migration.failures.length > 0) {
     log(`data directory migration needs a person: conflicts=[${migration.conflicts.join(', ')}] `
       + `failures=[${migration.failures.map((f) => `${f.entry}: ${f.detail}`).join('; ')}]`);

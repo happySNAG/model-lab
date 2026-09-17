@@ -130,15 +130,28 @@ describe('OpenCode · availability is detected, never assumed', () => {
     expect(status.detail).toContain(OPENCODE_EXECUTABLE);
   });
 
-  it('proves a model only because OpenCode itself listed it', async () => {
+  it('DISCOVERS a model OpenCode named, and refuses to call that proof', async () => {
+    // v0.2.1 wrote `proven` here, on the strength of a listing OpenCode reads out of a cached
+    // catalogue of thousands of models it has never called. `proven` is the state a campaign may
+    // select, so that turned a file on disk into permission to spend.
     const status = await discoverOpenCodeCLI({ findExecutable: here, now: NOW, run: READY });
     expect(status.reachability).toBe('ready');
     expect(status.version).toBe('1.18.31');
     const union = status.models.find((m) => m.modelID === UNION_ALPHA_MODEL_ID)!;
-    expect(union.availability).toBe('proven');
-    expect(union.verifiedModelID).toBe(UNION_ALPHA_MODEL_ID);
-    expect(union.evidence).toContain('listed');
-    expect(selectableModels([status]).map((m) => m.modelID)).toContain(UNION_ALPHA_MODEL_ID);
+    expect(union.availability).toBe('unproven');
+    // Nothing came back from a model, so there is no identifier a provider returned.
+    expect(union.verifiedModelID).toBe('');
+    expect(union.evidence).toContain('DISCOVERED, NOT PROVEN');
+    expect(selectableModels([status]).map((m) => m.modelID)).not.toContain(UNION_ALPHA_MODEL_ID);
+  });
+
+  it('proves NOTHING at all from a successful, authenticated, fully-listed discovery', async () => {
+    const status = await discoverOpenCodeCLI({ findExecutable: here, now: NOW, run: READY });
+    // OpenCode ran, held a credential and named five models. Not one of them is selectable.
+    expect(status.reachability).toBe('ready');
+    expect(status.models.length).toBeGreaterThan(0);
+    expect(status.models.some((m) => m.availability === 'proven')).toBe(false);
+    expect(selectableModels([status])).toEqual([]);
   });
 
   it('records a planned model OpenCode did NOT list as refused, never as quietly absent', async () => {
@@ -150,7 +163,7 @@ describe('OpenCode · availability is detected, never assumed', () => {
     const union = status.models.find((m) => m.modelID === UNION_ALPHA_MODEL_ID)!;
     expect(union.availability).toBe('refused');
     expect(selectableModels([status]).map((m) => m.modelID)).not.toContain(UNION_ALPHA_MODEL_ID);
-    expect(status.detail).toContain('NOT listed');
+    expect(status.detail).toContain('NOT named');
   });
 
   it('stops at noCredential before asking for a model listing', async () => {

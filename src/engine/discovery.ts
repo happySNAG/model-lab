@@ -38,6 +38,7 @@ import {
   OPENCODE_EXECUTABLE, OPENCODE_VERSION_ARGUMENTS, OPENCODE_MODELS_ARGUMENTS, OPENCODE_CREDENTIALS_ARGUMENTS,
   UNION_ALPHA_MODEL_ID, parseOpenCodeVersion, parseOpenCodeModels, parseOpenCodeCredentials,
   opencodeHasCredential, opencodeCredentialDisclosure, OPENCODE_SUPPORT_MATURITY, OPENCODE_COST_EXPLANATION,
+  OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_NO_PROOF_PATH,
 } from './opencode-cli';
 
 /** How far the truth about a provider has actually been established. */
@@ -57,11 +58,27 @@ export type Reachability =
 
 /** Whether a model can be put in a campaign, and what established that. */
 export type ModelAvailability =
-  /** A provider listing or an identity smoke test confirmed this account can invoke it. */
+  /**
+   * A REQUEST WAS MADE AND CAME BACK. The only state a campaign may select.
+   *
+   * Established by an identity smoke test, or by a provider listing that is scoped to THIS ACCOUNT —
+   * a metered API's `/v1/models`, answered with the caller's own key, reports what that key may
+   * call. A client-side catalogue is NOT such a listing and never reaches this state: `opencode
+   * models` reads a cached file describing thousands of models it has never contacted, and
+   * `codex debug models` renders what the client knows about while the service refuses entries in
+   * it. v0.2.1 wrote `proven` for every OpenCode listing and so turned a file on disk into
+   * permission to spend; see `opencode-cli.ts`.
+   */
   | 'proven'
-  /** Named as a desired candidate. Nothing has confirmed it. Not selectable. */
+  /**
+   * Nothing has confirmed this account can invoke it. Not selectable.
+   *
+   * Covers both a candidate merely NAMED in the intended ladder and one DISCOVERED in a provider's
+   * catalogue. Discovering a model is finding out it exists, which is worth recording and is not
+   * worth anything more than that.
+   */
   | 'unproven'
-  /** Something asked and was told no — wrong tier, retired model, unknown name. */
+  /** Something asked and was told no — wrong tier, retired model, identifier the provider does not know. */
   | 'refused';
 
 export interface DiscoveredFrontierModel {
@@ -779,9 +796,11 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
     };
   }
 
-  // A MODEL IS PROVEN ONLY IF OPENCODE ITSELF NAMED IT. The desired ladder is a plan; this listing is
-  // evidence. A ladder entry OpenCode did not list comes back `refused`, which is a different and
-  // weaker thing than `unproven` -- something asked, and was told no.
+  // A LISTING IS A CATALOGUE, NOT A PROOF. Every model here is DISCOVERED and UNPROVEN, and none is
+  // selectable. v0.2.1 wrote `proven` for each one, which claimed this account can invoke a model on
+  // the strength of a file OpenCode caches describing thousands of models it has never called. See
+  // `OPENCODE_LISTING_IS_A_CATALOGUE`. `verifiedModelID` stays EMPTY for the same reason: nothing
+  // came back from a model, so there is no identifier a provider returned.
   const desired = DESIRED_CANDIDATE_LADDER.filter((entry) => entry.provider === provider);
   const models: DiscoveredFrontierModel[] = listed.map((modelID) => {
     const planned = desired.find((entry) => entry.modelID === modelID);
@@ -789,11 +808,11 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
       provider,
       modelID,
       displayName: planned?.displayName ?? modelID,
-      availability: 'proven' as const,
-      evidence: `\`${OPENCODE_EXECUTABLE} models\` listed ${modelID} at ${checkedAt}. That OpenCode can address it is `
-        + 'not a claim that the credential is funded, that the model will answer, or that Cernum has ever benchmarked it. '
+      availability: 'unproven' as const,
+      evidence: `\`${OPENCODE_EXECUTABLE} models\` named ${modelID} at ${checkedAt}: DISCOVERED, NOT PROVEN. `
+        + `${OPENCODE_LISTING_IS_A_CATALOGUE} ${OPENCODE_NO_PROOF_PATH} `
         + OPENCODE_COST_EXPLANATION,
-      verifiedModelID: modelID,
+      verifiedModelID: '',
       desiredEfforts: planned?.desiredEfforts ?? [],
       discoveredAt: checkedAt,
     };
@@ -805,8 +824,9 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
       modelID: entry.modelID,
       displayName: entry.displayName,
       availability: 'refused' as const,
-      evidence: `\`${OPENCODE_EXECUTABLE} models\` did not list ${entry.modelID} at ${checkedAt}, though it listed `
-        + `${listed.length} others. It is recorded as refused rather than quietly omitted.`,
+      evidence: `\`${OPENCODE_EXECUTABLE} models\` did not name ${entry.modelID} at ${checkedAt}, though it named `
+        + `${listed.length} others. OpenCode does not know this identifier, which is recorded as refused rather `
+        + 'than quietly omitted. Being named would not have proven it either — nothing in this listing does.',
       verifiedModelID: '',
       desiredEfforts: entry.desiredEfforts,
       discoveredAt: checkedAt,
@@ -814,14 +834,17 @@ export async function discoverOpenCodeCLI(options: DiscoveryOptions = {}): Promi
   }
 
   const unionAlpha = models.find((m) => m.modelID === UNION_ALPHA_MODEL_ID);
+  // `ready` describes OPENCODE — it ran and answered. It has never described a model, and now that
+  // no OpenCode model is proven, the sentence says which of the two it is talking about.
   return {
     ...base,
     executablePath,
     version,
     reachability: 'ready',
     models,
-    detail: `OpenCode ${version} listed ${listed.length} models at ${checkedAt}. `
-      + `${UNION_ALPHA_MODEL_ID} was ${unionAlpha?.availability === 'proven' ? 'listed' : 'NOT listed'}. `
+    detail: `OpenCode ${version} named ${listed.length} models at ${checkedAt}, none of them proven. `
+      + `${UNION_ALPHA_MODEL_ID} was ${unionAlpha && unionAlpha.availability !== 'refused' ? 'DISCOVERED (unproven)' : 'NOT named'}. `
+      + `${OPENCODE_LISTING_IS_A_CATALOGUE} ${OPENCODE_NO_PROOF_PATH} `
       + `${disclosure} ${OPENCODE_SUPPORT_MATURITY}`,
   };
 }

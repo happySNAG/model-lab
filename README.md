@@ -146,7 +146,7 @@ kept. You can export the whole store as a single JSON bundle with a digest at an
 | **Remote Ollama on another machine** | ❌ Refused by design | Endpoints that are not `127.0.0.1`, `localhost` or `::1` are rejected. Every result records the hardware that produced it; a remote host would make that record a lie. |
 | **Claude subscription**, via the official `claude` CLI | ✅ Yes | Cernum runs the CLI *you* installed and signed into. It never installs one, never reads its stored session, and never reaches the service any other way. Billed as `subscriptionIncluded`: the marginal API charge is zero because a plan you already pay for covers it, while consuming a finite allowance. That is **not** the same as free, and Cernum will not call it free. |
 | **Codex subscription**, via the official `codex` CLI | ✅ Yes | As above. A Codex CLI signed in with an **API key** is *refused* rather than used: the same binary serves both, and running a metered session under a subscription label would report a real per-token charge as zero. |
-| **[OpenCode](https://opencode.ai)**, via the official `opencode` CLI | ⚠️ Discovery only, untested | Cernum can find OpenCode, read its version, list the models it can address and see whether a credential is configured — all without spending anything. It is classed as a **metered API**, because the credential OpenCode carries is an API key, so requests are billed per token against your own key. **No scored Cernum campaign has ever been run through OpenCode**, and no OpenCode result is published in this repository. |
+| **[OpenCode](https://opencode.ai)**, via the official `opencode` CLI | ⚠️ Discovery only, nothing proven | Cernum can find OpenCode, read its version, list the models it names and see whether a credential is configured — all without spending anything. **Every OpenCode model is recorded as discovered and UNPROVEN, and none is selectable for a campaign.** `opencode models` is read from a locally cached catalogue of thousands of models, so it says what OpenCode knows about, never what your credential may call. Cernum has no OpenCode execution adapter, so there is no request it could make to prove one. It is classed as a **metered API**, because the credential OpenCode carries is an API key. **No scored Cernum campaign has ever been run through OpenCode**, and no OpenCode result is published in this repository. |
 | **Anthropic API / OpenAI API**, with your own key | ⚠️ Implemented, not exercised | Key handling, metered billing and spending authorization exist and are tested. No published campaign has used them. Treat them as untested metered API support. |
 | **llama.cpp, LM Studio, vLLM, MLX, …** | ❌ Not yet | The engine has a clean adapter boundary (`src/core/adapter.ts`) and Ollama is one implementation of it, so another local runtime is a tractable contribution. None exists today. |
 
@@ -285,12 +285,19 @@ runtime's reported model identity matched what was asked for.
 | Settings, sessions, log | `~/Library/Application Support/Cernum/` | `%APPDATA%\Cernum\` |
 | Evidence store (append-only JSON) | `~/Library/Application Support/Cernum/evidence/` | `%APPDATA%\Cernum\evidence\` |
 
-> **Upgrading from Cernum?** These folders are named after the application, so the rename moved
-> them. The first launch of Cernum carries your campaigns, evidence store, settings and log across
-> from the old `Cernum` folder automatically, and writes a `migrated-from.json` recording exactly
-> what moved. It never overwrites and never deletes: if a file already exists on the new side, both
-> copies are left alone and the log says so. Your benchmark history is not lost — and if the migration
-> cannot finish, the originals are untouched where they have always been.
+> **Upgrading from Model Lab?** These folders are named after the application, so the rename
+> repointed them. The first launch of Cernum **copies** your campaigns, evidence store, settings and
+> log across from the old `Model Lab` folder and writes a `migrated-from.json` recording exactly what
+> was copied. **The old folder keeps every byte it had**: nothing is moved, nothing is overwritten and
+> nothing is deleted, so after the migration your data exists in both places and you can delete the
+> old folder yourself once you are satisfied. If a file already exists on the new side with different
+> contents, both copies are left alone and the log says so; if it is already there and identical, the
+> migration says so and does nothing. If the copy cannot finish, the originals are untouched.
+>
+> **In v0.2.0 and v0.2.1 this migration MOVED rather than copied** — `evidence/` and `model-lab.log`
+> left the old folder on first launch. Nothing was lost, but the old folder was not the intact backup
+> those releases described. Fixed in v0.2.2; see `docs/RELEASE-NOTES-v0.2.2.md` for how to put the
+> moved items back.
 
 Both are shown in *Settings & diagnostics* with *Open* buttons, and you can point the evidence store
 somewhere else. History survives updates and reinstalls.

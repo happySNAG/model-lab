@@ -122,20 +122,18 @@ describe('v0.2.1 · an OpenCode the person installed is reported as installed', 
     expect(status.detail).toContain('not a claim that it is valid');
   });
 
-  it('reports Union Alpha as proven, selectable, and proven BECAUSE OpenCode listed it', async () => {
+  it('reports Union Alpha as DISCOVERED and unproven — found, and not thereby permitted', async () => {
     installOpenCode(path.join(home, '.opencode', 'bin'));
 
     const status = await discoverProvider('opencodeCLI');
     const union = status.models.find((model) => model.modelID === UNION_ALPHA_MODEL_ID);
 
     expect(union).toBeDefined();
-    expect(union!.availability).toBe('proven');
-    expect(union!.verifiedModelID).toBe(UNION_ALPHA_MODEL_ID);
-    expect(union!.evidence).toContain('listed');
-    // Selectable is the fact that matters: a model that is not selectable cannot enter a manifest,
-    // which is precisely the state v0.2.0 left Union Alpha in on a machine that had it.
-    expect(selectableModels([status]).map((model) => model.modelID)).toContain(UNION_ALPHA_MODEL_ID);
-    expect(status.detail).toContain(`${UNION_ALPHA_MODEL_ID} was listed`);
+    expect(union!.availability).toBe('unproven');
+    expect(union!.verifiedModelID).toBe('');
+    expect(union!.evidence).toContain('DISCOVERED, NOT PROVEN');
+    expect(selectableModels([status]).map((model) => model.modelID)).not.toContain(UNION_ALPHA_MODEL_ID);
+    expect(status.detail).toContain(`${UNION_ALPHA_MODEL_ID} was DISCOVERED (unproven)`);
   });
 
   it('says NOT listed, and refuses to make it selectable, when OpenCode does not carry Union Alpha', async () => {
@@ -150,7 +148,7 @@ describe('v0.2.1 · an OpenCode the person installed is reported as installed', 
     expect(union!.availability).toBe('refused');
     expect(union!.verifiedModelID).toBe('');
     expect(selectableModels([status]).map((model) => model.modelID)).not.toContain(UNION_ALPHA_MODEL_ID);
-    expect(status.detail).toContain(`${UNION_ALPHA_MODEL_ID} was NOT listed`);
+    expect(status.detail).toContain(`${UNION_ALPHA_MODEL_ID} was NOT named`);
   });
 
   it('finds an OpenCode installed somewhere non-default, and prints where it found it', async () => {
@@ -173,7 +171,7 @@ describe('v0.2.1 · an OpenCode the person installed is reported as installed', 
     const status = await discoverProvider('opencodeCLI');
 
     expect(status.executablePath).toBe(chosen);
-    expect(status.detail).toContain(`${UNION_ALPHA_MODEL_ID} was listed`);
+    expect(status.detail).toContain(`${UNION_ALPHA_MODEL_ID} was DISCOVERED (unproven)`);
   });
 
   it('still reports notInstalled when nothing is installed — the search widened, not the claim', async () => {
@@ -287,7 +285,7 @@ describe('v0.2.1 · `cernum discover opencodeCLI`, run as a person runs it', () 
     return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
   };
 
-  it('discovers OpenCode and proves Union Alpha, instead of denying the provider exists', () => {
+  it('discovers OpenCode and records Union Alpha unproven, instead of denying the provider exists', () => {
     installOpenCode(path.join(home, '.opencode', 'bin'));
     const root = path.join(home, 'campaigns');
 
@@ -298,13 +296,22 @@ describe('v0.2.1 · `cernum discover opencodeCLI`, run as a person runs it', () 
     expect(result.output).not.toContain('is not a provider');
     expect(result.output).toContain('[ready]');
     expect(result.output).toContain('1.18.31');
-    expect(result.output).toContain(`proven`);
     expect(result.output).toContain(UNION_ALPHA_MODEL_ID);
-    // And it was written down, which is the step that lets Union Alpha enter a manifest at all.
+    // The terminal answers, and what it records is "unproven" — the model was found, and finding it
+    // is not permission to spend on it.
+    expect(result.output).toContain('unproven');
+    // The renderer wraps the detail sentence at 76 columns, so compare on collapsed whitespace
+    // rather than on where the terminal happened to break the line.
+    expect(result.output.replace(/\s+/g, ' ')).toContain('none of them proven');
     const store = fs.readFileSync(path.join(root, '.providers', 'discovered.json'), 'utf8');
     expect(store).toContain(UNION_ALPHA_MODEL_ID);
-    expect(JSON.parse(store).models.find((model: { modelID: string }) => model.modelID === UNION_ALPHA_MODEL_ID).availability)
-      .toBe('proven');
+    const recorded = JSON.parse(store).models.find((model: { modelID: string }) => model.modelID === UNION_ALPHA_MODEL_ID);
+    expect(recorded.availability).toBe('unproven');
+    expect(recorded.verifiedModelID).toBe('');
+    // Nothing OpenCode offers may be selected off the back of a discovery run.
+    expect(JSON.parse(store).models
+      .filter((model: { provider: string }) => model.provider === 'opencodeCLI')
+      .some((model: { availability: string }) => model.availability === 'proven')).toBe(false);
   }, 120_000);
 
   it('offers OpenCode by name in the list `cernum providers` prints', () => {

@@ -414,7 +414,11 @@ async function commandSmoke(positional: string[], options: Options): Promise<voi
   for (const provider of wanted) {
     if (provider !== 'claudeCLI' && provider !== 'codexCLI') {
       fail(`'${provider}' is not a subscription CLI. An identity smoke test drives your own signed-in `
-        + '`claude` or `codex`; metered API identity is established by `discover`, which lists models directly.');
+        + '`claude` or `codex`.\n'
+        + 'For anything else, note that `discover` does NOT establish identity: it reads a listing, and a '
+        + 'listing says what a provider knows about, not what it will answer to. An OpenCode model in '
+        + 'particular is recorded as discovered and UNPROVEN, and Cernum has no OpenCode execution adapter, '
+        + 'so there is no request it could make to prove one.');
     }
   }
 

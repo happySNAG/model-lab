@@ -125,7 +125,11 @@ both interfaces.
 ### A model name is a plan, not a capability
 
 There is a list of models this project intends to test. Every one of them starts **`unproven`**, and
-nothing but **provider discovery** or an **identity smoke test** moves it to `proven`. The shared
+nothing but an **identity smoke test**, or an **account-scoped provider listing**, moves it to
+`proven`. A client-side catalogue does not: `opencode models` is read from a cached file describing
+thousands of models OpenCode has never called, so every OpenCode model is recorded as **discovered
+and unproven** and none is selectable. v0.2.1 marked them `proven` and this is the correction. The
+shared
 campaign builder refuses an unproven model outright — in the terminal and in the interface, from the
 same function — so editing that list can never make a model runnable.
 
