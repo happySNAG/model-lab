@@ -1,8 +1,8 @@
 {
-  "name": "model-lab",
-  "productName": "Model Lab",
+  "name": "cernum",
+  "productName": "Cernum",
   "version": "0.1.0",
-  "description": "A desktop benchmarking environment for comparing local language models on repeatable, deterministic evaluations.",
+  "description": "Test. Discern. Decide. A desktop benchmarking environment for comparing AI models \u2014 local runtimes and frontier CLIs \u2014 on repeatable, deterministic evaluations.",
   "keywords": [
     "llm",
     "benchmark",
@@ -13,7 +13,10 @@
     "desktop",
     "model-comparison",
     "macos",
-    "windows"
+    "windows",
+    "cernum",
+    "frontier-models",
+    "opencode"
   ],
   "homepage": "https://github.com/happySNAG/model-lab#readme",
   "repository": {

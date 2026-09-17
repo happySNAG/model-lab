@@ -25,7 +25,7 @@ export function HomeView({ shell }: { shell: Shell }) {
       <div className="page-head">
         <div>
           <h1>Home</h1>
-          <p>Model Lab runs fixed, synthetic benchmark suites against the language models installed on {here} and keeps every result as permanent evidence. Nothing leaves this machine.</p>
+          <p>Cernum runs fixed, synthetic benchmark suites against language models and keeps every result as permanent evidence. Local models run on {here} and their prompts never leave it. Frontier candidates, if you add any, send their prompts to that provider — Cernum tells you which, and asks once, before a campaign starts.</p>
         </div>
         <button className="btn primary" onClick={() => shell.go(running ? 'live' : 'benchmark')} data-testid="quick-benchmark">
           {running ? 'View live run' : 'New benchmark'}
@@ -43,7 +43,7 @@ export function HomeView({ shell }: { shell: Shell }) {
               <dt>Graphics</dt><dd>{machine.gpuLabel}</dd>
             </dl>
           ) : <p className="muted">Reading hardware…</p>}
-          <p className="faint small" style={{ marginTop: 10 }}>Anything the system did not report is shown as not reported. Model Lab never estimates hardware facts.</p>
+          <p className="faint small" style={{ marginTop: 10 }}>Anything the system did not report is shown as not reported. Cernum never estimates hardware facts.</p>
         </Card>
         <OllamaStatusCard shell={shell} />
       </div>

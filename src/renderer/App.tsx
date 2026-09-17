@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
+import { TAGLINE } from '../shared/product';
 import type { OllamaStatus, SessionProgress, BuildInfo, ScreenID } from '../shared/ipc';
 import { isMac, here } from './components';
 import { HomeView } from './views/Home';
@@ -75,7 +76,7 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-hidden>ML</div>
-          <div><div className="brand-name">Model Lab</div><div className="brand-sub">Local model benchmarking</div></div>
+          <div><div className="brand-name">Cernum</div><div className="brand-sub">{TAGLINE}</div></div>
         </div>
         <nav aria-label="Screens">
           {NAV.map((item, index) => (

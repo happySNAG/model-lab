@@ -42,13 +42,13 @@ export function OllamaStatusCard({ shell }: { shell: Shell }) {
           {status.state === 'notInstalled' && (
             <div className="stack">
               <div className="note">
-                <strong>Guided setup.</strong> Model Lab needs Ollama, a free local runtime that runs language models on {here}.
+                <strong>Guided setup.</strong> Cernum needs Ollama, a free local runtime that runs language models on {here}.
                 <ol className="list-plain" style={{ marginTop: 6 }}>
                   {isMac
                     ? <li>Download Ollama for macOS from ollama.com, open the download, and drag <em>Ollama</em> into Applications (no account needed).</li>
                     : <li>Download and install Ollama for Windows from ollama.com (one installer, no account).</li>}
                   <li>Open Ollama once so it runs in the background{isMac ? ' (it appears in the menu bar)' : ''}, then press <em>Check again</em>.</li>
-                  <li>Add a model on the Models screen. Model Lab only downloads a model when you explicitly ask it to.</li>
+                  <li>Add a model on the Models screen. Cernum only downloads a model when you explicitly ask it to.</li>
                 </ol>
               </div>
               <div className="row">

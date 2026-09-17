@@ -33,14 +33,14 @@ export function SettingsView({ shell }: { shell: Shell }) {
 
   return (
     <div className="page">
-      <div className="page-head"><div><h1>Settings & diagnostics</h1><p>Where Model Lab talks to Ollama, where it keeps evidence, and what it knows about {here} and itself.</p></div></div>
+      <div className="page-head"><div><h1>Settings & diagnostics</h1><p>Where Cernum talks to Ollama, where it keeps evidence, and what it knows about {here} and itself.</p></div></div>
 
       <div className="grid-2">
         <Card title="Ollama">
           {draft && (
             <div className="stack">
               <div className="field"><label htmlFor="endpoint">Endpoint</label><input id="endpoint" className="input mono" value={draft.ollamaEndpoint} onChange={(e) => setDraft({ ...draft, ollamaEndpoint: e.target.value })} spellCheck={false} /></div>
-              <p className="small faint">Must be a loopback address (127.0.0.1, localhost, or ::1). Model Lab benchmarks the runtime on {here} so that the hardware evidence stays truthful. Ollama's default is <code>http://127.0.0.1:11434</code>.</p>
+              <p className="small faint">Must be a loopback address (127.0.0.1, localhost, or ::1). Cernum benchmarks the runtime on {here} so that the hardware evidence stays truthful. Ollama's default is <code>http://127.0.0.1:11434</code>.</p>
               <div className="field"><label htmlFor="thinking">Model thinking</label>
                 <select id="thinking" className="input" value={draft.thinkingMode} onChange={(e) => setDraft({ ...draft, thinkingMode: e.target.value as Settings['thinkingMode'] })} data-testid="thinking-mode">
                   <option value="disabled">Disabled on every request (recommended)</option>
@@ -48,7 +48,7 @@ export function SettingsView({ shell }: { shell: Shell }) {
                   <option value="runtimeDefault">Leave to Ollama's default (recorded as such)</option>
                 </select>
               </div>
-              <p className="small faint">Some models reason before answering. Model Lab states this setting explicitly on every request so it is never an unknown variable in the evidence.</p>
+              <p className="small faint">Some models reason before answering. Cernum states this setting explicitly on every request so it is never an unknown variable in the evidence.</p>
             </div>
           )}
         </Card>
@@ -68,7 +68,7 @@ export function SettingsView({ shell }: { shell: Shell }) {
                 <button className="btn" onClick={() => api.openPath(diagnostics.build.userDataPath)}>Open application data</button>
                 <button className="btn" onClick={exportBundle} disabled={exporting}>{exporting ? 'Exporting…' : 'Export evidence bundle…'}</button>
               </div>
-              <p className="small faint">The store is append-only JSON: nothing is ever overwritten or deleted. {isMac ? 'Removing Model Lab from Applications leaves this folder in place.' : 'Uninstalling Model Lab leaves this folder in place.'}</p>
+              <p className="small faint">The store is append-only JSON: nothing is ever overwritten or deleted. {isMac ? 'Removing Cernum from Applications leaves this folder in place.' : 'Uninstalling Cernum leaves this folder in place.'}</p>
             </div>
           )}
         </Card>
@@ -96,7 +96,7 @@ export function SettingsView({ shell }: { shell: Shell }) {
             </dl>
           )}
         </Card>
-        <Card title="About Model Lab" actions={<button className="btn small" onClick={copyDiagnostics}>Copy diagnostics</button>}>
+        <Card title="About Cernum" actions={<button className="btn small" onClick={copyDiagnostics}>Copy diagnostics</button>}>
           {diagnostics && (
             <dl className="kv small">
               <dt>Version</dt><dd>{diagnostics.build.version} <span className="faint">(build {diagnostics.build.commit})</span></dd>
@@ -107,7 +107,7 @@ export function SettingsView({ shell }: { shell: Shell }) {
               <dt>Log file</dt><dd><span className="mono small">{diagnostics.build.logPath}</span> <button className="btn link small" onClick={() => api.revealPath(diagnostics.build.logPath)}>{isMac ? 'Show in Finder' : 'Show in Explorer'}</button></dd>
             </dl>
           )}
-          <p className="small faint" style={{ marginTop: 10 }}>Model Lab measures; it never decides for you. Benchmark results are evidence, not authorization: nothing here changes how any model is used anywhere. Diagnostics stay on {here} unless you copy them somewhere yourself.</p>
+          <p className="small faint" style={{ marginTop: 10 }}>Cernum measures; it never decides for you. Benchmark results are evidence, not authorization: nothing here changes how any model is used anywhere. Diagnostics stay on {here} unless you copy them somewhere yourself.</p>
         </Card>
       </div>
     </div>

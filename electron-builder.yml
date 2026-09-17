@@ -1,6 +1,6 @@
-# Model Lab · packaging.
+# Cernum · packaging.
 #
-# macOS (primary): an application bundle "Model Lab.app" for Apple Silicon (arm64) and Intel (x64),
+# macOS (primary): an application bundle "Cernum.app" for Apple Silicon (arm64) and Intel (x64),
 # each shipped as a DMG (drag to Applications) and a ZIP. Builds are UNSIGNED and NOT NOTARIZED unless
 # a Developer ID identity is configured through the standard electron-builder environment variables
 # (CSC_LINK / CSC_KEY_PASSWORD, APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID). Without one,
@@ -9,9 +9,9 @@
 #
 # Windows: an NSIS installer (per-user, no admin required, Start Menu and Desktop shortcuts, clean
 # uninstall that KEEPS the evidence store) plus a portable executable. Unsigned unless configured.
-appId: org.modellab.desktop
-productName: Model Lab
-copyright: Copyright (c) 2026 Model Lab contributors. MIT licensed.
+appId: org.cernum.desktop
+productName: Cernum
+copyright: Copyright (c) 2026 Cernum contributors. MIT licensed.
 directories:
   output: dist
   buildResources: build
@@ -20,7 +20,7 @@ files:
   - package.json
   - "!**/*.map"
 extraResources:
-  # The user guide travels with the app so Help → "Model Lab Guide" works offline.
+  # The user guide travels with the app so Help → "Cernum Guide" works offline.
   - from: README.md
     to: README.md
 asar: true
@@ -38,7 +38,7 @@ mac:
       arch: [arm64, x64]
   category: public.app-category.developer-tools
   icon: build/icon.icns
-  artifactName: Model-Lab-${version}-macos-${arch}.${ext}
+  artifactName: Cernum-${version}-macos-${arch}.${ext}
   darkModeSupport: true
   minimumSystemVersion: "12.0"
   # No signing identity by default (see header). `identity: null` stops electron-builder from
@@ -48,10 +48,10 @@ mac:
   gatekeeperAssess: false
   notarize: false
   extendInfo:
-    NSHumanReadableCopyright: Copyright (c) 2026 Model Lab contributors. MIT licensed.
+    NSHumanReadableCopyright: Copyright (c) 2026 Cernum contributors. MIT licensed.
     LSApplicationCategoryType: public.app-category.developer-tools
 dmg:
-  title: Model Lab ${version}
+  title: Cernum ${version}
   icon: build/icon.icns
   iconSize: 96
   window:
@@ -72,7 +72,7 @@ win:
     - target: portable
       arch: [x64]
   icon: build/icon.ico
-  artifactName: Model-Lab-${version}-win-${arch}.${ext}
+  artifactName: Cernum-${version}-win-${arch}.${ext}
   # Signing is opt-in: set WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD (or an Azure Trusted Signing config) to sign.
   verifyUpdateCodeSignature: false
 nsis:
@@ -82,14 +82,14 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Model Lab
+  shortcutName: Cernum
   runAfterFinish: true
   deleteAppDataOnUninstall: false
-  artifactName: Model-Lab-Setup-${version}-${arch}.${ext}
-  uninstallDisplayName: Model Lab
+  artifactName: Cernum-Setup-${version}-${arch}.${ext}
+  uninstallDisplayName: Cernum
   license: build/installer-license.txt
 portable:
-  artifactName: Model-Lab-Portable-${version}-${arch}.${ext}
+  artifactName: Cernum-Portable-${version}-${arch}.${ext}
   requestExecutionLevel: user
 
 linux:

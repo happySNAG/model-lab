@@ -251,7 +251,7 @@ function Recommendation({ results, onRecord }: { results: SessionResults; onReco
   return (
     <div className="stack">
       <div className="note">
-        <strong>How to read this.</strong> Model Lab derives one of four outcomes per model — recommended, not recommended, insufficient evidence, disqualified — under a fixed policy:
+        <strong>How to read this.</strong> Cernum derives one of four outcomes per model — recommended, not recommended, insufficient evidence, disqualified — under a fixed policy:
         at least {policy.minimumSamplesPerDimension} judged answers in each of at least {policy.minimumDimensionsWithEvidence} capabilities, every covered capability at {Math.round(policy.recommendQualityThresholdMilli / 10)}% or better, and no crossed hard boundary.
         A short benchmark usually yields "insufficient evidence"; the full lab gives every capability enough cases. A recommendation is evidence for your decision; it changes nothing by itself.
       </div>

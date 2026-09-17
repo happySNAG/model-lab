@@ -66,7 +66,7 @@ export function ModelsView({ shell }: { shell: Shell }) {
       <div className="grid-2">
         <Card title="Add a model">
           <div className="stack">
-            <p className="muted small">Type an Ollama model name (for example <code>llama3.2:3b</code>). Model Lab asks Ollama to download it only after you confirm. Downloads are often several gigabytes.</p>
+            <p className="muted small">Type an Ollama model name (for example <code>llama3.2:3b</code>). Cernum asks Ollama to download it only after you confirm. Downloads are often several gigabytes.</p>
             <div className="row">
               <input className="input" style={{ flex: 1 }} placeholder="model name, e.g. gemma3:4b" value={pullName} onChange={(e) => setPullName(e.target.value)} disabled={!running || pulling} aria-label="Model name to download"
                      onKeyDown={(e) => { if (e.key === 'Enter' && running && pullName.trim() && !pulling) setConfirming(true); }} />
@@ -98,7 +98,7 @@ export function ModelsView({ shell }: { shell: Shell }) {
       {confirming && (
         <Modal title={`Download ${pullName.trim()}?`} onClose={() => setConfirming(false)}
           actions={<><button className="btn" onClick={() => setConfirming(false)}>Cancel</button><button className="btn primary" onClick={startPull}>Download</button></>}>
-          <p>Model Lab will ask Ollama on {here} to download <strong>{pullName.trim()}</strong> from the Ollama library. This can be several gigabytes and may take a while. You can cancel at any time; nothing else is installed or changed.</p>
+          <p>Cernum will ask Ollama on {here} to download <strong>{pullName.trim()}</strong> from the Ollama library. This can be several gigabytes and may take a while. You can cancel at any time; nothing else is installed or changed.</p>
         </Modal>
       )}
     </div>

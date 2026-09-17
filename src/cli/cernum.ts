@@ -42,14 +42,14 @@ import {
   FABLE_SUBSTITUTION_REASON, prepareManifest, renderPreparedManifest,
   applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
 } from '../engine/index';
-import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
+import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
-const DEFAULT_ENDPOINT = process.env.MODEL_LAB_OLLAMA_ENDPOINT ?? 'http://127.0.0.1:11434';
+const DEFAULT_ENDPOINT = environmentOverride('OLLAMA_ENDPOINT') ?? 'http://127.0.0.1:11434';
 
 /** The same root the desktop application uses, so both see the same campaigns. */
 export function defaultCampaignRoot(): string {
-  const override = process.env.MODEL_LAB_CAMPAIGN_ROOT;
+  const override = environmentOverride('CAMPAIGN_ROOT');
   if (override) return override;
   const home = os.homedir();
   const base = process.platform === 'darwin' ? path.join(home, 'Library', 'Application Support', PRODUCT.name)

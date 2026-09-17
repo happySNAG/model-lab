@@ -12,6 +12,8 @@ import { CampaignService } from './campaign-service';
 import { SettingsStore, evidenceRootFor } from './settings';
 import { detectOllama, ModelPuller, openDownloadPage, startOllama, OLLAMA_DOWNLOAD_URL } from './ollama-runtime';
 import { menuTemplate } from './menu';
+import { PRODUCT, environmentOverride } from '../shared/product';
+import { migrateUserData, legacyUserDataDirectory } from './user-data-migration';
 import { bundleDigest } from '../core/store';
 import { inspectableJSON } from '../core/digest';
 import { randomBytes } from 'node:crypto';
@@ -20,10 +22,11 @@ declare const __BUILD_COMMIT__: string;
 declare const __BUILD_TIME__: string;
 declare const __APP_VERSION__: string;
 
-const PRODUCT_NAME = 'Model Lab';
+const PRODUCT_NAME = PRODUCT.name;
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 const isMac = process.platform === 'darwin';
-if (process.env.MODEL_LAB_USER_DATA) app.setPath('userData', process.env.MODEL_LAB_USER_DATA);
+const userDataOverride = environmentOverride('USER_DATA');
+if (userDataOverride) app.setPath('userData', userDataOverride);
 app.setName(PRODUCT_NAME);
 
 let mainWindow: BrowserWindow | undefined;
@@ -31,7 +34,7 @@ let service: LabService;
 let settingsStore: SettingsStore;
 let quitting = false;
 const puller = new ModelPuller();
-const logPath = () => path.join(app.getPath('userData'), 'model-lab.log');
+const logPath = () => path.join(app.getPath('userData'), `${PRODUCT.slug}.log`);
 
 function log(line: string): void {
   try { fs.appendFileSync(logPath(), `${new Date().toISOString()} ${line}\n`); } catch { /* logging must never break the app */ }
@@ -154,6 +157,23 @@ function installMenu(): void {
 async function bootstrap(): Promise<void> {
   const userData = app.getPath('userData');
   fs.mkdirSync(userData, { recursive: true });
+
+  // THE RENAME MUST NOT LOOK LIKE A DELETION.
+  //
+  // Electron derives `userData` from the application's name, so renaming the product to Cernum
+  // repoints this directory. Without this call the application starts with no campaigns and no
+  // evidence store, while every byte is still on disk under the old name -- and nothing says so.
+  //
+  // It runs BEFORE the settings store and the service are constructed, because both read from this
+  // directory and either one would otherwise create a fresh empty file that the migration would then
+  // have to refuse to overwrite. It never overwrites and never deletes; see `user-data-migration.ts`.
+  const migration = migrateUserData(legacyUserDataDirectory(app.getPath('appData')), userData);
+  log(`data directory: ${migration.reason}`);
+  if (migration.conflicts.length > 0 || migration.failures.length > 0) {
+    log(`data directory migration needs a person: conflicts=[${migration.conflicts.join(', ')}] `
+      + `failures=[${migration.failures.map((f) => `${f.entry}: ${f.detail}`).join('; ')}]`);
+  }
+
   settingsStore = new SettingsStore(path.join(userData, 'settings.json'));
   const initial = new LabService({ userData, evidenceRoot: evidenceRootFor(userData, settingsStore.get()), getSettings: () => settingsStore.get() });
   await initial.open();

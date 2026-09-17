@@ -148,7 +148,7 @@ export function ProvidersView({ shell }: { shell: Shell }) {
             <div className="note warn">
               <p>{row.credential.remedy}</p>
               <p className="small">
-                The key is never written to disk by Model Lab, never stored in a campaign, a manifest, a log or a
+                The key is never written to disk by Cernum, never stored in a campaign, a manifest, a log or a
                 report, and is never shown here at any length.
               </p>
             </div>
@@ -156,7 +156,7 @@ export function ProvidersView({ shell }: { shell: Shell }) {
 
           {row.executionClass === 'subscriptionCLI' && (
             <p className="muted small">
-              Model Lab runs the official command you installed and signed into yourself. It never reads its stored
+              Cernum runs the official command you installed and signed into yourself. It never reads its stored
               session or token files, never reuses a browser session, and never reaches the service any other way.
             </p>
           )}

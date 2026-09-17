@@ -31,7 +31,7 @@ import type { FinalReport } from '../engine/campaign';
 import type { VerificationReport } from '../engine/manifest';
 import type { CandidateRanking } from '../engine/ranking';
 import { RANKING_VIEW_LABELS } from '../engine/ranking';
-import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND } from '../shared/product';
+import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import type {
   CampaignRow, CampaignDetail, CampaignCreateRequest, CampaignExecutionRow, CampaignStartDisclosure,
   CohortReconciliationRow, CostPreviewRow, FrontierMetricsRow, ProviderStatusRow, TerminalCommandRow,
@@ -191,7 +191,7 @@ export class CampaignService extends EventEmitter {
 
   /** The same path `cernum` computes, so both see the same campaigns. */
   root(): string {
-    return process.env.MODEL_LAB_CAMPAIGN_ROOT ?? path.join(app.getPath('userData'), CAMPAIGN_DIRECTORY_NAME);
+    return environmentOverride('CAMPAIGN_ROOT') ?? path.join(app.getPath('userData'), CAMPAIGN_DIRECTORY_NAME);
   }
 
   private directory(name: string): string {

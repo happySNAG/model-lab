@@ -1002,7 +1002,7 @@ function FrontierPicker({ providers, selected, onChange }: {
           {selected.some((entry) => entry.provider === 'anthropicAPI' || entry.provider === 'openaiAPI') && (
             <div className="note warn">
               A metered candidate needs the provider's published prices, with their source and when you captured them.
-              Model Lab never fetches prices — an estimate that changed between the preview and the run is not an estimate
+              Cernum never fetches prices — an estimate that changed between the preview and the run is not an estimate
               anybody can approve — so a metered campaign is created from the terminal with
               <code> cernum create … --pricing prices.json</code> until a price editor exists here.
             </div>
