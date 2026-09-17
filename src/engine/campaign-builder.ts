@@ -82,7 +82,7 @@ export interface FrontierCandidateRequest {
   maxInputTokens?: number;
   maxOutputTokens?: number;
   /** Which of the two key sources the credential was found in. Decided by the resolver, never guessed. */
-  authorizationMode?: 'apiKeyEnvironment' | 'apiKeyKeychain';
+  authorizationMode?: 'apiKeyEnvironment' | 'apiKeyKeychain' | 'toolManagedCredential';
 }
 
 export interface CampaignPlanRequest {
@@ -263,7 +263,7 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
         `${frontier.name} is ${billingBasis} and is not billed per token, so a per-token price on it would be a number `
         + 'that looks like a cost and is not one');
     }
-    if (billingBasis === 'meteredAPI' && !frontier.authorizationMode) {
+    if (billingBasis === 'meteredAPI' && !frontier.authorizationMode && frontier.provider !== 'opencodeCLI') {
       throw new CampaignBuildError('noAuthorizationMode',
         `${frontier.name} is billed per token and its binding does not say where its key comes from. That is recorded `
         + 'in the manifest so a later reader knows which credential produced these answers.');
@@ -304,7 +304,10 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
       billingBasis,
       pricing: frontier.pricing ?? null,
       authorizationMode: executionClass === 'subscriptionCLI' ? 'subscriptionCLISession'
-        : frontier.authorizationMode ?? 'apiKeyEnvironment',
+        // OpenCode is metered AND holds its own credential, so it defaults to neither an environment
+        // variable nor the keychain: Cernum has no key for it and must not imply that it does.
+        : frontier.provider === 'opencodeCLI' ? 'toolManagedCredential'
+          : frontier.authorizationMode ?? 'apiKeyEnvironment',
     });
   }
 

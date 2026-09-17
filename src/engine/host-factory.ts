@@ -25,7 +25,8 @@ import { hostOptionsFor, DEFAULT_EXECUTION_POLICY } from './execution';
 import { LiveHost } from './live-host';
 import { RoutingHost } from './frontier-host';
 import { FrontierAdapter, MeteredAPIAdapter, SubscriptionCLIAdapter } from './frontier-adapter';
-import { OperationalEnvelope, ProviderID, isLocal } from './provider';
+import { OpenCodeAdapter } from './opencode-adapter';
+import { OperationalEnvelope, PROVIDER_IDS, ProviderID, isLocal } from './provider';
 import { SpendTracker, SpendingAuthorization, restoreSpendFromRows } from './spending';
 import { CredentialLookupOptions } from './credentials';
 import { OTLPTurnSource } from './otlp-observer';
@@ -55,6 +56,39 @@ export interface AdapterOptions {
 }
 
 /**
+ * Which providers this build can EXECUTE, and the one place that decides.
+ *
+ * SEPARATED OUT IN v0.2.3, because "can Cernum run this?" was previously answerable only by reading
+ * a switch statement inside `adaptersFor` — and the terminal, the campaign builder and the smoke
+ * command each answered it for themselves. `smoke` kept its own list of two providers, which is how
+ * OpenCode could be a supported provider everywhere except the one command that would have proved a
+ * model. One function, and `providersWithExecutionAdapter()` derives the list from it.
+ */
+export function buildAdapter(provider: ProviderID, environment: NodeJS.ProcessEnv = process.env,
+                             options: AdapterOptions = {}): FrontierAdapter | undefined {
+  switch (provider) {
+    case 'claudeCLI': case 'codexCLI':
+      return new SubscriptionCLIAdapter({ provider, otlp: options.otlp });
+    case 'opencodeCLI':
+      // METERED, AND A CLI. It takes neither of the branches beside it: the subscription adapter
+      // would drive arguments `opencode` does not have, and the metered adapter speaks HTTP to a
+      // base URL with an API key, which is not how OpenCode is reached. See `opencode-adapter.ts`.
+      return new OpenCodeAdapter();
+    case 'anthropicAPI':
+      return new MeteredAPIAdapter({ provider: 'anthropicAPI', baseURL: anthropicBaseURL(environment), credentials: options.credentials });
+    case 'openaiAPI':
+      return new MeteredAPIAdapter({ provider: 'openaiAPI', baseURL: openaiBaseURL(environment), credentials: options.credentials });
+    default:
+      return undefined;
+  }
+}
+
+/** Every provider a campaign or a smoke test can actually send a request through. */
+export function providersWithExecutionAdapter(): ProviderID[] {
+  return PROVIDER_IDS.filter((provider) => !isLocal({ provider } as never) && buildAdapter(provider) !== undefined);
+}
+
+/**
  * One adapter per frontier provider the envelope actually names.
  *
  * Nothing is constructed for a provider this campaign does not use, so a campaign of local models
@@ -69,23 +103,8 @@ export function adaptersFor(envelope: OperationalEnvelope, options: AdapterOptio
     if (adapters[binding.provider]) continue;
     const override = options.overrides?.[binding.provider];
     if (override) { adapters[binding.provider] = override; continue; }
-    switch (binding.provider) {
-      case 'claudeCLI': case 'codexCLI':
-        adapters[binding.provider] = new SubscriptionCLIAdapter({ provider: binding.provider, otlp: options.otlp });
-        break;
-      case 'anthropicAPI':
-        adapters[binding.provider] = new MeteredAPIAdapter({
-          provider: 'anthropicAPI', baseURL: anthropicBaseURL(environment), credentials: options.credentials,
-        });
-        break;
-      case 'openaiAPI':
-        adapters[binding.provider] = new MeteredAPIAdapter({
-          provider: 'openaiAPI', baseURL: openaiBaseURL(environment), credentials: options.credentials,
-        });
-        break;
-      default:
-        break;
-    }
+    const built = buildAdapter(binding.provider, environment, options);
+    if (built) adapters[binding.provider] = built;
   }
   return adapters;
 }

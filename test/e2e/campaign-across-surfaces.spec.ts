@@ -114,7 +114,7 @@ test('a campaign created, paused and resumed in the terminal is read and finaliz
   }
 
   // The terminal reads the finalized campaign the application wrote.
-  expect(cernum('status', 'crossing', '--synthetic')).toContain('[complete]');
+  expect(cernum('status', 'crossing')).toContain('[complete]');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -213,5 +213,5 @@ test('a second runner is refused while a live one holds the campaign, and a cras
   expect(kept.filter((name) => name.startsWith('recovered-'))).toHaveLength(1);
 
   // Nothing was lost and nothing was repeated.
-  expect(cernum('status', 'contested', '--synthetic')).toContain('4/4 attempts recorded');
+  expect(cernum('status', 'contested')).toContain('4/4 attempts recorded');
 });

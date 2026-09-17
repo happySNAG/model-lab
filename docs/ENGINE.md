@@ -126,7 +126,9 @@ both interfaces.
 
 There is a list of models this project intends to test. Every one of them starts **`unproven`**, and
 nothing but an **identity smoke test**, or an **account-scoped provider listing**, moves it to
-`proven`. A client-side catalogue does not: `opencode models` is read from a cached file describing
+`proven`. A smoke test proves two separate things and keeps them separate: that the request could be
+EXECUTED at all, and — only if the reply names a model — WHO answered it. A request that succeeds and
+names nobody is `unverifiable`, never `proven`. A client-side catalogue does not: `opencode models` is read from a cached file describing
 thousands of models OpenCode has never called, so every OpenCode model is recorded as **discovered
 and unproven** and none is selectable. v0.2.1 marked them `proven` and this is the correction. The
 shared

@@ -56,7 +56,22 @@ export type ExecutionClass = 'localRuntime' | 'subscriptionCLI' | 'meteredAPI';
 export type BillingBasis = 'local' | 'subscriptionIncluded' | 'meteredAPI';
 
 /** How the caller is authorised. Never the credential itself — only the SHAPE of the authorisation. */
-export type AuthorizationMode = 'none' | 'subscriptionCLISession' | 'apiKeyEnvironment' | 'apiKeyKeychain';
+export type AuthorizationMode =
+  | 'none'
+  | 'subscriptionCLISession'
+  | 'apiKeyEnvironment'
+  | 'apiKeyKeychain'
+  /**
+   * The TOOL holds the credential and uses it; Cernum never reads, stores or passes one.
+   *
+   * Added in v0.2.3 for OpenCode, which is the first provider that is METERED and yet authenticates
+   * itself. Neither existing mode is true of it: `apiKeyEnvironment` and `apiKeyKeychain` both claim
+   * Cernum knows where a key lives, and `subscriptionCLISession` would assert a subscription for
+   * something billed per token — the exact conflation `codexCLI` already refuses by hand. So the
+   * manifest records what is actually the case: a credential exists, the tool owns it, and this
+   * engine cannot say more than that.
+   */
+  | 'toolManagedCredential';
 
 /**
  * A reasoning-effort level, as a frozen request.
@@ -379,9 +394,11 @@ export function validateBinding(binding: ProviderBinding): void {
       `${binding.candidate}: a subscription CLI is authorised by the user's own already-authenticated CLI session and by nothing else`);
   }
   if (binding.executionClass === 'meteredAPI'
-      && binding.authorizationMode !== 'apiKeyEnvironment' && binding.authorizationMode !== 'apiKeyKeychain') {
+      && binding.authorizationMode !== 'apiKeyEnvironment' && binding.authorizationMode !== 'apiKeyKeychain'
+      && binding.authorizationMode !== 'toolManagedCredential') {
     throw new ProviderBindingError('meteredAuthorization',
-      `${binding.candidate}: a metered API binding must name where its key comes from`);
+      `${binding.candidate}: a metered API binding must name where its key comes from — an environment `
+      + 'variable, the keychain, or the tool itself when the tool is the thing holding it');
   }
 }
 

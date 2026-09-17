@@ -31,6 +31,7 @@ import {
   discoverLocalModels, discoverProvider, isDiscoverableProvider, refuseToDiscover, estimateSpending, formatMicroUSD,
   guardPolicyForEndpoint, hostOptionsFor, inspectCampaignLock, leasedEndpoints, modelCanThink,
   modelStoreBaseline, normalizeEndpoint, offlineProviderStatuses, DISCOVERABLE_PROVIDERS, parseCeilingToMicroUSD,
+  providersWithExecutionAdapter, billingBasisOf, executionClassOf, buildAdapter,
   plannedWorkFor, pricingFor, privacyDisclosure, residencyDisclosure, steppingClock, syntheticCandidate,
   terminateAllCLIProcesses,
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
@@ -43,6 +44,7 @@ import {
   applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
+import { CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
 const DEFAULT_ENDPOINT = environmentOverride('OLLAMA_ENDPOINT') ?? 'http://127.0.0.1:11434';
@@ -88,20 +90,71 @@ function executionOf(configuration: CampaignConfiguration): ExecutionPolicy {
   return configuration.execution ?? DEFAULT_EXECUTION_POLICY;
 }
 
-function parse(argv: string[]): { command: string; positional: string[]; options: Options } {
+/**
+ * Read the argument list. STRICTLY, and without deciding anything.
+ *
+ * WHAT THIS USED TO DO, AND WHAT IT COST. The previous parser recognised only `--name`; anything
+ * starting with a single dash fell through to the positional list, and any unrecognised `--name` was
+ * stored and silently ignored. Combined with a command that defaulted to a live provider when it saw
+ * no positionals, `cernum smoke --help` sent six real requests to Claude. See `command-spec.ts`.
+ *
+ * Three rules now:
+ *   - `-h` and `--help` both parse as the `help` option, wherever they appear.
+ *   - a single-dash token is an OPTION, never a positional, so it can be checked rather than used.
+ *   - a value is only consumed when the option is declared to take one, so `--help claude` cannot
+ *     swallow `claude` and leave the command looking argument-free.
+ *
+ * Validation against a command's declared options happens in `validate`, after the command is known.
+ */
+function parse(argv: string[]): { command: string; positional: string[]; options: Options; unknown: string[] } {
   const [command = 'help', ...rest] = argv;
   const positional: string[] = [];
   const options: Options = {};
+  const unknown: string[] = [];
+  const spec = commandSpec(command);
+  const declared = new Map((spec ? acceptedOptions(spec) : []).map((option) => [option.name, option]));
+
   for (let i = 0; i < rest.length; i++) {
     const token = rest[i];
-    if (!token.startsWith('--')) { positional.push(token); continue; }
-    const [name, inline] = token.slice(2).split('=');
+    if (token === '--') { positional.push(...rest.slice(i + 1)); break; }
+    if (!token.startsWith('-') || token === '-') { positional.push(token); continue; }
+
+    const bare = token.startsWith('--') ? token.slice(2) : token.slice(1);
+    const [rawName, inline] = bare.split('=');
+    const name = rawName === 'h' ? 'help' : rawName;
+
+    if (spec && !declared.has(name)) { unknown.push(token); continue; }
     if (inline !== undefined) { options[name] = inline; continue; }
+    if (!declared.get(name)?.takesValue) { options[name] = true; continue; }
+
     const next = rest[i + 1];
-    if (next !== undefined && !next.startsWith('--')) { options[name] = next; i += 1; }
+    if (next !== undefined && !next.startsWith('-')) { options[name] = next; i += 1; }
     else options[name] = true;
   }
-  return { command, positional, options };
+  return { command, positional, options, unknown };
+}
+
+/** `<command> --help`: what it is, what it costs, and every option it will accept. Prints nothing else. */
+function printCommandHelp(spec: CommandSpec): void {
+  say(`${TERMINAL_COMMAND} ${spec.name}${spec.positional ? ` ${spec.positional}` : ''}`);
+  say('');
+  say(`  ${spec.summary}`);
+  say('');
+  say(`  ${effectSentence(spec.effect)}`);
+  if (spec.detail && spec.detail.length > 0) {
+    say('');
+    for (const line of spec.detail) say(line.length > 0 ? `  ${line}` : '');
+  }
+  const options = acceptedOptions(spec);
+  if (options.length > 0) {
+    say('');
+    say('  Options:');
+    for (const option of options) {
+      const flag = `--${option.name}${option.takesValue ? ' <value>' : ''}`;
+      say(`    ${flag.padEnd(34)} ${option.summary}`);
+    }
+  }
+  say('');
 }
 
 function say(line = ''): void {
@@ -349,6 +402,25 @@ async function commandCredentials(): Promise<void> {
 }
 
 /**
+ * The providers a smoke test can actually ask, derived from which ones can EXECUTE.
+ *
+ * Not a hand-kept list: `providersWithExecutionAdapter()` is the same answer `adaptersFor` gives a
+ * campaign, so a provider that can run a campaign can be smoke tested and one that cannot is refused
+ * here rather than failing later with an adapter that was never built.
+ */
+const SMOKEABLE_PROVIDERS: ProviderID[] = providersWithExecutionAdapter();
+
+/** What running this provider costs, in the words the manifest uses. Printed before anything is sent. */
+function authorizationClassOf(provider: ProviderID): string {
+  const basis = billingBasisOf(executionClassOf(provider));
+  return basis === 'subscriptionIncluded'
+    ? 'subscriptionIncluded — consumes a finite plan allowance you already pay for. Not free.'
+    : basis === 'meteredAPI'
+      ? 'meteredAPI — billed per token against your own credential.'
+      : String(basis);
+}
+
+/**
  * What `discover` with no argument asks.
  *
  * The two subscription CLIs, because they are the providers a Cernum campaign is normally run
@@ -372,6 +444,19 @@ async function commandDiscover(positional: string[], options: Options): Promise<
   // and then fail, leaving half a run's evidence written and the person unsure which half.
   for (const provider of wanted) if (!isDiscoverableProvider(provider)) fail(refuseToDiscover(provider));
   const providers = wanted as ProviderID[];
+  if (options['dry-run'] === true) {
+    say('DRY RUN — no tool was run and no evidence was written.');
+    say('');
+    for (const provider of providers) {
+      say(`  ${PROVIDER_LABELS[provider as ProviderID]} (${provider})`);
+      say(`    would run its version, credential and model-listing subcommands`);
+      say(`    ${effectSentence('invokesLocalTool')}`);
+    }
+    say('');
+    say(`Run it for real with: ${TERMINAL_COMMAND} discover ${providers.join(' ')}`);
+    return;
+  }
+
   const discovered: DiscoveredFrontierModel[] = readDiscovered(root)
     .filter((model) => !providers.includes(model.provider));
 
@@ -409,32 +494,76 @@ async function commandDiscover(positional: string[], options: Options): Promise<
  */
 async function commandSmoke(positional: string[], options: Options): Promise<void> {
   const root = String(options.root ?? defaultCampaignRoot());
-  const wanted = positional.length > 0 ? positional as ProviderID[] : ['claudeCLI'] as ProviderID[];
 
-  for (const provider of wanted) {
-    if (provider !== 'claudeCLI' && provider !== 'codexCLI') {
-      fail(`'${provider}' is not a subscription CLI. An identity smoke test drives your own signed-in `
-        + '`claude` or `codex`.\n'
-        + 'For anything else, note that `discover` does NOT establish identity: it reads a listing, and a '
-        + 'listing says what a provider knows about, not what it will answer to. An OpenCode model in '
-        + 'particular is recorded as discovered and UNPROVEN, and Cernum has no OpenCode execution adapter, '
-        + 'so there is no request it could make to prove one.');
-    }
+  // EXACTLY ONE PROVIDER, NAMED BY THE PERSON. There is no default and there will not be one: the
+  // v0.2.2 default of `claudeCLI` is what turned `cernum smoke --help` into six billed requests.
+  if (positional.length === 0) {
+    fail('no provider named, and this command has no default.\n'
+      + `Name one: ${TERMINAL_COMMAND} smoke <provider> --models <id,…>\n`
+      + `Providers that can be smoke tested: ${SMOKEABLE_PROVIDERS.join(', ')}\n`
+      + `See what it would send without sending it: ${TERMINAL_COMMAND} smoke <provider> --models <id,…> --dry-run`, 2);
+  }
+  if (positional.length > 1) {
+    fail(`one provider at a time, but ${positional.length} were named: ${positional.join(', ')}.`, 2);
+  }
+  const provider = positional[0] as ProviderID;
+  if (!SMOKEABLE_PROVIDERS.includes(provider)) {
+    fail(`'${provider}' cannot be smoke tested. Cernum can ask: ${SMOKEABLE_PROVIDERS.join(', ')}.\n`
+      + 'A smoke test drives a CLI you installed and authenticated yourself. Note that `discover` does '
+      + 'NOT establish identity either: it reads a listing, and a listing says what a provider knows '
+      + 'about, not what it will answer to.', 2);
   }
 
-  // The ladder is the PLAN, and the plan is the only thing that decides what is asked for. No
-  // spelling is invented here and no variant is tried: one request per named identifier, as named.
-  const requested = DESIRED_CANDIDATE_LADDER
-    .filter((entry) => wanted.includes(entry.provider) && entry.modelID.length > 0);
-  if (requested.length === 0) {
-    fail('nothing on the intended testing ladder names a model for that provider, so there is nothing to ask for. '
-      + 'A smoke test never invents an identifier.');
+  // AND AN EXPLICIT CANDIDATE SCOPE. Naming a provider is not enough: the whole ladder is six
+  // requests on Claude, which is precisely the bill the incident produced.
+  const ladder = DESIRED_CANDIDATE_LADDER
+    .filter((entry) => entry.provider === provider && entry.modelID.length > 0);
+  if (ladder.length === 0) {
+    fail(`nothing on the intended testing ladder names a model for ${provider}, so there is nothing to ask for. `
+      + 'A smoke test never invents an identifier.', 2);
   }
+  const named = typeof options.models === 'string'
+    ? options.models.split(',').map((id) => id.trim()).filter((id) => id.length > 0)
+    : [];
+  if (named.length === 0 && options['all-ladder'] !== true) {
+    fail('no candidate scope given, and this command has no default scope.\n'
+      + `Either name the models:  --models ${ladder[0].modelID}\n`
+      + `or ask for all ${ladder.length} on this provider's ladder, deliberately:  --all-ladder\n`
+      + `The ladder for ${provider} is: ${ladder.map((entry) => entry.modelID).join(', ')}`, 2);
+  }
+  const requested = named.length > 0
+    ? named.map((id) => {
+        const entry = ladder.find((candidate) => candidate.modelID === id);
+        if (!entry) {
+          fail(`'${id}' is not on ${provider}'s intended ladder, and a smoke test never invents an identifier.\n`
+            + `Ladder: ${ladder.map((candidate) => candidate.modelID).join(', ')}`, 2);
+        }
+        return entry;
+      })
+    : ladder;
 
   const budget = Number(options['max-attempts'] ?? 0);
   const pairs = requested.flatMap((entry) => entry.desiredEfforts.map((effort) => ({ entry, effort })));
   const planned = budget > 0 ? pairs.slice(0, budget) : pairs;
 
+  // WHAT WOULD BE SENT, ALWAYS PRINTED BEFORE ANYTHING IS SENT. Under --dry-run this is the whole
+  // command; otherwise it is the disclosure that precedes the first request.
+  const dryRun = options['dry-run'] === true;
+  say(dryRun ? 'DRY RUN — nothing below is sent, and no allowance is consumed.' : 'About to send real requests.');
+  say('');
+  say(`  provider              ${PROVIDER_LABELS[provider]} (${provider})`);
+  say(`  candidates            ${requested.length} (${named.length > 0 ? 'named with --models' : "--all-ladder: this provider's whole ladder"})`);
+  say(`  requests to be sent   ${planned.length}${budget > 0 && pairs.length > planned.length ? ` (capped by --max-attempts from ${pairs.length})` : ''}`);
+  say(`  authorization class   ${authorizationClassOf(provider)}`);
+  say('');
+  for (const { entry, effort } of planned) {
+    say(`    ${entry.modelID.padEnd(24)} effort ${String(effort).padEnd(8)} 1 request`);
+  }
+  say('');
+  if (dryRun) {
+    say('No request was sent. Re-run without --dry-run to send the requests listed above.');
+    return;
+  }
   say(`${planned.length} identity smoke test(s). Each one sends a single minimal prompt to a real model and`);
   say('consumes subscription allowance. Nothing here is a benchmark and no campaign is created.');
   say('');
@@ -445,7 +574,12 @@ async function commandSmoke(positional: string[], options: Options): Promise<voi
       fail(`'${effort}' is not an effort level this engine models. Valid: ${EFFORT_LEVELS.join(', ')}.`);
     }
     const binding = smokeBinding(entry.provider, entry.modelID, effort as EffortLevel);
-    const adapter = new SubscriptionCLIAdapter({ provider: entry.provider });
+    // THE ADAPTER COMES FROM THE SAME FACTORY A CAMPAIGN USES. This line used to construct a
+    // SubscriptionCLIAdapter unconditionally, which is why adding OpenCode support to the engine
+    // would not have reached this command: a smoke test would have driven `opencode` with Claude's
+    // arguments. `buildAdapter` is refused above for any provider it cannot build.
+    const adapter = buildAdapter(entry.provider);
+    if (!adapter) fail(`no execution adapter for ${entry.provider}; this is a bug, and nothing was sent.`, 70);
     const result = await identitySmokeTest(binding, adapter);
     results.push(result);
     say(`  ${describeSmoke(result)}`);
@@ -686,8 +820,11 @@ export function parseFrontierSpec(spec: string, thinkingMode: ThinkingMode, pric
     effort,
     thinkingMode,
     pricing,
-    authorizationMode: credential === undefined ? undefined
-      : credential.source === 'keychain' ? 'apiKeyKeychain' : 'apiKeyEnvironment',
+    // OpenCode carries no API-key environment variable to read: the tool holds its own credential,
+    // and the manifest says exactly that rather than naming a key Cernum does not have.
+    authorizationMode: provider === 'opencodeCLI' ? 'toolManagedCredential' as const
+      : credential === undefined ? undefined
+        : credential.source === 'keychain' ? 'apiKeyKeychain' as const : 'apiKeyEnvironment' as const,
   };
 }
 
@@ -946,6 +1083,33 @@ async function commandRun(positional: string[], options: Options, resuming: bool
   if (options.thinking !== undefined) {
     fail(`${name} was frozen with ${describeExecutionPolicy(execution)}. Thinking mode is bound into its manifest `
       + 'and cannot be changed on a run; create a new campaign to change it.', 2);
+  }
+
+  // WHAT THIS RUN WOULD SEND, WITHOUT SENDING IT. Placed after the frozen-policy refusals, so a
+  // dry run reports the same refusals a real one would, and before any lock, lease or request.
+  if (options['dry-run'] === true) {
+    const bindings = configuration.operationalEnvelope?.bindings ?? [];
+    const external = bindings.filter((binding) => binding.provider !== 'ollama');
+    say(`DRY RUN — ${name} was not started, no lock was taken and no request was sent.`);
+    say('');
+    say(`  campaign              ${name}`);
+    say(`  policy                ${describeExecutionPolicy(execution)}`);
+    say(`  candidates            ${bindings.length}`);
+    for (const binding of bindings) {
+      say(`    ${binding.candidate.padEnd(38)} ${binding.provider} · ${binding.billingBasis}`);
+    }
+    say('');
+    if (external.length === 0) {
+      say('  Every candidate runs on this machine. No prompt would leave it.');
+    } else {
+      const providers = [...new Set(external.map((binding) => binding.provider))];
+      say(`  authorization classes ${providers.map((provider) => `${provider}: ${authorizationClassOf(provider)}`).join('\n                        ')}`);
+      say('');
+      say('  A real run would send prompts to an external provider and consume allowance.');
+    }
+    say('');
+    say(`Run it for real with: ${TERMINAL_COMMAND} ${resuming ? 'resume' : 'run'} ${name}`);
+    return;
   }
 
   let stopping = false;
@@ -1701,8 +1865,34 @@ export async function main(argv: string[]): Promise<void> {
   for (const stream of [process.stdout, process.stderr]) {
     stream.on('error', (error: NodeJS.ErrnoException) => { if (error.code === 'EPIPE') process.exit(0); });
   }
-  const { command, positional, options } = parse(argv);
+  const { command, positional, options, unknown } = parse(argv);
   const invocationLine = invocation(argv);
+
+  // ------------------------------------------------------------------ the gate
+  //
+  // NOTHING BELOW THIS BLOCK RUNS UNTIL THE ARGUMENTS ARE UNDERSTOOD. Help is answered here, for
+  // every command, before the command body exists to have a side effect. Unknown options stop the
+  // program rather than being carried into it. This ordering IS the fix: `cernum smoke --help` spent
+  // real allowance because help was a thing a command had to remember to check for, and `smoke`
+  // reached its live default first.
+  const spec = commandSpec(command);
+  if (command === 'help' || command === '--help' || command === '-h') return commandHelp();
+  if (!spec) {
+    fail(`unknown command '${command}'. Try '${TERMINAL_COMMAND} help'.`);
+  }
+  if (options.help === true) {
+    printCommandHelp(spec);
+    return;
+  }
+  if (unknown.length > 0) {
+    // REFUSED, not ignored. An option this build does not understand may be the one carrying the
+    // limit, the ceiling or the scope, and guessing which is not something a parser may do.
+    const accepted = acceptedOptions(spec).map((option) => `--${option.name}`).join(', ');
+    fail(`${command}: unknown option${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}\n`
+      + `accepted here: ${accepted}\n`
+      + `nothing was run. See '${TERMINAL_COMMAND} ${command} --help'.`, 2);
+  }
+
   switch (command) {
     case 'providers': return commandProviders(options);
     case 'discover': return commandDiscover(positional, options);
@@ -1729,8 +1919,10 @@ export async function main(argv: string[]): Promise<void> {
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();
-    case 'help': case '--help': case '-h': return commandHelp();
-    default: fail(`unknown command '${command}'. Try '${TERMINAL_COMMAND} help'.`);
+    case 'help': return commandHelp();
+    // Unreachable: an unknown command was refused by the gate above, and every name in
+    // COMMAND_SPECS has a case here — `cli-argument-safety.test.ts` walks the table to prove it.
+    default: fail(`'${command}' is declared but not wired to an implementation. This is a bug.`, 70);
   }
 }
 

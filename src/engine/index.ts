@@ -11,6 +11,7 @@ export * from './redaction';
 export * from './credentials';
 export * from './cli-process';
 export * from './discovery';
+export * from './opencode-adapter';
 export * from './discovery-store';
 export * from './reconciliation';
 export * from './identity-admission';
