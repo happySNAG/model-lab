@@ -20,7 +20,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  AUTHORIZED_COHORT, CERNUM_V2_ADDITIONS, FORBIDDEN_SUBSTITUTIONS, HISTORICAL_IDENTITY_EVIDENCE,
+  AUTHORIZED_COHORT, CERNUM_V2_ADDITIONS, FORBIDDEN_SUBSTITUTIONS, HISTORICAL_IDENTITY_EVIDENCE, OPENAI_API_IDENTITY_ADDITIONS,
   RECONCILED_IN_PASS_5C, REQUESTED_COHORT,
   assertCohortComplete, configurationKey, historicalEvidenceFor, ladderConfigurations, reconcileCohort,
 } from '../../src/engine/reconciliation';
@@ -96,7 +96,13 @@ describe('the requested cohort survives being forgotten', () => {
     expect(REQUESTED_COHORT).toHaveLength(12);
     expect(REQUESTED_COHORT.some((e) => e.provider === 'opencodeCLI')).toBe(false);
     expect(CERNUM_V2_ADDITIONS.map((e) => e.modelID)).toEqual(['opencode/union-alpha']);
-    expect(AUTHORIZED_COHORT).toHaveLength(REQUESTED_COHORT.length + CERNUM_V2_ADDITIONS.length);
+    // The OpenAI API identity scope is a THIRD list for the same reason the second one exists: it
+    // was authorised later, on its own terms, and folding it into either of the others would hide
+    // which configurations arrived when.
+    expect(OPENAI_API_IDENTITY_ADDITIONS.every((e) => e.provider === 'openaiAPI')).toBe(true);
+    expect(REQUESTED_COHORT.some((e) => e.provider === 'openaiAPI')).toBe(false);
+    expect(AUTHORIZED_COHORT).toHaveLength(
+      REQUESTED_COHORT.length + CERNUM_V2_ADDITIONS.length + OPENAI_API_IDENTITY_ADDITIONS.length);
   });
 
   it('still reports a ladder entry nobody authorised as extra', () => {

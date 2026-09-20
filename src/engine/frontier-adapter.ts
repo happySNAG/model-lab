@@ -857,6 +857,76 @@ export interface MeteredAPIOptions {
   stream?: boolean;
 }
 
+/**
+ * The reasoning efforts the OpenAI chat-completions body can carry VERBATIM, and the reason `max`
+ * is not among them.
+ *
+ * `reasoning_effort` is a wire field with a fixed vocabulary. Until this pass `buildAPIBody` wrote
+ *
+ *     body.reasoning_effort = binding.effort === 'max' ? 'high' : binding.effort;
+ *
+ * so a binding frozen at `max` was SENT AS `high` while the manifest, the preview, the evidence file
+ * and the discovery row all went on saying `max`. That is the substitution this engine refuses
+ * everywhere else, performed by the one line that was quiet about it: nothing was recorded as
+ * unexpressed, nothing warned, and the row would have read as a max-effort measurement of a
+ * high-effort request. `max` is therefore NOT expressible here, and a binding that freezes it is
+ * refused before the socket opens rather than rewritten into something else.
+ *
+ * `xhigh` IS on this list and that is a narrower claim than it looks: it says the adapter can put
+ * those six bytes on the wire unchanged, not that the endpoint accepts them. Nothing has established
+ * what this endpoint's enum contains — the enum quoted in `CODEX_SERVICE_EFFORT_LEVELS` was returned
+ * by the CODEX service, which is a different surface reached with a different credential. If the API
+ * rejects a level, that refusal is a fact about this account and is recorded as one.
+ */
+export const OPENAI_API_EFFORT_LEVELS: EffortLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+
+/**
+ * WHAT AN OPENAI API RESPONSE CAN AND CANNOT ESTABLISH ABOUT IDENTITY. One wording, so no surface
+ * softens it.
+ *
+ * The API names the answering model in its own envelope — `model` at the top level of a completion,
+ * and on every streamed chunk — which is real returned-model evidence of the same class as the
+ * Anthropic API's and stronger than anything a subscription CLI offers. `parseAPIResponse` and
+ * `readStream` read that field and nothing else: not `id`, not `system_fingerprint`, and never the
+ * model's prose about itself.
+ *
+ * WHAT IT DOES NOT SETTLE is whether the identifier that comes back is the identifier that was sent.
+ * A provider is free to answer an alias with the dated build behind it, and a dated build is not the
+ * name the campaign froze. Cernum does not prefix-match, does not strip dates and does not treat a
+ * resemblance as a match: a returned identifier that differs from the requested one is `substituted`,
+ * the row is `refused`, and `verifiedModelID` stays empty. That is the same rule the CLI paths are
+ * held to, and relaxing it here is how "gpt-5.6-sol answered" would come to mean "something whose
+ * name starts that way answered".
+ */
+export const OPENAI_API_IDENTITY_EVIDENCE =
+  'The OpenAI API names the answering model in its own response envelope — `model` on the completion, and on every '
+  + 'streamed chunk — so a request that completes carries returned-model evidence rather than a claim about what was '
+  + 'asked for. It is compared to the requested identifier EXACTLY: a dated build or an alias that differs by one '
+  + 'character is recorded as substituted, never as the model that was requested.';
+
+/**
+ * Settings a metered binding froze that the request body cannot express.
+ *
+ * The same shape `buildCLIArguments` returns for a subscription CLI, and for the same purpose: a
+ * request that silently dropped a frozen setting would produce a real answer under conditions the
+ * manifest does not describe. Non-empty means the request is NOT SENT.
+ *
+ * Only the OpenAI branch is narrowed here. The Anthropic body expresses reasoning as a thinking
+ * budget computed from the effort level rather than as an enum, so it has no level to be refused for,
+ * and nothing in this pass establishes otherwise.
+ */
+export function unexpressedAPISettings(binding: ProviderBinding): string[] {
+  const unexpressed: string[] = [];
+  if (binding.provider === 'openaiAPI' && binding.effort !== 'none'
+      && !OPENAI_API_EFFORT_LEVELS.includes(binding.effort)) {
+    unexpressed.push(`effort '${binding.effort}': the OpenAI chat-completions body carries `
+      + `${OPENAI_API_EFFORT_LEVELS.filter((level) => level !== 'none').join(', ')} and has no way to express this `
+      + 'one. It is refused rather than mapped onto the nearest level, because a request sent at a level other than '
+      + 'the one the binding froze is recorded as a measurement of the level it was not sent at.');
+  }
+  return unexpressed;
+}
+
 /** The wire body for one request, built from the frozen binding and nothing else. */
 export function buildAPIBody(binding: ProviderBinding, text: string, stream: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = binding.provider === 'anthropicAPI'
@@ -882,7 +952,10 @@ export function buildAPIBody(binding: ProviderBinding, text: string, stream: boo
     body.thinking = { type: 'enabled', budget_tokens: thinkingBudgetFor(binding.effort, binding.maxOutputTokens) };
   }
   if (binding.provider === 'openaiAPI' && binding.effort !== 'none') {
-    body.reasoning_effort = binding.effort === 'max' ? 'high' : binding.effort;
+    // VERBATIM, OR NOT AT ALL. See `OPENAI_API_EFFORT_LEVELS`: a level this body cannot carry is
+    // refused by `unexpressedAPISettings` before the adapter ever reaches this line, and is never
+    // quietly rewritten into the nearest one it can.
+    body.reasoning_effort = binding.effort;
   }
   return body;
 }
@@ -969,6 +1042,17 @@ export class MeteredAPIAdapter implements FrontierAdapter {
       totalElapsedMilliseconds: now() - startedAt, firstVisibleTokenMilliseconds: firstVisible,
       retryCount: 0, wastedTokens: 0, failure: { kind, detail },
     });
+
+    // REFUSED BEFORE ANYTHING ELSE, INCLUDING BEFORE THE CREDENTIAL IS READ. A binding that froze a
+    // setting this body cannot carry is wrong whether or not a key exists, and sending it would spend
+    // money producing an answer the manifest misdescribes. Same disposition the subscription path
+    // uses for the same fault: `budgetRefused`, with the setting named, and nothing sent.
+    const unexpressed = unexpressedAPISettings(request.binding);
+    if (unexpressed.length > 0) {
+      return fail('budgetRefused',
+        `${request.binding.candidate} froze settings this API cannot express, so the request was not sent: `
+        + `${unexpressed.join('; ')}. Nothing was sent and nothing was billed.`);
+    }
 
     let key: string;
     try {

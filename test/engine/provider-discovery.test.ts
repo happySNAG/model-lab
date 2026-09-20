@@ -220,9 +220,17 @@ describe('a listing is visibility, never execution', () => {
   it('proves nothing from a metered API listing either, however many models it names', () => {
     const body = JSON.stringify({ data: [{ id: 'gpt-5.4' }, { id: 'text-embedding-3-small' }, { id: 'whisper-1' }] });
     const rows = parseModelListing(body, 'openaiAPI', 'now');
-    expect(rows).toHaveLength(3);
+    const listed = rows.filter((model) => ['gpt-5.4', 'text-embedding-3-small', 'whisper-1'].includes(model.modelID));
+    expect(listed).toHaveLength(3);
     expect(rows.filter((model) => model.availability === 'proven')).toEqual([]);
     expect(rows.filter((model) => model.verifiedModelID !== '')).toEqual([]);
+    // The four identifiers the OpenAI API identity ladder plans to ask for were NOT in this listing,
+    // and are reported as absent rather than quietly dropped. An embedding or a speech endpoint that
+    // WAS listed gets no such standing: it is one more unproven catalogue row.
+    const planned = rows.filter((model) => !listed.includes(model));
+    expect(planned.map((model) => model.modelID).sort())
+      .toEqual(['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra']);
+    expect(planned.every((model) => model.availability === 'refused')).toBe(true);
   });
 
   it('never returns a selectable model, whatever the listing said', () => {

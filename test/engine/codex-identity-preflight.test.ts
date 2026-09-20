@@ -457,11 +457,21 @@ describe('the model catalogue', () => {
 // MARK: - Luna belongs to Codex
 
 describe('Luna is an OpenAI model', () => {
-  it('appears on the ladder under codexCLI, and never under claudeCLI', () => {
+  // WIDENED, NOT WEAKENED, WHEN THE OPENAI API LADDER WAS ADDED. Luna now appears twice, because it
+  // is reachable two ways — a ChatGPT subscription through `codex`, and the metered API with the
+  // user's own key — and those are two different questions about the same name. What this test
+  // defends is unchanged and is asserted row by row instead of by counting: every Luna row carries
+  // the full identifier, no Luna row is ever asked of the Claude CLI, and each of the two routes
+  // appears exactly once, so neither can quietly disappear into the other.
+  it('appears under codexCLI and openaiAPI, once each, and never under claudeCLI', () => {
     const luna = DESIRED_CANDIDATE_LADDER.filter((entry) => entry.displayName.includes('Luna'));
-    expect(luna).toHaveLength(1);
-    expect(luna[0].provider).toBe('codexCLI');
-    expect(luna[0].modelID).toBe('gpt-5.6-luna');
+    for (const entry of luna) {
+      expect(entry.modelID).toBe('gpt-5.6-luna');
+      expect(entry.provider).not.toBe('claudeCLI');
+    }
+    expect(luna.filter((entry) => entry.provider === 'codexCLI')).toHaveLength(1);
+    expect(luna.filter((entry) => entry.provider === 'openaiAPI')).toHaveLength(1);
+    expect(luna).toHaveLength(2);
   });
 
   it('is named in full, with Max carried as an effort rather than part of the identifier', () => {

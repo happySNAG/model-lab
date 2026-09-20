@@ -221,6 +221,44 @@ export const DESIRED_CANDIDATE_LADDER: { provider: ProviderID; modelID: string; 
   { provider: 'codexCLI', modelID: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', desiredEfforts: ['medium'] },
   { provider: 'codexCLI', modelID: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', desiredEfforts: ['medium', 'max'] },
   { provider: 'codexCLI', modelID: 'gpt-6-astra', displayName: 'GPT-6 Astra', desiredEfforts: ['medium', 'max'] },
+  // THE OPENAI API IDENTITY LADDER — FOUR IDENTIFIERS, ONE RUNG EACH, AND IT IS NOT A BENCHMARK.
+  //
+  // These are the same four models the Codex rows above name, reached THE OTHER WAY: through the
+  // published HTTP API, billed per token against the user's own key, instead of through a ChatGPT
+  // subscription. They are not duplicates, and NEITHER ROUTE PROVES THE OTHER. A Codex smoke can
+  // establish that a subscription accepted an identifier; it cannot establish that an API key may
+  // call it, what the API names as the answering model, or what the request costs. `executionClassOf`
+  // already keeps the two apart for exactly that reason, and a proof carries the provider with it.
+  //
+  // ONE RUNG EACH, AND THE RUNG IS `low`. This ladder exists to find out WHO ANSWERS, not how well.
+  // The rung was chosen from the only captured evidence this repository holds about these four
+  // identifiers — the Codex catalogue in `codex debug models` — read for two things:
+  //
+  //   the DEFAULT level each model declares   sol low · astra low · luna medium · terra medium
+  //   the LOWEST level each model supports    low, for all four
+  //
+  // So the defaults DIFFER and the floor does not, and `low` is the cheapest request that can be
+  // made of every one of them. It is strictly cheaper than leaving the effort unstated for Luna and
+  // Terra, whose declared default is medium: `none` would not save a reasoning token, it would only
+  // stop the record from saying which level answered.
+  //
+  // THAT CATALOGUE DESCRIBES THE CODEX SERVICE, NOT THIS ENDPOINT, and it is used here only to
+  // NARROW what is asked for. It is not evidence that the metered API accepts any level for any of
+  // these identifiers, nothing here claims it is, and if the endpoint refuses `low` that refusal is
+  // recorded as a fact about this account rather than retried at another level.
+  //
+  // NOT `minimal`: no catalogue entry for any of the four declares it, so asking for it would be
+  // inventing a level — the Pass 5 error of turning an unasked question into an answer.
+  // NOT `max` or `xhigh`: see `OPENAI_API_EFFORT_LEVELS`. `max` is not expressible on this endpoint
+  // at all — the adapter used to rewrite it to `high`, which would have frozen one level in the
+  // manifest and sent another — and nothing has established that `xhigh` is accepted here.
+  //
+  // Every row is born `unproven` like every other row in this list, and a metered smoke is refused
+  // outright unless it was authorized by name. Editing this list cannot make anything runnable.
+  { provider: 'openaiAPI', modelID: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', desiredEfforts: ['low'] },
+  { provider: 'openaiAPI', modelID: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', desiredEfforts: ['low'] },
+  { provider: 'openaiAPI', modelID: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', desiredEfforts: ['low'] },
+  { provider: 'openaiAPI', modelID: 'gpt-6-astra', displayName: 'GPT-6 Astra', desiredEfforts: ['low'] },
   // UNION ALPHA, ADDRESSED THE WAY OPENCODE ADDRESSES IT.
   //
   // `opencode/union-alpha` is not a Cernum convention laid over OpenCode's: OpenCode's own `--model`

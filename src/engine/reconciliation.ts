@@ -70,8 +70,32 @@ export const CERNUM_V2_ADDITIONS: RequestedConfiguration[] = [
   { provider: 'opencodeCLI', modelID: 'opencode/union-alpha', displayName: 'Union Alpha', effort: 'none' },
 ];
 
+/**
+ * The OpenAI API identity-proof scope, authorised separately from both lists above.
+ *
+ * WHAT THIS IS, AND WHAT IT IS NOT. It is four identifiers at one effort level each, asked through
+ * the METERED HTTP API, for the single purpose of finding out whether this account's own key can
+ * invoke them and what the API names as the model that answered. It is not a benchmark request, it
+ * adds no model to the Pass 5C cohort, and it does not make the Codex rows for the same four
+ * identifiers redundant: a subscription CLI and a paid API are two different routes to a name, they
+ * are billed differently, they are reached with different credentials, and a proof of one has never
+ * been a proof of the other.
+ *
+ * DECLARED HERE RATHER THAN APPENDED TO EITHER LIST ABOVE, for the reason `CERNUM_V2_ADDITIONS`
+ * gives: the frozen request is a baseline, and a baseline that is edited whenever something new
+ * arrives is not one. A reader can see in one glance which four configurations this pass added and
+ * on whose authority.
+ */
+export const OPENAI_API_IDENTITY_ADDITIONS: RequestedConfiguration[] = [
+  { provider: 'openaiAPI', modelID: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', effort: 'low' },
+  { provider: 'openaiAPI', modelID: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', effort: 'low' },
+  { provider: 'openaiAPI', modelID: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', effort: 'low' },
+  { provider: 'openaiAPI', modelID: 'gpt-6-astra', displayName: 'GPT-6 Astra', effort: 'low' },
+];
+
 /** Everything the ladder is allowed to contain: the frozen request, plus what was added since. */
-export const AUTHORIZED_COHORT: RequestedConfiguration[] = [...REQUESTED_COHORT, ...CERNUM_V2_ADDITIONS];
+export const AUTHORIZED_COHORT: RequestedConfiguration[] =
+  [...REQUESTED_COHORT, ...CERNUM_V2_ADDITIONS, ...OPENAI_API_IDENTITY_ADDITIONS];
 
 /**
  * The two models Pass 5B lost, named explicitly.
