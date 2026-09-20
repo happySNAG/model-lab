@@ -447,6 +447,71 @@ export function openCodeInputBudget(promptInputTokens: number): number {
 }
 
 /**
+ * WHAT A FLOOR MAY ASSUME AN OPENCODE ATTEMPT SPENDS, and why it is not the ceiling's number.
+ *
+ * `OPENCODE_INJECTED_INPUT_TOKENS` is 16,384 because a CEILING is allowed a safety margin: it is the
+ * measured overhead rounded up to the next power of two and doubled, so that a budget sized from one
+ * sample does not become decorative on a model nobody has measured. A FLOOR may not borrow that
+ * margin. A floor inflated by a doubling is not a floor any more -- it is a second ceiling wearing
+ * the word "minimum", and it would overstate the bottom of an authorization's range exactly as badly
+ * as `promptCharacters / 4` understates it, pointed the other way.
+ *
+ * So the floor uses the MEASUREMENT ITSELF, unrounded and undoubled: 7,928 tokens, read straight off
+ * `OPENCODE_MEASURED_REQUEST_INPUT` rather than retyped, which is what the one captured request
+ * injected for a prompt worth about five tokens. It is the smallest injected context OpenCode has
+ * ever been observed to send, and a floor is entitled to assume exactly that much and no more.
+ */
+export const OPENCODE_FLOOR_INJECTED_INPUT_TOKENS = OPENCODE_MEASURED_REQUEST_INPUT.injectedInputTokens;
+
+/**
+ * The lower bound on the input tokens an OpenCode candidate will pay for across its planned attempts.
+ *
+ * THE DEFECT THIS CORRECTS. `estimateSpending` derives its floor from `promptCharacters / 4` for
+ * every provider alike. That is a reasonable generic estimate of a PROMPT, and on this provider the
+ * prompt is not the request: `opencode run` sends an agent turn with the prompt inside it. On the
+ * proposed first cohort -- six free-list-price models, `foundation`, 4 attempts each -- the generic
+ * floor is 210 tokens per candidate, against 31,712 tokens of scaffolding that a captured envelope
+ * says those four requests inject before a single benchmark character is counted. The floor was not
+ * merely imprecise; it was below the minimum the evidence permits, so the authorization range a
+ * person was asked to approve began at a number the request cannot reach.
+ *
+ * PER ATTEMPT, NOT PER CAMPAIGN. Every attempt is its own `--pure` session and pays the whole
+ * scaffolding again, which is the same reason `openCodeInputBudget` is an addend, so the overhead is
+ * multiplied by `plannedAttempts` rather than added once.
+ *
+ * THE THREE BOUNDS AND WHY THEY ARE NESTED THIS WAY. The result must never fall below the ordinary
+ * prompt-derived estimate, and must never exceed the ceiling `maximumInputTokens` that the same
+ * estimate's maximum is computed from -- a floor above its own ceiling is not a range. Those two can
+ * only conflict when a binding's ceiling has been hand-set BELOW its own prompts, which is a defect
+ * in that binding and not something this function should paper over or invent a new number for. So
+ * the clamp is applied first and the ordinary estimate wins last: in the healthy case the floor sits
+ * between them, and in the degenerate case this returns precisely what the shared estimator would
+ * have returned, leaving the pre-existing problem visible instead of dressing it up.
+ *
+ * PRICING IS NOT INVOLVED. This returns TOKENS. What a token costs is `PricingSnapshot`'s business,
+ * and Cernum holds no pricing for OpenCode at all -- see `OPENCODE_COST_EXPLANATION`. Correcting a
+ * token estimate must not be allowed to imply a dollar figure that no source supports.
+ */
+export function openCodeEstimatedInputFloor(
+  promptDerivedInputTokens: number, plannedAttempts: number, maximumInputTokens: number,
+): number {
+  const attempts = Math.max(0, plannedAttempts);
+  const withInjectedOverhead = promptDerivedInputTokens + OPENCODE_FLOOR_INJECTED_INPUT_TOKENS * attempts;
+  return Math.max(promptDerivedInputTokens, Math.min(withInjectedOverhead, maximumInputTokens));
+}
+
+/** The derivation of the FLOOR, in words, for a person reading an authorization rather than this file. */
+export const OPENCODE_INPUT_FLOOR_DERIVATION =
+  'The floor for an OpenCode candidate is not `promptCharacters / 4`. That figure estimates the prompt, and '
+  + '`opencode run` sends an agent turn with the prompt inside it: the one live request Cernum has made '
+  + `(${OPENCODE_FIRST_LIVE_REQUEST_AT}, ${OPENCODE_FIRST_LIVE_REQUEST_MODEL}) carried 7,933 input-side tokens `
+  + 'for a 19-character prompt worth about 5, so roughly 7,928 tokens per request are injected whatever is '
+  + 'asked. That MEASURED figure is added once per planned attempt -- unrounded and undoubled, unlike the '
+  + 'ceiling allowance, because a floor may not carry a safety margin -- and the result is held at or below the '
+  + 'frozen input ceiling and at or above the ordinary prompt-derived estimate. It is a token count. It implies '
+  + 'no dollar figure: Cernum holds no pricing snapshot for OpenCode.';
+
+/**
  * Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it".
  *
  * REVISED 2026-09-20, because the previous version had become false. It said "no live OpenCode

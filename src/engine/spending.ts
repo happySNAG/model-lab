@@ -31,6 +31,7 @@
 
 import { CanonicalValue, digestObject } from './canonical';
 import { OperationalEnvelope, PricingSnapshot, ProviderBinding, ProviderID, isMetered } from './provider';
+import { openCodeEstimatedInputFloor } from './opencode-cli';
 
 export const AUTHORIZATION_FORMAT_VERSION = 1;
 
@@ -76,6 +77,14 @@ export interface CandidateCostEstimate {
   pricing: PricingSnapshot | null;
   /** The divisor used to turn prompt characters into a token estimate. Stated so it can be argued with. */
   charactersPerTokenEstimate: number;
+  /**
+   * How `estimatedInputTokens` was arrived at, in words.
+   *
+   * Present because the floor is no longer one arithmetic for every provider: on `opencodeCLI` it
+   * carries a measured per-attempt overhead the divisor knows nothing about, and a reader of an
+   * authorization is entitled to see which of the two produced the number they are approving.
+   */
+  estimatedInputTokenFloorBasis: string;
   /** In words, for a person reading the authorization rather than the code. */
   statement: string;
 }
@@ -136,9 +145,23 @@ export function estimateSpending(envelope: OperationalEnvelope, work: PlannedWor
         + 'there is no quantity to price');
       continue;
     }
-    const estimatedInputTokens = Math.ceil(planned.promptCharacters / divisor);
+    const promptDerivedInputTokens = Math.ceil(planned.promptCharacters / divisor);
     const maximumInputTokens = binding.maxInputTokens * planned.plannedAttempts;
     const maximumOutputTokens = binding.maxOutputTokens * planned.plannedAttempts;
+    // PROVIDER-SCOPED, and scoped here rather than in `PlannedWork` on purpose. `promptCharacters` is a
+    // fact about the frozen prompts and is the same number whoever is asked to answer them; what differs
+    // is what a given provider WRAPS AROUND those characters before sending them. Only `opencodeCLI` has
+    // been measured, so only `opencodeCLI` moves -- inventing an overhead for a provider nobody has
+    // observed would be the same guess this corrects, pointed the other way. See
+    // `OPENCODE_INPUT_FLOOR_DERIVATION`.
+    const estimatedInputTokens = binding.provider === 'opencodeCLI'
+      ? openCodeEstimatedInputFloor(promptDerivedInputTokens, planned.plannedAttempts, maximumInputTokens)
+      : promptDerivedInputTokens;
+    const floorBasis = estimatedInputTokens === promptDerivedInputTokens
+      ? `${planned.promptCharacters} prompt characters at ${divisor} characters per token`
+      : `${planned.promptCharacters} prompt characters at ${divisor} characters per token (${promptDerivedInputTokens}), `
+        + `plus the measured per-attempt OpenCode injected context across ${planned.plannedAttempts} attempt(s), `
+        + `held at or below the ${maximumInputTokens}-token input ceiling`;
 
     if (!isMetered(binding)) {
       perCandidate.push({
@@ -154,6 +177,7 @@ export function estimateSpending(envelope: OperationalEnvelope, work: PlannedWor
         maximumMicroUSD: 0,
         pricing: null,
         charactersPerTokenEstimate: divisor,
+        estimatedInputTokenFloorBasis: floorBasis,
         statement: binding.billingBasis === 'local'
           ? `${binding.candidate}: ${planned.plannedAttempts} attempt(s) on the local runtime. No monetary cost. `
             + 'Wall-clock time is still recorded, and no electricity cost is invented.'
@@ -194,12 +218,12 @@ export function estimateSpending(envelope: OperationalEnvelope, work: PlannedWor
       maximumMicroUSD,
       pricing,
       charactersPerTokenEstimate: divisor,
+      estimatedInputTokenFloorBasis: floorBasis,
       statement: `${binding.candidate}: ${planned.plannedAttempts} attempt(s) billed per token against your key. `
         + `Between ${formatMicroUSD(minimumMicroUSD)} and ${formatMicroUSD(maximumMicroUSD)}. The floor assumes every `
-        + `attempt pays for its input (about ${estimatedInputTokens} tokens, estimated at ${divisor} characters per `
-        + `token) and produces nothing; the ceiling assumes every attempt fills its whole ${binding.maxInputTokens}-token `
-        + `input budget and its whole ${binding.maxOutputTokens}-token output budget. Prices captured ${pricing.capturedAt} `
-        + `from ${pricing.source}.`,
+        + `attempt pays for its input (about ${estimatedInputTokens} tokens, from ${floorBasis}) and produces nothing; `
+        + `the ceiling assumes every attempt fills its whole ${binding.maxInputTokens}-token input budget and its whole `
+        + `${binding.maxOutputTokens}-token output budget. Prices captured ${pricing.capturedAt} from ${pricing.source}.`,
     });
   }
 
