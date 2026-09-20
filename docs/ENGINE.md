@@ -125,12 +125,20 @@ both interfaces.
 ### A model name is a plan, not a capability
 
 There is a list of models this project intends to test. Every one of them starts **`unproven`**, and
-nothing but an **identity smoke test**, or an **account-scoped provider listing**, moves it to
-`proven`. A smoke test proves two separate things and keeps them separate: that the request could be
-EXECUTED at all, and — only if the reply names a model — WHO answered it. A request that succeeds and
-names nobody is `unverifiable`, never `proven`. A client-side catalogue does not: `opencode models` is read from a cached file describing
-thousands of models OpenCode has never called, so every OpenCode model is recorded as **discovered
-and unproven** and none is selectable. v0.2.1 marked them `proven` and this is the correction. The
+nothing but an **identity smoke test** moves it to `proven`. A smoke test proves two separate things
+and keeps them separate: that the request could be EXECUTED at all, and — only if the reply names a
+model — WHO answered it. A request that succeeds and names nobody is `unverifiable`, never `proven`.
+
+**No listing moves a model to `proven`, and that includes an account-scoped one.** A listing can
+establish that an identifier was advertised or visible to this account; it cannot establish that the
+model answered a request, because no request was made. `opencode models` is read from a cached file
+describing thousands of models OpenCode has never called; an OpenAI `/v1/models` answered with your
+own key is better evidence and still not execution, since an advertised identifier can be refused at
+call time and a catalogue entry is not a reply. So every listed model is recorded as **discovered and
+unproven**, with an empty `verifiedModelID`, and none is selectable. v0.2.1 marked the OpenCode
+catalogue `proven`; v0.2.4 marked an OpenAI listing `proven` on the account-scoped exception this
+paragraph used to carry, promoting 130 models — embeddings, moderation and audio endpoints among them
+— on a live account. This is the correction to both. The
 shared
 campaign builder refuses an unproven model outright — in the terminal and in the interface, from the
 same function — so editing that list can never make a model runnable.
@@ -556,8 +564,8 @@ cernum run | resume | pause (Ctrl-C) | status | verify | finalize | retest
 
 `--frontier` takes `provider:model[:effort]`. The effort is part of the candidate **name**, because
 the same model at high effort and at max effort are two experiments and must never share a row, a
-rate or a cost. A model provider discovery has not proven callable is refused here rather than
-offered.
+rate or a cost. A model no identity smoke test has proven callable is refused here rather than
+offered — discovery can name it, and naming is not proof.
 
 Ctrl-C pauses at the next attempt boundary **and stops every provider command in flight** — a child
 process that is merely abandoned keeps its slot in your rate limit and keeps consuming the allowance

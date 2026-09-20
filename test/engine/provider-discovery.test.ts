@@ -7,7 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DESIRED_CANDIDATE_LADDER, desiredCandidates, discoverMeteredProvider, discoverSubscriptionCLI,
-  offlineProviderStatuses, parseModelListing, privacyDisclosure, selectableModels,
+  offlineProviderStatuses, parseModelListing, privacyDisclosure, ProviderStatus, selectableModels,
 } from '../../src/engine/discovery';
 import { forgetRegisteredSecrets } from '../../src/engine/redaction';
 import { startMockProvider, writeFakeCLI } from './frontier-harness';
@@ -187,22 +187,51 @@ describe('discovering a subscription CLI', () => {
 
 describe('a listing that cannot be understood proves nothing', () => {
   it('yields no models rather than a best guess', () => {
-    expect(parseModelListing('not json at all', 'claudeCLI', 'now').filter((m) => m.availability === 'proven')).toEqual([]);
-    expect(parseModelListing('', 'claudeCLI', 'now').filter((m) => m.availability === 'proven')).toEqual([]);
+    expect(parseModelListing('not json at all', 'claudeCLI', 'now')).toEqual([]);
+    expect(parseModelListing('', 'claudeCLI', 'now')).toEqual([]);
   });
 
   it('accepts the two shapes tools actually emit', () => {
-    const bare = parseModelListing('["a-model"]', 'claudeCLI', 'now').filter((m) => m.availability === 'proven');
+    const bare = parseModelListing('["a-model"]', 'claudeCLI', 'now').filter((m) => m.availability === 'unproven');
     expect(bare.map((m) => m.modelID)).toEqual(['a-model']);
-    const wrapped = parseModelListing('{"data":[{"id":"b-model"}]}', 'openaiAPI', 'now').filter((m) => m.availability === 'proven');
+    const wrapped = parseModelListing('{"data":[{"id":"b-model"}]}', 'openaiAPI', 'now').filter((m) => m.availability === 'unproven');
     expect(wrapped.map((m) => m.modelID)).toEqual(['b-model']);
   });
+});
 
-  it('records the identifier the provider itself returned as the verified one', () => {
-    const proven = parseModelListing('["claude-sonnet-5-20260114"]', 'claudeCLI', 'now')
+// THE INVARIANT M-1 RESTORED, ASSERTED ON THE PARSER THAT BROKE IT.
+//
+// A listing can establish that an identifier was advertised or visible to this account. It must
+// never establish that a model ANSWERED — so no row it returns may be `proven`, and none may carry a
+// `verifiedModelID`, which is the field a campaign freezes as the identity that replied. v0.2.4's
+// parser wrote both from an OpenAI `/v1/models` response and made 130 models selectable, among them
+// embedding and moderation endpoints that cannot answer an identity prompt at all.
+describe('a listing is visibility, never execution', () => {
+  it('records a listed model as DISCOVERED and UNPROVEN, with no verified identity', () => {
+    const listed = parseModelListing('["claude-sonnet-5-20260114"]', 'claudeCLI', 'now')
       .find((model) => model.modelID === 'claude-sonnet-5-20260114')!;
-    expect(proven.verifiedModelID).toBe('claude-sonnet-5-20260114');
-    expect(proven.evidence).toMatch(/listed this model as one this account may call/);
+    expect(listed.availability).toBe('unproven');
+    expect(listed.verifiedModelID).toBe('');
+    expect(listed.evidence).toMatch(/DISCOVERED, NOT PROVEN/);
+    expect(listed.evidence).toMatch(/not a reply from a model/);
+    expect(listed.evidence).toMatch(/identity smoke test/);
+  });
+
+  it('proves nothing from a metered API listing either, however many models it names', () => {
+    const body = JSON.stringify({ data: [{ id: 'gpt-5.4' }, { id: 'text-embedding-3-small' }, { id: 'whisper-1' }] });
+    const rows = parseModelListing(body, 'openaiAPI', 'now');
+    expect(rows).toHaveLength(3);
+    expect(rows.filter((model) => model.availability === 'proven')).toEqual([]);
+    expect(rows.filter((model) => model.verifiedModelID !== '')).toEqual([]);
+  });
+
+  it('never returns a selectable model, whatever the listing said', () => {
+    const status: ProviderStatus = {
+      provider: 'openaiAPI', label: 'OpenAI API', executionClass: 'meteredAPI', billingBasis: 'perToken',
+      reachability: 'ready', detail: '', probe: 'invoked', checkedAt: 'now',
+      models: parseModelListing('{"data":[{"id":"gpt-5.4"}]}', 'openaiAPI', 'now'),
+    };
+    expect(selectableModels([status])).toEqual([]);
   });
 });
 
@@ -225,7 +254,11 @@ describe('discovering a metered provider', () => {
         credentials: { environment: { ANTHROPIC_API_KEY: FIXTURE_ANTHROPIC_KEY }, readKeychain: () => undefined },
       });
       expect(status.reachability).toBe('ready');
-      expect(status.models.filter((m) => m.availability === 'proven').map((m) => m.modelID)).toEqual(['a-model']);
+      // LISTED, AND THEREFORE UNPROVEN. Reaching a key-scoped `/v1/models` says what the provider
+      // advertises to this account; it is not a request to a model and does not make one selectable.
+      expect(status.models.filter((m) => m.availability === 'unproven').map((m) => m.modelID)).toEqual(['a-model']);
+      expect(status.models.every((m) => m.verifiedModelID === '')).toBe(true);
+      expect(status.detail).toMatch(/advertises to this account/);
       expect(provider.requests[0].url).toBe('/v1/models');
       expect(provider.requests[0].headers['x-api-key']).toBeDefined();
     } finally { await provider.close(); forgetRegisteredSecrets(); }

@@ -543,7 +543,13 @@ async function commandDiscover(positional: string[], options: Options): Promise<
   const proven = discovered.filter((model) => model.availability === 'proven');
   const corrected = discovered.filter((model) => model.evidenceCorrectedBy !== undefined);
   say('');
-  say(`${proven.length} model(s) are now selectable. Anything not listed as 'proven' cannot be put in a campaign.`);
+  // THE COUNT IS OF WHAT WAS PROVED EARLIER, NOT OF WHAT THIS RUN FOUND. A listing — a CLI's
+  // catalogue or a metered API's key-scoped `/v1/models` — establishes that an identifier is
+  // advertised to this account and nothing beyond it, so a discovery run promotes NOTHING. Until
+  // v0.2.4 this line reported an OpenAI listing as 130 newly selectable models.
+  say(`${proven.length} model(s) are selectable, none of them proved by this run: a listing says what a provider`);
+  say("advertises, not what answered a request. Anything not listed as 'proven' cannot be put in a campaign.");
+  say(`Prove one by asking it once:  ${TERMINAL_COMMAND} smoke <provider> --models <id,…>`);
   if (corrected.length > 0) {
     say(`${corrected.length} row(s) carried evidence a later release superseded; the correction is now written to`);
     say('disk beside the original text, which is preserved. No availability changed.');

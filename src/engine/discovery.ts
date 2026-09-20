@@ -21,8 +21,14 @@
 // There is a ladder of models this project intends to test. Naming them is useful — a person needs
 // to know what the plan is. Treating a name as an availability claim is not: model lineups change,
 // a subscription tier may not include what another tier does, and a CLI version may predate a model
-// entirely. So every name starts `unproven`, and only provider discovery or an identity smoke test
-// moves it to `proven`. A campaign cannot select an `unproven` candidate at all.
+// entirely. So every name starts `unproven`, and ONLY AN IDENTITY SMOKE TEST moves it to `proven`. A
+// campaign cannot select an `unproven` candidate at all.
+//
+// DISCOVERY NEVER PROVES A MODEL, AND THAT INCLUDES A METERED API'S OWN LISTING. Discovery finds out
+// which identifiers a provider advertises to this account. That is worth recording and it is worth
+// nothing more: no request was sent to a model, nothing answered, and no provider named a model in a
+// reply. v0.2.4 wrote `proven` and a `verifiedModelID` for all 130 rows of an OpenAI `/v1/models`
+// response, which recorded an advertisement as if a model had answered. See `parseModelListing`.
 //
 // NOTHING HERE SCRAPES ANYTHING. A subscription is reached by running the official CLI the user
 // installed and authenticated. There is no browser session, no cookie jar, no private endpoint, and
@@ -59,15 +65,19 @@ export type Reachability =
 /** Whether a model can be put in a campaign, and what established that. */
 export type ModelAvailability =
   /**
-   * A REQUEST WAS MADE AND CAME BACK. The only state a campaign may select.
+   * A MODEL WAS ASKED AND THE ANSWER CAME BACK NAMING IT. The only state a campaign may select.
    *
-   * Established by an identity smoke test, or by a provider listing that is scoped to THIS ACCOUNT —
-   * a metered API's `/v1/models`, answered with the caller's own key, reports what that key may
-   * call. A client-side catalogue is NOT such a listing and never reaches this state: `opencode
-   * models` reads a cached file describing thousands of models it has never contacted, and
-   * `codex debug models` renders what the client knows about while the service refuses entries in
-   * it. v0.2.1 wrote `proven` for every OpenCode listing and so turned a file on disk into
-   * permission to spend; see `opencode-cli.ts`.
+   * Established by an identity smoke test and by nothing else. NO LISTING REACHES THIS STATE, however
+   * the listing was obtained. A client-side catalogue is the obvious case — `opencode models` reads a
+   * cached file describing thousands of models it has never contacted, and `codex debug models`
+   * renders what the client knows about while the service refuses entries in it — but an
+   * account-scoped listing does not reach it either. A metered API's `/v1/models`, answered with the
+   * caller's own key, reports what that key is ADVERTISED, which a provider may still refuse at call
+   * time for tier, region, retirement or moderation; and an entry in it is not a reply from a model.
+   *
+   * Two releases learned this the same way. v0.2.1 wrote `proven` for every OpenCode listing and so
+   * turned a file on disk into permission to spend (see `opencode-cli.ts`); v0.2.4 wrote `proven` for
+   * every row of an OpenAI `/v1/models` response, on the reasoning this comment used to carry.
    */
   | 'proven'
   /**
@@ -229,7 +239,8 @@ export const DESIRED_CANDIDATE_LADDER: { provider: ProviderID; modelID: string; 
 const LADDER_CAVEAT =
   'named in the intended testing ladder, and nothing has confirmed it. A model identifier is not a capability claim: '
   + 'lineups change, a subscription tier may not include what another does, and an installed CLI may predate a model '
-  + 'entirely. Run provider discovery or an identity smoke test before this becomes selectable.';
+  + 'entirely. Run an identity smoke test before this becomes selectable: discovery can find the identifier, and '
+  + 'only a request that came back naming the model can prove it.';
 
 /** The ladder as unproven rows, for a screen that wants to show the plan without implying it works. */
 export function desiredCandidates(at: string): DiscoveredFrontierModel[] {
@@ -573,11 +584,38 @@ function codexSession(stdout: string): SubscriptionSession | undefined {
 }
 
 /**
- * Read a CLI's model listing.
+ * WHAT A LISTING ESTABLISHES, AND THE ONE THING IT CANNOT.
+ *
+ * A listing — a CLI's catalogue, or a metered API's `/v1/models` answered with this account's own
+ * key — can establish that an identifier was ADVERTISED OR VISIBLE to this account. It cannot
+ * establish that the model answered a request, because no request was made: nothing was asked, and
+ * no provider named a model in a reply. The two are different facts and the store keeps them apart.
+ */
+export const LISTING_IS_NOT_EXECUTION =
+  'A model listing reports which identifiers a provider advertised to this account. It is not a reply from a model: '
+  + 'nothing was asked and nothing answered. An account-scoped listing is better evidence than a client-side '
+  + 'catalogue and it is still not execution — an advertised identifier can be refused at call time for tier, region, '
+  + 'retirement or moderation. So a listed model is recorded as DISCOVERED and UNPROVEN, and `verifiedModelID` stays '
+  + 'EMPTY, because no provider has named a model in answer to a request.';
+
+/** HOW A LISTED MODEL BECOMES PROVEN. One route, and it costs what a request costs. */
+export const LISTING_PROOF_PATH =
+  'A listed model becomes selectable only through an identity smoke test — one request that was sent and came back '
+  + 'naming the model that answered: `cernum smoke <provider> --models <id>`. Against a metered API that request is '
+  + 'billed per token against your own credential and is refused unless it was authorized by name.';
+
+/**
+ * Read a model listing.
  *
  * Accepts the two shapes tools actually emit — a bare array, or an object with a `models`/`data`
  * array — and NOTHING else. A listing that does not parse yields no models at all, because a
- * partially-understood listing is how a name that was never offered becomes a proven candidate.
+ * partially-understood listing is how a name that was never offered becomes a candidate.
+ *
+ * EVERY ROW IT RETURNS IS `unproven` WITH AN EMPTY `verifiedModelID`. v0.2.4 returned `proven` here
+ * with `verifiedModelID` set to the advertised identifier, which gave a catalogue entry the same
+ * standing in the store as a model that had answered — and on a live OpenAI account made 130 models
+ * campaign-selectable, including embedding, audio, image and moderation endpoints that cannot answer
+ * an identity prompt at all. Nothing this function returns may be selected; see `LISTING_PROOF_PATH`.
  */
 export function parseModelListing(stdout: string, provider: ProviderID, at: string): DiscoveredFrontierModel[] {
   let parsed: unknown;
@@ -611,11 +649,14 @@ export function parseModelListing(stdout: string, provider: ProviderID, at: stri
       provider,
       modelID: id,
       displayName,
-      availability: 'proven',
+      availability: 'unproven',
       // Deliberately provider-neutral wording: the same parser reads a subscription CLI's listing
       // and a metered API's, and calling an API "the CLI" would misdescribe how the answer was got.
-      evidence: `${PROVIDER_LABELS[provider]} listed this model as one this account may call, at ${at}`,
-      verifiedModelID: id,
+      // It says LISTED rather than "may call": what this account may call is the question a listing
+      // does not answer.
+      evidence: `${PROVIDER_LABELS[provider]} listed ${id} at ${at}: DISCOVERED, NOT PROVEN. `
+        + `${LISTING_IS_NOT_EXECUTION} ${LISTING_PROOF_PATH}`,
+      verifiedModelID: '',
       desiredEfforts: wanted.get(id)?.desiredEfforts ?? [],
       discoveredAt: at,
     });
@@ -630,8 +671,9 @@ export function parseModelListing(stdout: string, provider: ProviderID, at: stri
       modelID: id,
       displayName: entry.displayName,
       availability: 'refused',
-      evidence: `${PROVIDER_LABELS[provider]} listed the models this account may call, and `
-        + `${entry.displayName} was not among them`,
+      evidence: `${PROVIDER_LABELS[provider]} listed the models it advertises to this account at ${at}, and `
+        + `${entry.displayName} was not among them. Being listed would not have proven it either — nothing in a `
+        + 'listing does — but being absent from one this account was served is a reason not to plan around it.',
       verifiedModelID: '',
       desiredEfforts: entry.desiredEfforts,
       discoveredAt: at,
@@ -698,7 +740,8 @@ export async function discoverMeteredProvider(provider: ProviderID, options: Dis
       credential,
       reachability: 'ready',
       models: parseModelListing(body, provider, checkedAt),
-      detail: `the key is accepted and the provider listed the models it may call, at ${checkedAt}.`,
+      detail: `the key is accepted and the provider listed the models it advertises to this account, at ${checkedAt}. `
+        + `${LISTING_IS_NOT_EXECUTION} ${LISTING_PROOF_PATH}`,
     };
   } catch (error) {
     return {

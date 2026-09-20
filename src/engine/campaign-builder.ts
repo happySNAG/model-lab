@@ -18,8 +18,9 @@
 //
 // AN UNPROVEN MODEL IS REFUSED HERE. Not filtered out of a list somewhere, not greyed out in an
 // interface — refused, by the builder, with a message naming what would prove it. A model name is a
-// plan, and nothing but discovery or an identity smoke test turns a plan into something a campaign
-// may spend real money on.
+// plan, and nothing but an identity smoke test turns a plan into something a campaign may spend real
+// money on. Discovery is not a second route: it can find an identifier a provider advertises, which
+// is not evidence that the model answered. See `parseModelListing` in `discovery.ts`.
 //
 // PASS 6 ADDS EXACTLY ONE WAY PAST THAT REFUSAL, and it is not a weakening of it. A campaign may
 // carry a sealed `IdentityAdmission` naming specific Codex configurations, and a candidate that
