@@ -30,7 +30,7 @@ import { FrozenManifest, HardwareIdentity, ManifestCandidate, VerificationReport
 import { DEFAULT_GUARD_POLICY, GuardPolicy, GuardVerdict, StoreBaseline, SystemReading, describeBreach, evaluateGuards } from './guards';
 import { ResidencyController, ResidencyError, ResidencyProof, unloadAndVerify } from './residency';
 import { ModelIdentityVerification, ObservedModelIdentity, SuppliedContextVerification, identityPermitsExecution, suppliedContextIsUsable, verifyModelIdentity, verifySuppliedContext } from './verification';
-import { AttemptTelemetry, RuntimeReportedTiming, StreamEvent, explainEmptyAnswer, summariseAttempt } from './attempt-telemetry';
+import { AttemptTelemetry, RuntimeReportedTiming, StreamEvent, explainEmptyAnswer, explainTruncatedAnswer, summariseAttempt } from './attempt-telemetry';
 import { FinalRankings, RankingView, outcomesFromLedger, rankCandidates } from './ranking';
 import { JSONViewAdjudication } from './json-views';
 import { RetentionReport, recommendRetention } from './retention';
@@ -983,6 +983,13 @@ export class Campaign {
       jsonViews = scored.jsonViews;
       const emptyExplanation = explainEmptyAnswer(telemetry, slot.maxOutputTokens);
       if (emptyExplanation) detail = `${detail} — ${emptyExplanation}`;
+      // A TRUNCATED ANSWER SAYS SO ON ITS OWN ROW. The status is left exactly as the scorer decided
+      // it — this is not a second opinion about whether the answer was right — but a row scored
+      // against an answer the output ceiling cut off must not read like a row scored against a
+      // complete one. Absent whenever the provider named no terminal reason: unknown is not
+      // truncated, and nothing here is inferred from a token count.
+      const truncationExplanation = explainTruncatedAnswer(telemetry, slot.maxOutputTokens);
+      if (truncationExplanation) detail = `${detail} — ${truncationExplanation}`;
     }
 
     // 7. Append, fsynced, before anything else happens.
@@ -1016,6 +1023,9 @@ export class Campaign {
       thinkingTokenCount: 'measured' in telemetry.thinkingTokenCount ? telemetry.thinkingTokenCount.measured : undefined,
       thinkingOnly: telemetry.thinkingOnly,
       streamed: telemetry.streamed,
+      // WHY GENERATION STOPPED, in the provider's own word, on every row that has one. Undefined
+      // when the provider named none — which is what a subscription CLI does, and is not `stop`.
+      doneReason: 'measured' in telemetry.doneReason ? telemetry.doneReason.measured : undefined,
       // On every row, exactly as `canonical` is: a row lifted out of its campaign carries who
       // answered and what it cost with it, so it can never be silently merged into a set whose
       // numbers mean something else.

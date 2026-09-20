@@ -103,6 +103,18 @@ export interface FrontierResponse {
   usageProvenance: Provenance;
   /** The provider's usage block, exactly as sent, for reconciling against a bill. */
   rawUsage?: CanonicalValue;
+  /**
+   * WHY GENERATION STOPPED, in the provider's own word — `stop`, `length`, `content_filter`,
+   * `end_turn`, `max_tokens`, whatever it actually said.
+   *
+   * UNDEFINED MEANS IT DID NOT SAY, and is never filled in with `stop`. That guess is the defect
+   * this field exists to end: before it, every non-failing frontier attempt reported `stop`, so an
+   * answer the output ceiling cut in half was recorded as a completed one. The value is carried
+   * verbatim rather than translated into a Cernum vocabulary — `max_tokens` and `length` are the
+   * same event in two dialects, and `endedAtOutputLimit` in `attempt-telemetry.ts` is where the two
+   * are read as one without either being rewritten.
+   */
+  finishReason?: string;
   /** Milliseconds from request to the first VISIBLE byte, when this process watched it arrive. */
   firstVisibleTokenMilliseconds?: number;
   totalElapsedMilliseconds: number;
@@ -980,6 +992,13 @@ interface ParsedAPIResponse {
   reportedModelID: string;
   usage: FrontierUsage;
   raw?: CanonicalValue;
+  /** The provider's terminal reason, verbatim. Undefined when the envelope carried none. */
+  finishReason?: string;
+}
+
+/** A provider's terminal reason, or undefined. Never an empty string, which reads as "it said nothing". */
+function terminalReasonOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 /** Read a non-streamed response body. Refuses anything not in the documented shape. */
@@ -1008,6 +1027,8 @@ export function parseAPIResponse(provider: ProviderID, body: string): ParsedAPIR
         reasoningTokens: asNumber(usageBlock.thinking_tokens),
       },
       raw: (parsed.usage ?? null) as CanonicalValue,
+      // `end_turn`, `max_tokens`, `stop_sequence`, `tool_use` — this API's own vocabulary, kept in it.
+      finishReason: terminalReasonOf(parsed.stop_reason),
     };
   }
 
@@ -1024,6 +1045,9 @@ export function parseAPIResponse(provider: ProviderID, body: string): ParsedAPIR
       reasoningTokens: asNumber(details.reasoning_tokens),
     },
     raw: (parsed.usage ?? null) as CanonicalValue,
+    // The ANSWER's terminal reason. Cernum asks for one completion, so `choices[0]` is that answer;
+    // reading any other choice would report a reason belonging to text nobody scored.
+    finishReason: terminalReasonOf(choices[0].finish_reason),
   };
 }
 
@@ -1098,8 +1122,18 @@ export class MeteredAPIAdapter implements FrontierAdapter {
         const parsed = parseAPIResponse(this.provider, await response.text());
         if (!parsed) return fail('malformedResponse', 'the provider\'s response is not in the documented shape');
         return {
-          ...parsed,
+          answerText: parsed.answerText,
+          reportedModelID: parsed.reportedModelID,
+          usage: parsed.usage,
           usageProvenance: parsed.usage.inputTokens !== undefined ? 'providerReported' : 'unavailable',
+          // NAMED, NOT SPREAD. A spread of the parse result put the provider's usage block into a
+          // property called `raw`, which is not a field of this type — so it type-checked, travelled
+          // no further than this function, and left `rawUsage` undefined on every metered attempt
+          // while the provider had in fact reported usage. The subscription path opposite has always
+          // mapped it by name; this one now does too, and the normalised counts above are untouched
+          // by it: `usage` stays the engine's accounting and this stays the provider's own words.
+          rawUsage: parsed.raw,
+          finishReason: parsed.finishReason,
           // Not streamed, so nothing observed a first token. Recorded as absent WITH the reason,
           // never derived from the total.
           firstVisibleTokenMilliseconds: undefined,
@@ -1113,8 +1147,13 @@ export class MeteredAPIAdapter implements FrontierAdapter {
         if (firstVisibleTokenMilliseconds === undefined) firstVisibleTokenMilliseconds = at;
       });
       return {
-        ...streamed,
+        answerText: streamed.answerText,
+        reportedModelID: streamed.reportedModelID,
+        usage: streamed.usage,
         usageProvenance: streamed.usage.inputTokens !== undefined ? 'providerReported' : 'unavailable',
+        // Same naming as the non-streamed branch above, and for the same reason.
+        rawUsage: streamed.raw,
+        finishReason: streamed.finishReason,
         firstVisibleTokenMilliseconds,
         totalElapsedMilliseconds: now() - startedAt,
         retryCount: 0,
@@ -1146,6 +1185,10 @@ export class MeteredAPIAdapter implements FrontierAdapter {
     let reportedModelID = '';
     const usage: FrontierUsage = {};
     let raw: CanonicalValue | undefined;
+    // THE LAST TERMINAL REASON THE STREAM CARRIED WINS. A stream that says `stop` on one frame and
+    // `length` on a later one has not said two things: the later frame is the one that describes the
+    // completed response, and taking the earlier would report an answer as whole that the ceiling cut.
+    let finishReason: string | undefined;
 
     const asNumber = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : undefined);
 
@@ -1183,7 +1226,17 @@ export class MeteredAPIAdapter implements FrontierAdapter {
               const block = (event.usage ?? {}) as Record<string, unknown>;
               usage.visibleOutputTokens = asNumber(block.output_tokens) ?? usage.visibleOutputTokens;
               usage.reasoningTokens = asNumber(block.thinking_tokens) ?? usage.reasoningTokens;
-              raw = (event.usage ?? raw ?? null) as CanonicalValue;
+              // MERGED, NOT REPLACED. This API splits one usage report across two events — the input
+              // count arrives on `message_start` and the output count on `message_delta` — so
+              // overwriting here would hand a reconciler an output figure and no input to pair it
+              // with. Every value below is still one the provider sent; nothing is derived, and the
+              // later event wins on any key both carry, exactly as the counts above do.
+              if (event.usage && typeof event.usage === 'object') {
+                raw = { ...(raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}), ...block } as CanonicalValue;
+              }
+              // `end_turn` and `max_tokens` live on the delta, not the usage block.
+              const delta = (event.delta ?? {}) as Record<string, unknown>;
+              finishReason = terminalReasonOf(delta.stop_reason) ?? finishReason;
             }
             continue;
           }
@@ -1196,6 +1249,9 @@ export class MeteredAPIAdapter implements FrontierAdapter {
               if (answerText.length === 0) onFirstVisible(now() - startedAt);
               answerText += delta.content;
             }
+            // Frames carry `finish_reason: null` until the terminal one; `terminalReasonOf` refuses
+            // that, so an unfinished frame cannot erase a reason a finished one already gave.
+            finishReason = terminalReasonOf(choice.finish_reason) ?? finishReason;
           }
           if (event.usage && typeof event.usage === 'object') {
             const block = event.usage as Record<string, unknown>;
@@ -1208,7 +1264,7 @@ export class MeteredAPIAdapter implements FrontierAdapter {
         }
       }
     }
-    return { answerText, reportedModelID, usage, raw };
+    return { answerText, reportedModelID, usage, raw, finishReason };
   }
 }
 
@@ -1229,6 +1285,13 @@ export interface ScriptedFrontierAnswer {
   failure?: { kind: FrontierFailureKind; detail: string };
   /** Fail this many times before succeeding, to exercise retry accounting. */
   failuresBeforeSuccess?: number;
+  /**
+   * The provider's terminal reason, so a truncated answer is testable without a provider.
+   *
+   * Left undefined by default, which is the honest default: a scripted adapter that named no reason
+   * must not acquire one, exactly as `subscriptionIncludedUsageMicroUSD` does not acquire a zero.
+   */
+  finishReason?: string;
 }
 
 /**
@@ -1287,6 +1350,7 @@ export class ScriptedFrontierAdapter implements FrontierAdapter {
       retryCount: 0,
       wastedTokens: 0,
       rawUsage: { scripted: true } as CanonicalValue,
+      finishReason: answer.finishReason,
     };
   }
 }

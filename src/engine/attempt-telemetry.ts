@@ -170,6 +170,41 @@ export function summariseAttempt(events: StreamEvent[], runtime: RuntimeReported
 }
 
 /**
+ * The terminal reasons that mean THE OUTPUT CEILING ENDED THE ANSWER, in every dialect Cernum reads.
+ *
+ * `length` is Ollama's and the OpenAI API's word for it; `max_tokens` and `max_output_tokens` are
+ * the Anthropic API's. They are one event described by three vocabularies, and this set is where
+ * that is stated once — the recorded `doneReason` keeps whichever word the provider itself used, so
+ * nothing here rewrites a provider's own report.
+ */
+const OUTPUT_LIMIT_TERMINAL_REASONS = new Set(['length', 'max_tokens', 'max_output_tokens']);
+
+/**
+ * True when the provider SAID it stopped at the output limit.
+ *
+ * False when it said it stopped for any other reason AND when it said nothing at all — the two are
+ * different facts, and `doneReason` above is where a reader tells them apart. This predicate exists
+ * so "was this answer truncated" is asked in one place rather than by every caller comparing
+ * strings, and so a scorer cannot read a ceiling-truncated answer as a completed one by accident.
+ */
+export function endedAtOutputLimit(telemetry: AttemptTelemetry): boolean {
+  return 'measured' in telemetry.doneReason && OUTPUT_LIMIT_TERMINAL_REASONS.has(telemetry.doneReason.measured);
+}
+
+/**
+ * The one-line note for an answer the provider says its output ceiling cut short.
+ *
+ * Undefined when the provider said it finished, and undefined when it said nothing: an attempt
+ * whose terminal reason is unknown is not announced as truncated on a guess.
+ */
+export function explainTruncatedAnswer(telemetry: AttemptTelemetry, maxOutputTokens: number): string | undefined {
+  if (!endedAtOutputLimit(telemetry)) return undefined;
+  const reason = 'measured' in telemetry.doneReason ? telemetry.doneReason.measured : '';
+  return `the provider stopped at the output token limit (terminal reason '${reason}') with a `
+    + `${maxOutputTokens}-token budget; what was scored is a truncated generation, not a completed answer`;
+}
+
+/**
  * The one-line explanation for an attempt that produced no visible answer.
  *
  * This exists because "empty reply" is the least useful thing a benchmark can say. When the stream

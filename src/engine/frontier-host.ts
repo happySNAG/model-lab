@@ -452,7 +452,11 @@ export class RoutingHost implements CampaignHost {
         // report, and deriving one from the client's wall clock would turn a network round trip into
         // a claim about how fast the model generates.
         evalDurationNanoseconds: undefined,
-        doneReason: response.failure ? response.failure.kind : 'stop',
+        // THE PROVIDER'S WORD, OR NOTHING. This read `'stop'` for every attempt that did not fail,
+        // which meant an answer cut off at the output ceiling and an answer that finished were the
+        // same record. `summariseAttempt` turns the undefined into `unavailable` with its reason,
+        // which is what "the provider did not say" is supposed to look like here.
+        doneReason: response.failure ? response.failure.kind : response.finishReason,
         weightsWereLoaded: false,
       },
       totalElapsedMilliseconds: response.totalElapsedMilliseconds,

@@ -121,6 +121,14 @@ export interface IdentitySmokeResult {
    */
   reportedEffort: string;
   /**
+   * WHY GENERATION STOPPED, in the provider's own word — `stop`, `length`, `end_turn`, `max_tokens`.
+   *
+   * Empty string means the provider named no terminal reason, which is not the same as saying it
+   * finished. Always present so a reader can see which of the two this was, and never written as
+   * `stop` on the engine's own initiative.
+   */
+  finishReason: string;
+  /**
    * THE TOOL'S OWN TELEMETRY ABOUT THIS TURN, when a collector was asked for.
    *
    * Codex only, opt-in only. It carries the reasoning effort the CLI says it applied — which `codex
@@ -271,6 +279,7 @@ export function readSmoke(binding: ProviderBinding, response: FrontierResponse, 
     retryCount: response.retryCount,
     wastedTokens: response.wastedTokens,
     reportedEffort: response.reportedEffort ?? '',
+    finishReason: response.finishReason ?? '',
     telemetry: response.otlpTurn === undefined ? undefined : {
       correlationKey: response.otlpTurn.correlationKey,
       correlated: response.otlpTurn.correlated,
