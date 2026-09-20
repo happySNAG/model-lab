@@ -43,7 +43,7 @@ import {
 } from './workspace-transcript';
 import {
   WorkspaceAgentDriver, WorkspaceAgentRequest, WorkspaceAgentResult, PriorAttemptBriefing,
-  driverShortfalls, workspaceEnvironment, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX,
+  driverShortfalls, retryBriefingText, workspaceEnvironment, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX,
 } from './workspace-agent';
 
 export class WorkspaceExecutionError extends Error {
@@ -442,9 +442,24 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
         });
     }
 
+    // WHAT IS ACTUALLY SENT THIS ATTEMPT. The frozen instruction on attempt 1, and that same text
+    // plus the engine-composed retry briefing on every attempt after it. Composed HERE rather than
+    // in a driver, for the reason `workspaceInstructionText` is composed by the case: two drivers
+    // wording a retry differently would make one case two experiments. Until this existed, nothing
+    // sent `prior` at all and a second attempt was a resample rather than a recovery.
+    const instructionAsSent = context.prior === undefined
+      ? workspaceInstructionText(workspaceCase)
+      : `${workspaceInstructionText(workspaceCase)}\n\n${retryBriefingText(context.prior)}`;
+
     transcript.emit('attemptStarted', 'engineObserved', attemptIndex,
       `attempt ${attemptIndex + 1} of ${workspaceCase.execution.maximumAttempts} on ${workspaceCase.id}@${workspaceCase.version}`,
-      { workspaceTreeDigest: baseline.treeDigest });
+      {
+        workspaceTreeDigest: baseline.treeDigest,
+        // The text this attempt was handed, sealed rather than merely composed: a reader comparing
+        // two attempts can see that the second one was told something the first was not.
+        textDigest: sha256Text(instructionAsSent),
+        textByteCount: Buffer.byteLength(instructionAsSent, 'utf8'),
+      });
 
     // 4. The agent. Its environment is an allow-list; its scratch space is outside the tree.
     const environment = workspaceEnvironment({
@@ -459,7 +474,7 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
       caseDigest: context.caseDigest,
       attemptIndex,
       maximumAttempts: workspaceCase.execution.maximumAttempts,
-      instruction: workspaceInstructionText(workspaceCase),
+      instruction: instructionAsSent,
       workspaceRoot: fs.realpathSync(workRoot),
       scope: workspaceCase.task.scope,
       tools: workspaceCase.execution.tools,

@@ -366,6 +366,12 @@ export class WorkspaceRoutingHost {
       costProvenance,
       ...allowance,
       providerReportedGenerationMilliseconds: decidingUsage?.providerReportedDurationMilliseconds,
+      // THE DECIDING ATTEMPT'S, NOT A SUM. Time to first output is a latency, and latencies do not
+      // add up across attempts: two attempts that each answered in 900 ms did not take 1,800 ms to
+      // answer. This engine's OWN observation is preferred over the tool's account of itself, and
+      // the tool's is used only when nothing here watched a byte arrive.
+      timeToFirstTokenMilliseconds: decidingUsage?.observedFirstOutputMilliseconds
+        ?? decidingUsage?.providerReportedTimeToFirstTokenMilliseconds,
       // The run's retries, from the runner's own count. `WorkspaceScorecard.retriesRequired` is the
       // same number read off the same place; they cannot disagree.
       retryCount: scorecard.retriesRequired,

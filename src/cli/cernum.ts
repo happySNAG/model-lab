@@ -46,6 +46,10 @@ import {
   resolvePreRunIdentity, sha256Text, validateWorkspaceCatalog, workspaceInstructionText,
   workspacePromptRecordOf, workspaceRecordPaths, workspaceRecordRoot, workspaceTimeoutFor,
   CLAUDE_CLI_VERSION_VERIFIED_AGAINST,
+  // The comparative matrix: one sealed pack, several models, several independent samples of each.
+  WorkspaceMatrixError, aggregateWorkspaceRuns, buildWorkspaceMatrixPlan, collectWorkspaceRunRows,
+  describeWorkspaceCell, describeWorkspaceMatrixPlan, registeredWorkspacePacks, runWorkspaceMatrix,
+  workspacePackByID,
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
   IDENTITY_UNVERIFIABLE_CAVEAT, IdentityAdmission, IdentityAdmissionError, NEVER_AFFECTS,
   REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance, authorizeIdentityAdmission,
@@ -1815,6 +1819,204 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   }
 }
 
+/**
+ * Run a sealed benchmark PACK across several models, with repeats: the comparative matrix.
+ *
+ * WHY THIS IS A SECOND COMMAND AND NOT A FLAG ON `workspace`. `cernum workspace <case>` answers
+ * "what did this model do with this repository", and every part of its surface is shaped by that:
+ * one case, one record, one scorecard printed at the end. A matrix answers "how do these models
+ * compare on these tasks", which needs a pack rather than a case, a model LIST rather than a model,
+ * a sample count, an execution order, a per-cell refusal set and a cross-record aggregate — and
+ * bolting all of that onto the single-case command would make the simple thing carry the complex
+ * thing's arguments. They share everything below the surface: the same binding builder, the same
+ * driver factory, the same `WorkspaceCampaign`, the same record layout.
+ *
+ * THE PLAN IS BUILT ONCE AND IS THE ONLY THING THAT RUNS. `buildWorkspaceMatrixPlan` resolves the
+ * pack, binds every model, discloses every driver and decides every refusal BEFORE anything is
+ * sent; `--dry-run` prints that object and stops, and a live run executes exactly it. A preview
+ * therefore cannot describe a matrix other than the one that happens — the property
+ * `command-spec.ts` exists to protect, at forty-eight runs instead of one.
+ */
+async function commandWorkspaceBenchmark(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  validateWorkspaceCatalog();
+
+  // 1. THE PACK. Named by the person; there is no default and there will not be one.
+  if (positional.length === 0) {
+    fail('no benchmark pack named, and this command has no default.\n'
+      + `Name one: ${TERMINAL_COMMAND} workspace-benchmark <pack-id> --provider <id> --models <a,b> --dry-run\n`
+      + `Packs: ${registeredWorkspacePacks.map((entry) => `${entry.id}@${entry.version}`).join(', ')}`, 2);
+  }
+  if (positional.length > 1) {
+    fail(`one benchmark pack at a time, but ${positional.length} were named: ${positional.join(', ')}.`, 2);
+  }
+  const pack = workspacePackByID(positional[0]);
+  if (!pack) {
+    fail(`'${positional[0]}' is not a benchmark pack this build knows.\n`
+      + `Packs: ${registeredWorkspacePacks.map((entry) => `${entry.id}@${entry.version}`).join(', ')}\n`
+      + 'A pack is sealed data in this repository; nothing here composes one at run time.', 2);
+  }
+
+  // 2. THE ROUTE. Every part named, none of it inferred.
+  if (options.provider === undefined) {
+    fail('--provider is required. Every run in a matrix is driven by one provider\'s WORKSPACE DRIVER, and there is '
+      + 'no default.\n'
+      + `Providers with a workspace driver in this build: ${providersWithWorkspaceDriver().join(', ')}`, 2);
+  }
+  const provider = String(options.provider) as ProviderID;
+  if (!PROVIDER_IDS.includes(provider)) {
+    fail(`'${provider}' is not a provider this engine models. Known: ${PROVIDER_IDS.join(', ')}.`, 2);
+  }
+  if (options.models === undefined) {
+    fail('--models is required. A comparative matrix compares models named by the person; Cernum never invents a '
+      + 'model identifier and never guesses a lineup.', 2);
+  }
+  const modelIDs = String(options.models).split(',').map((id) => id.trim()).filter((id) => id.length > 0);
+  if (modelIDs.length === 0) fail('--models named no model.', 2);
+  const effort = String(options.effort ?? 'none');
+  if (!EFFORT_LEVELS.includes(effort as EffortLevel)) {
+    fail(`'${effort}' is not an effort level this engine models. Valid: ${EFFORT_LEVELS.join(', ')}.`, 2);
+  }
+
+  const numeric = (name: string): number | undefined => {
+    if (options[name] === undefined) return undefined;
+    const value = Number(options[name]);
+    if (!Number.isFinite(value)) fail(`--${name} must be a number, not '${String(options[name])}'.`, 2);
+    return value;
+  };
+
+  const fixtureRoot = path.resolve(String(options.fixtures ?? defaultFixtureRoot()));
+  const sandboxRoot = path.resolve(String(options.sandbox ?? defaultWorkspaceSandbox()));
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'z').toLowerCase();
+  const runLabel = String(options.label ?? `${pack.id.split('.').pop() ?? 'pack'}-${stamp}`);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(runLabel)) {
+    fail(`label '${runLabel}' is not filesystem-safe (lowercase letters, digits, hyphens). Every record directory in `
+      + 'this matrix is named from it.', 2);
+  }
+
+  // 3. THE PLAN. Every binding, every disclosure and every refusal, decided before anything is sent.
+  let plan;
+  try {
+    plan = buildWorkspaceMatrixPlan({
+      pack,
+      cases: allWorkspaceCases(),
+      provider,
+      modelIDs,
+      effort: effort as EffortLevel,
+      discovery: readDiscoveryStoreForWorkspace(root),
+      repeatsPerCase: numeric('repeats'),
+      attemptCeiling: numeric('max-attempts'),
+      timeoutMilliseconds: numeric('timeout'),
+      campaignRoot: root,
+      fixtureRoot,
+      sandboxRoot,
+      runLabel,
+      // PRIOR EVIDENCE ON THIS MACHINE, read for ONE purpose: estimating plan allowance before the
+      // matrix runs. Nothing here scores anything from it.
+      priorRuns: collectWorkspaceRunRows(root),
+      now: () => now,
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceMatrixError) return fail(`${error.code}: ${error.message}`, 2);
+    throw error;
+  }
+
+  const dryRun = options['dry-run'] === true;
+  say(dryRun ? 'DRY RUN — nothing below is sent, nothing is frozen, and no allowance is consumed.'
+    : 'About to hand models a repository, many times over, and send real requests.');
+  say('');
+  for (const line of describeWorkspaceMatrixPlan(plan)) say(`  ${line}`);
+  say('');
+  for (const line of wrap(WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, 74)) say(`  ${line}`);
+  say('');
+
+  // Checked in BOTH modes: "this would have been refused" is exactly what a preview is for.
+  try {
+    assertSandboxRootIsSafe(sandboxRoot, fixtureRoot);
+  } catch (error) {
+    fail(`${error instanceof Error ? error.message : String(error)}\nNothing was run.`, 2);
+  }
+
+  if (dryRun) {
+    say('No request was sent, no manifest was frozen and no directory was made.');
+    say(`Re-run without --dry-run (and with --yes) to run it: ${TERMINAL_COMMAND} workspace-benchmark ${pack.id} `
+      + `--provider ${provider} --models ${modelIDs.join(',')} --yes`);
+    return;
+  }
+
+  if (plan.runnableRunCount === 0) {
+    fail('every cell of this matrix was refused, so nothing was sent. The reasons are listed above.', 6);
+  }
+  if (options.yes !== true) {
+    fail(`Nothing was run. Re-run with --yes once the ${plan.runnableRunCount} run(s) described above are what you `
+      + 'intend to spend allowance on.', 3);
+  }
+
+  // 4. EXECUTION. One durable record per run, sealed as it finishes.
+  const result = await runWorkspaceMatrix(plan, {
+    pack,
+    cases: allWorkspaceCases(),
+    provider,
+    modelIDs,
+    effort: effort as EffortLevel,
+    discovery: readDiscoveryStoreForWorkspace(root),
+    repeatsPerCase: numeric('repeats'),
+    attemptCeiling: numeric('max-attempts'),
+    timeoutMilliseconds: numeric('timeout'),
+    campaignRoot: root,
+    fixtureRoot,
+    sandboxRoot,
+    runLabel,
+    now: () => now,
+  }, {
+    hardware: {
+      platform: process.platform, architecture: process.arch, model: os.hostname(),
+      cpuCoreCount: os.cpus().length, physicalMemoryBytes: os.totalmem(), osVersion: `${os.type()} ${os.release()}`,
+    },
+    runtimeVersion: `${PRODUCT.name} ${PRODUCT.version}`,
+    preserveFailedWorkspaces: options['preserve-failed'] === true,
+    onCellStarted: (cell) => say(`→ ${cell.candidate} · ${cell.caseID} · repeat `
+      + `${cell.repeat.repeatIndex}/${cell.repeat.repeatsPlanned}`),
+    onCellFinished: (cell, outcome) => say(`  ${describeScorecard(outcome.scorecard)}`),
+  });
+
+  say('');
+  say(`${result.completed.length} run(s) sealed, ${result.skipped.length} not attempted.`);
+  for (const entry of result.skipped) {
+    say(`  skipped ${entry.cell.candidate} · ${entry.cell.caseID} · repeat ${entry.cell.repeat.repeatIndex}: `
+      + entry.reasons.join('; '));
+  }
+
+  // 5. THE AGGREGATE, read back from the records rather than tallied in memory — so a matrix
+  //    finalized in another process reaches the same numbers from the same evidence.
+  const cells = aggregateWorkspaceRuns(
+    collectWorkspaceRunRows(root).filter((run) => run.row.packID === pack.id));
+  say('');
+  say('candidate                       case                              pass     score     time            allowance  quality');
+  for (const cell of cells) say(describeWorkspaceCell(cell));
+  say('');
+  say(`  ${plan.repeatDisclosure}`);
+
+  if (options.aggregate !== undefined) {
+    const aggregatePath = path.resolve(String(options.aggregate));
+    fs.mkdirSync(path.dirname(aggregatePath), { recursive: true });
+    fs.writeFileSync(aggregatePath, JSON.stringify({
+      writtenAt: new Date().toISOString(),
+      cernumVersion: PRODUCT.version,
+      note: 'One row per provider:model x case, folded from the durable records under the campaign root. Every '
+        + 'figure carries its provenance; a missing number is recorded as unavailable with a reason and is never '
+        + 'averaged as a zero. There is deliberately no overall winner score.',
+      packID: plan.packID,
+      packVersion: plan.packVersion,
+      packDigest: plan.packDigest,
+      repeatDisclosure: plan.repeatDisclosure,
+      cells,
+    }, null, 2) + '\n', 'utf8');
+    say(`Aggregate written to ${aggregatePath}`);
+  }
+}
+
 async function commandStatus(positional: string[], options: Options): Promise<void> {
   const root = String(options.root ?? defaultCampaignRoot());
   const [name] = positional;
@@ -2195,6 +2397,22 @@ function commandGeneralHelp(): void {
   say('  finalize <name>                 reconcile, rank, interpret, and build the blinded packet');
   say('  retest <name> <new-name>        derive a manifest for this machine from another one');
   say('');
+  // THE WORKSPACE PATH. Listed here because a command a person cannot find is a command that does
+  // not exist for them — `workspace` shipped without an index entry, and the pack command would
+  // have shipped the same way.
+  say('  workspace <case-id> --provider p --model m');
+  say('                                  hand ONE model a repository and measure the work it leaves');
+  say('                                  behind — SENDS REAL REQUESTS. --dry-run prints the case, the');
+  say('                                  fixture digest, the exact argv and the record path, and sends');
+  say('                                  nothing.');
+  say('  workspace-benchmark <pack-id> --provider p --models a,b');
+  say('                                  run a sealed PACK of workspace cases across several models,');
+  say('                                  with repeats, and fold the records into one row per');
+  say('                                  model x case — SENDS REAL REQUESTS, many of them.');
+  say('                                  A REPEAT (--repeats) is a fresh independent run and measures');
+  say('                                  variance; a RETRY (--max-attempts) is a second attempt inside');
+  say('                                  one run and measures recovery. --dry-run first.');
+  say('');
   say('  adjudicate <results.jsonl...> --out <dir> --key-out <dir>');
   say('                                  build the blinded human-review packet, the blank answer sheet');
   say('                                  and the sealed identity map. --key-out must NOT be inside --out.');
@@ -2506,6 +2724,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'run': return commandRun(positional, options, false, invocationLine);
     case 'resume': return commandRun(positional, options, true, invocationLine);
     case 'workspace': return commandWorkspace(positional, options);
+    case 'workspace-benchmark': return commandWorkspaceBenchmark(positional, options);
     case 'status': return commandStatus(positional, options);
     case 'verify': return commandVerify(positional, options);
     case 'finalize': return commandFinalize(positional, options);

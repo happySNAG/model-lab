@@ -357,6 +357,21 @@ export interface FrontierAttemptRecord extends Record<string, CanonicalValue | u
   subscriptionAllowanceExplanation?: string;
   /** The duration the PROVIDER said it spent generating, in milliseconds. Absent when it did not say. */
   providerReportedGenerationMilliseconds?: number;
+  /**
+   * Milliseconds to the first VISIBLE output. Absent when nothing observed one.
+   *
+   * ADDED FOR THE WORKSPACE PATH, where the figure exists and had nowhere to go. The prose path has
+   * always written `timeToFirstTokenMilliseconds` onto its ledger row from `attempt-telemetry.ts`,
+   * and `attemptMetricsFromRow` has always read it — but a workspace attempt's first-output time
+   * comes from a DRIVER's usage block rather than from a token stream, and the record it is folded
+   * into had no field for it. So the number was observed, recorded in the driver's raw usage, and
+   * then dropped on the floor before it reached the row every aggregate reads.
+   *
+   * It is `measured` when this process watched the first byte arrive and `providerReported` when
+   * only the tool's own figure is available; the two are never mixed, and the aggregate takes the
+   * worse of the two provenances.
+   */
+  timeToFirstTokenMilliseconds?: number;
   retryCount: number;
   wastedTokens: number;
   timedOut: boolean;

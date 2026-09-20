@@ -228,10 +228,12 @@ describe('v0.2.3 · --dry-run shows the requests and sends none', () => {
 
 describe('v0.2.3 · the command table is the contract', () => {
   it('declares an effect class for every command, and marks the spenders', () => {
-    // `workspace` joined this list in the workspace-entry-point pass. It belongs here for exactly the
-    // reason the other three do: it sends a real request to a model. The list is asserted rather than
-    // derived so that a command gaining a spending effect is a deliberate edit to a test.
-    expect(spendingCommands().sort()).toEqual(['resume', 'run', 'smoke', 'workspace']);
+    // `workspace` joined this list in the workspace-entry-point pass, and `workspace-benchmark` in the
+    // benchmark-pack pass. Both belong here for exactly the reason the other three do: they send real
+    // requests to a model. The list is asserted rather than derived so that a command gaining a
+    // spending effect is a deliberate edit to a test — and `workspace-benchmark` is the one that most
+    // needed the deliberation, because one careless invocation of it is forty-eight runs rather than one.
+    expect(spendingCommands().sort()).toEqual(['resume', 'run', 'smoke', 'workspace', 'workspace-benchmark']);
   });
 
   it('gives every command --help, so none can be built without one', () => {

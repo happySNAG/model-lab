@@ -351,6 +351,35 @@ export const DEFAULT_WORKSPACE_SCORING_POLICY: WorkspaceScoringPolicy = {
   patchEconomyWeightMilli: 40,
 };
 
+/**
+ * The weights for a case whose SUBJECT is recovery, where getting there on the second go is the
+ * thing being measured rather than a footnote on it.
+ *
+ * WHY A SECOND POLICY RATHER THAN A BIGGER NUMBER IN THE FIRST. Under the default weights a run
+ * that passed on attempt 2 scores within a few percent of one that passed on attempt 1, which is
+ * exactly right for a case that allows a retry as a courtesy and wrong for one that exists to tell
+ * the two apart. Raising `firstAttemptWeightMilli` for EVERYONE would re-weight every case in the
+ * catalogue, including the ones that allow a single attempt and score this metric as unavailable.
+ * So the case that means it says so, in its own frozen policy, and `workspaceComparabilityKey`
+ * carries the policy id — a result scored under one of these is never merged with a result scored
+ * under the other.
+ *
+ * The three outcomes it separates, with every other metric held at full marks: pass on attempt 1
+ * scores 1000, pass on attempt 2 scores 880, and a failure after two attempts scores far below
+ * both because `taskSuccess` and `firstAttempt` are zero together.
+ */
+export const RECOVERY_WEIGHTED_WORKSPACE_SCORING_POLICY: WorkspaceScoringPolicy = {
+  id: 'policy.workspace.recovery',
+  version: '1',
+  taskSuccessWeightMilli: 400,
+  testsPassedWeightMilli: 120,
+  regressionFreeWeightMilli: 100,
+  scopeRespectedWeightMilli: 80,
+  patchCleanWeightMilli: 40,
+  firstAttemptWeightMilli: 240,
+  patchEconomyWeightMilli: 20,
+};
+
 // MARK: - The case
 
 export interface WorkspaceCase {

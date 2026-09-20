@@ -91,6 +91,46 @@ export interface PriorAttemptBriefing extends Record<string, CanonicalValue | un
   patchDigest: string;
 }
 
+/**
+ * What attempt 2 is TOLD about attempt 1, composed once, here, in one place.
+ *
+ * WHY THIS IS NOT A DRIVER'S JOB, AND WHY THE ABSENCE OF IT WAS A DEFECT. `PriorAttemptBriefing` has
+ * existed since the workspace foundation and NOTHING SENT IT. Every driver wrote
+ * `request.instruction` to the tool and nothing else, so a second attempt was handed the identical
+ * text the first one got — which measures resampling, not recovery. A case declaring
+ * `maximumAttempts: 2` was therefore measuring a different thing from the one its own comment
+ * described.
+ *
+ * The fix cannot live in a driver. Wording composed by `claude`'s driver and wording composed by
+ * `codex`'s driver would make one case two experiments, exactly as a driver-composed INSTRUCTION
+ * would — which is why `workspaceInstructionText` lives on the case. So the retry section is
+ * composed by the engine, appended by the runner, and every driver keeps sending
+ * `request.instruction` verbatim without knowing which attempt this is.
+ *
+ * IT CARRIES THE CHECK'S OWN OUTPUT AND NO ADVICE. What is measured by a second attempt is whether
+ * a model can read a failure, so the briefing states what happened and hands over the text the
+ * verification produced. It does not name a file, suggest a cause or say what to change: a briefing
+ * that did would be measuring whether the model can follow an instruction this engine wrote.
+ *
+ * DETERMINISTIC. No timestamp, no duration, no path outside the workspace — two runs that failed
+ * the same way produce byte-identical briefings, so a transcript digest stays comparable.
+ */
+export function retryBriefingText(prior: PriorAttemptBriefing): string {
+  return [
+    `ATTEMPT ${prior.attemptIndex + 1} OF THIS TASK DID NOT PASS, and you are now making the next one.`,
+    '',
+    'You are looking at a FRESH COPY of the original repository. Nothing the previous attempt wrote is',
+    'here: its edits were discarded, not kept, so start from what is in front of you rather than from',
+    'what you remember writing.',
+    '',
+    `How it ended: ${prior.outcome} (${prior.terminationReason}).`,
+    '',
+    prior.failureDetail.trim().length === 0
+      ? 'The checks produced no output to show you.'
+      : ['This is what the checks reported, verbatim:', '', prior.failureDetail.trim()].join('\n'),
+  ].join('\n');
+}
+
 export interface WorkspaceAgentRequest {
   /** Identity, so a driver can label what it starts and a log can be traced back to a task version. */
   caseID: string;
@@ -99,7 +139,14 @@ export interface WorkspaceAgentRequest {
   attemptIndex: number;
   maximumAttempts: number;
 
-  /** The exact text to send. Composed by the case, never by the driver. */
+  /**
+   * The exact text to send. Composed by the CASE and the ENGINE; never by the driver.
+   *
+   * On attempt 1 this is exactly `workspaceInstructionText(case)` — the text the frozen manifest
+   * sealed. On a later attempt the runner appends `retryBriefingText(prior)` to it, so a driver
+   * still writes this field verbatim and still composes nothing. `prior` is on the request beside
+   * it, for a driver whose tool has a better place to put a previous failure than the prompt.
+   */
   instruction: string;
   /** ABSOLUTE path. The only tree this invocation may touch. */
   workspaceRoot: string;

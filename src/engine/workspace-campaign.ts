@@ -42,6 +42,7 @@ import { Ledger, PlannableCatalog, atomicWriteJSON, slotKey } from './ledger';
 import { OperationalEnvelope, ProviderBinding, buildOperationalEnvelope, isMetered } from './provider';
 import { SpendTracker, SpendingAuthorization } from './spending';
 import { PreRunIdentity } from './workspace-binding';
+import { WORKSPACE_REPEAT_IS_NOT_RETRY, WorkspaceRepeat } from './workspace-pack';
 import {
   WorkspaceCase, workspaceCaseDigest, workspaceComparabilityKey, workspaceInstructionText,
   workspacePlannableCaseOf, workspacePromptRecordOf, workspaceScoredCoreEntryOf, workspaceScoringMode,
@@ -250,6 +251,18 @@ export interface WorkspaceCampaignInputs {
   fixtureRoot: string;
   /** Absolute, outside every Git working tree. `assertSandboxRootIsSafe` enforces it. */
   sandboxRoot: string;
+  /**
+   * WHICH SAMPLE OF THIS CELL THIS RECORD IS, when the run was planned as part of a repeated matrix.
+   *
+   * ABSENT ON A ONE-OFF RUN, and absent is the truth there: `cernum workspace <case>` takes one
+   * sample and was never one of a set. Present, it says which of how many, and carries the group id
+   * every sibling repeat carries — which is what lets an aggregate prove it combined SEPARATE runs
+   * rather than re-counting one. Each repeat still gets its own record directory, its own manifest
+   * and its own ledger; nothing here makes two repeats share a file.
+   */
+  repeat?: WorkspaceRepeat;
+  /** The pack this run was planned from, when it was planned from one. Recorded, never acted on. */
+  pack?: { id: string; version: string; digest: string };
   /** The OPERATOR's ceiling on attempts, when there is one. Never raises the case's own. */
   attemptCeiling?: number;
   preserveFailedWorkspaces?: boolean;
@@ -287,6 +300,15 @@ export interface WorkspaceDurableRecord extends Record<string, CanonicalValue | 
   caseDigest: string;
   comparabilityKey: string;
   scoringMode: string;
+  /** Which sample of its cell this run was, and how many were planned. Absent on a one-off run. */
+  repeatIndex?: number;
+  repeatsPlanned?: number;
+  repeatGroupID?: string;
+  packID?: string;
+  packVersion?: string;
+  packDigest?: string;
+  /** What a repeat is, and what it is not, carried on every record that has one. */
+  repeatDisclosure?: string;
   fixturePath: string;
   /** What the case was SEALED against. Absent on an unsealed case, which is stated rather than hidden. */
   fixtureExpectedTreeDigest?: string;
@@ -469,6 +491,11 @@ export class WorkspaceCampaign {
       bindingIdentityResolvedFrom: inputs.identity.resolvedFrom,
       bindingIdentityProvenAt: inputs.identity.provenAt,
       bindingIdentityEvidence: inputs.identity.evidence,
+      repeatIndex: inputs.repeat?.repeatIndex,
+      repeatsPlanned: inputs.repeat?.repeatsPlanned,
+      repeatGroupID: inputs.repeat?.repeatGroupID,
+      packID: inputs.pack?.id,
+      packDigest: inputs.pack?.digest,
     });
     ledger.writeCheckpoint();
 
@@ -577,6 +604,15 @@ export class WorkspaceCampaign {
       caseDigest: card.caseDigest,
       comparabilityKey: card.comparabilityKey,
       scoringMode: workspaceScoringMode(workspaceCase),
+      // WHICH SAMPLE, AND OF WHAT. On the row as well as on the record, because the row is the
+      // authority and an aggregate that had to read a directory name to tell two repeats apart
+      // would be an aggregate built on a filename convention.
+      repeatIndex: this.inputs.repeat?.repeatIndex,
+      repeatsPlanned: this.inputs.repeat?.repeatsPlanned,
+      repeatGroupID: this.inputs.repeat?.repeatGroupID,
+      packID: this.inputs.pack?.id,
+      packVersion: this.inputs.pack?.version,
+      packDigest: this.inputs.pack?.digest,
       scoringPolicyID: card.scoringPolicyID,
       scoringPolicyVersion: card.scoringPolicyVersion,
       fixturePath: workspaceCase.source.fixturePath,
@@ -671,12 +707,21 @@ export class WorkspaceCampaign {
       wastedTokens: outcome.frontier.wastedTokens,
       wastedMilliseconds: card.wastedMilliseconds,
       wallClockMilliseconds: card.wallClockMilliseconds,
+      // THE SAME NUMBER UNDER THE NAME EVERY EXISTING READER ALREADY LOOKS FOR. `attemptMetricsFromRow`
+      // — the one place in this engine that turns a ledger row into metrics — reads
+      // `latencyMilliseconds`, and it has read it since Pass 3. A workspace row that recorded its wall
+      // clock only as `wallClockMilliseconds` would have been a row the shared aggregator saw as
+      // having no timing at all, and the alternative to writing this key is a second aggregator.
+      // `wallClockMilliseconds` stays beside it, spelled the way a workspace reader expects.
+      latencyMilliseconds: card.wallClockMilliseconds,
+      timeToFirstTokenMilliseconds: outcome.frontier.timeToFirstTokenMilliseconds,
       timedOut: outcome.frontier.timedOut,
       providerThrottled: card.providerThrottled,
 
       // The caveats that travel with every workspace row, so a row read on its own still carries them.
       workspaceEnvironmentDisclosure: WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX,
       pathReconciliationDisclosure: PATH_RECONCILIATION_IS_NOT_OBSERVATION,
+      repeatDisclosure: this.inputs.repeat === undefined ? undefined : WORKSPACE_REPEAT_IS_NOT_RETRY,
       canonical: true,
     };
 
@@ -705,6 +750,13 @@ export class WorkspaceCampaign {
       caseDigest: card.caseDigest,
       comparabilityKey: card.comparabilityKey,
       scoringMode: workspaceScoringMode(workspaceCase),
+      repeatIndex: this.inputs.repeat?.repeatIndex,
+      repeatsPlanned: this.inputs.repeat?.repeatsPlanned,
+      repeatGroupID: this.inputs.repeat?.repeatGroupID,
+      packID: this.inputs.pack?.id,
+      packVersion: this.inputs.pack?.version,
+      packDigest: this.inputs.pack?.digest,
+      repeatDisclosure: this.inputs.repeat === undefined ? undefined : WORKSPACE_REPEAT_IS_NOT_RETRY,
       fixturePath: workspaceCase.source.fixturePath,
       fixtureExpectedTreeDigest: workspaceCase.source.expectedTreeDigest,
       fixtureObservedTreeDigest: deciding?.fixtureTreeDigest,
