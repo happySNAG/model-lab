@@ -39,8 +39,10 @@
 // API-key Codex session rather than report a real charge as free. Doing the same thing for a whole
 // provider would be worse, not better.
 //
-// So OpenCode rows are `meteredAPI`, and Cernum ships this support labelled UNTESTED METERED API
-// rather than alongside the two subscription CLIs it has actually run campaigns through.
+// So OpenCode rows are `meteredAPI`, and Cernum ships this support labelled EXECUTED ONCE,
+// UNBENCHMARKED METERED API rather than alongside the two subscription CLIs it has actually run
+// campaigns through. See `OPENCODE_SUPPORT_MATURITY` for what the one live request did and did not
+// establish.
 
 import { ProviderID } from './provider';
 
@@ -326,9 +328,39 @@ export const UNION_ALPHA_RETIREMENT_NOTE =
   + 'than showing a ladder that never named it. Discovery records an unlisted ladder identifier as REFUSED, so it '
   + 'is not selectable; nothing about keeping it here makes it callable.';
 
-/** Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it". */
+/**
+ * WHEN THIS ENGINE FIRST SENT OPENCODE A REQUEST AND GOT ONE BACK, and which model answered it.
+ *
+ * Recorded as constants rather than as prose so the claim below has a date and a subject that can be
+ * checked, and so a later request cannot quietly inherit this one's evidence.
+ */
+export const OPENCODE_FIRST_LIVE_REQUEST_AT = '2026-09-20';
+export const OPENCODE_FIRST_LIVE_REQUEST_MODEL = 'opencode/big-pickle';
+
+/**
+ * Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it".
+ *
+ * REVISED 2026-09-20, because the previous version had become false. It said "no live OpenCode
+ * request has been made by this engine", which was true when written and stopped being true the first
+ * time one was sent. It is a DISCOVERY string, written beside every OpenCode row on every run, so a
+ * stale sentence here fills the store with a claim the same build disproves -- the exact defect
+ * `OPENCODE_SUPERSEDED_NO_PROOF_PATH` exists to record having made once already.
+ *
+ * WHAT IT MAY NOW SAY, and the line it must not cross. One request was authorized, sent, and came
+ * back, and the reply is now READABLE -- which it was not, because the adapter had been written from
+ * the SDK's declared event types rather than from the bytes `run --format json` writes. That is a fact
+ * about EXECUTION and about this parser. It is not a fact about identity, it is not a measurement, and
+ * it moved nothing in qualification or routing.
+ */
 export const OPENCODE_SUPPORT_MATURITY =
-  'UNTESTED METERED API. Cernum can discover OpenCode, read its version, list its models and see whether '
-  + 'a credential is configured -- all without spending anything -- and, under an explicit metered authorization, '
-  + 'send it a single identity request. No scored Cernum campaign has been run through OpenCode, no live OpenCode '
-  + 'request has been made by this engine, and no OpenCode result is published anywhere in this repository.';
+  'EXECUTED ONCE, UNBENCHMARKED METERED API. Cernum can discover OpenCode, read its version, list its models '
+  + 'and see whether a credential is configured -- all without spending anything -- and, under an explicit '
+  + 'metered authorization, send it a single identity request. ONE such request has now been sent and came back: '
+  + `on ${OPENCODE_FIRST_LIVE_REQUEST_AT} ${OPENCODE_FIRST_LIVE_REQUEST_MODEL} answered, and Cernum read the `
+  + 'answer, the token counts, the reported cost and the finish state out of the envelope `opencode run '
+  + '--format json` actually writes. WHAT THAT DID NOT ESTABLISH: that mode emits no assistant message, so the '
+  + 'reply named NO MODEL and the attempt is identity-unverifiable -- and on this path a substituted model would '
+  + 'be indistinguishable from the one asked for. NOTHING ABOUT QUALIFICATION OR ROUTING CHANGED: no OpenCode '
+  + 'model is proven, promotable or selectable for a campaign, no scored Cernum campaign has been run through '
+  + 'OpenCode, and the only OpenCode reply published in this repository is the sanitized envelope capture that '
+  + 'pins the parser -- which is a fixture, not a result about any model.';

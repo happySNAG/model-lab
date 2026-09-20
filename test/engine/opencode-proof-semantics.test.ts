@@ -21,6 +21,7 @@ import {
 } from '../../src/engine/discovery';
 import {
   UNION_ALPHA_MODEL_ID, OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_PROOF_PATH,
+  OPENCODE_SUPPORT_MATURITY, OPENCODE_FIRST_LIVE_REQUEST_AT, OPENCODE_FIRST_LIVE_REQUEST_MODEL,
 } from '../../src/engine/opencode-cli';
 
 const ESC = '\x1b';
@@ -169,5 +170,79 @@ describe('v0.2.2 · the plan is still visible, and still just a plan', () => {
     expect(union.evidence).toContain('does not know this identifier');
     // And the correction that matters: being named would not have been proof either.
     expect(union.evidence).toContain('Being named would not have proven it either');
+  });
+});
+
+describe('v0.2.5 · the maturity label says what the one live request did and did not establish', () => {
+  // WHY THIS BLOCK EXISTS. `OPENCODE_SUPPORT_MATURITY` said "no live OpenCode request has been made by
+  // this engine". That was true when written and stopped being true the first time one was sent. It is
+  // a DISCOVERY string, interpolated beside every OpenCode row on every run, so a stale sentence here
+  // fills the store with a claim the same build disproves — which is precisely the defect
+  // `OPENCODE_SUPERSEDED_NO_PROOF_PATH` is kept around to record having made once already.
+  //
+  // The four distinctions below are the whole point of the correction, and each is asserted separately
+  // so that half-updating the sentence fails rather than passes.
+
+  it('no longer claims that no live request has been made', () => {
+    expect(OPENCODE_SUPPORT_MATURITY).not.toContain('no live OpenCode');
+    expect(OPENCODE_SUPPORT_MATURITY).not.toContain('UNTESTED METERED API');
+  });
+
+  it('SAYS a live request occurred, with a date and a subject that can be checked', () => {
+    expect(OPENCODE_SUPPORT_MATURITY).toContain('has now been sent and came back');
+    expect(OPENCODE_SUPPORT_MATURITY).toContain(OPENCODE_FIRST_LIVE_REQUEST_AT);
+    expect(OPENCODE_SUPPORT_MATURITY).toContain(OPENCODE_FIRST_LIVE_REQUEST_MODEL);
+  });
+
+  it('SAYS the reply is now readable, and names that as a fact about the envelope', () => {
+    expect(OPENCODE_SUPPORT_MATURITY).toContain('opencode run --format json');
+    expect(OPENCODE_SUPPORT_MATURITY).toMatch(/read the answer, the token counts/);
+  });
+
+  it('SAYS identity is still unverifiable, and why it is structural rather than incidental', () => {
+    expect(OPENCODE_SUPPORT_MATURITY).toContain('named NO MODEL');
+    expect(OPENCODE_SUPPORT_MATURITY).toContain('identity-unverifiable');
+    // The consequence, stated rather than left to be discovered: nothing catches a substitution here.
+    expect(OPENCODE_SUPPORT_MATURITY).toMatch(/substituted model would be indistinguishable/);
+  });
+
+  it('SAYS governance did not move, which is the claim a reader is most likely to get wrong', () => {
+    expect(OPENCODE_SUPPORT_MATURITY).toContain('NOTHING ABOUT QUALIFICATION OR ROUTING CHANGED');
+    expect(OPENCODE_SUPPORT_MATURITY).toMatch(/no OpenCode model is proven, promotable or selectable/);
+    expect(OPENCODE_SUPPORT_MATURITY).toContain('no scored Cernum campaign has been run through OpenCode');
+  });
+
+  it('does not let one executed request read as a measurement', () => {
+    // A request that came back is not a benchmark, and the published capture is a fixture rather than
+    // a finding about any model. Both had to survive the rewrite.
+    expect(OPENCODE_SUPPORT_MATURITY).toContain('UNBENCHMARKED');
+    expect(OPENCODE_SUPPORT_MATURITY).toMatch(/a fixture, not a result about any model/);
+  });
+
+  it('still reaches every discovery surface that carried the old sentence', async () => {
+    // Not installed, no credential, and ready: three different early returns, all of which append the
+    // maturity string. A correction that only reached one of them would leave the other two stale.
+    const notInstalled = await discoverOpenCodeCLI({ findExecutable: () => undefined, run: READY, now: NOW });
+    expect(notInstalled.detail).toContain(OPENCODE_SUPPORT_MATURITY);
+
+    const noCredential = await discoverOpenCodeCLI({
+      findExecutable: here, now: NOW,
+      run: fakeRun({ '--version': VERSION, 'providers list': '└  0 credentials\n', models: MODELS }),
+    });
+    expect(noCredential.reachability).toBe('noCredential');
+    expect(noCredential.detail).toContain(OPENCODE_SUPPORT_MATURITY);
+
+    const ready = await discoverOpenCodeCLI({ findExecutable: here, run: READY, now: NOW });
+    expect(ready.reachability).toBe('ready');
+    expect(ready.detail).toContain(OPENCODE_SUPPORT_MATURITY);
+  });
+
+  it('PROMOTES NOTHING. Correcting a sentence is not evidence about a model', async () => {
+    // The rule this repository already applies to superseded evidence, applied to its own edit.
+    const discovered = await discoverOpenCodeCLI({ findExecutable: here, run: READY, now: NOW });
+
+    expect(discovered.models.every((model) => model.availability !== 'proven')).toBe(true);
+    expect(discovered.models.every((model) => model.verifiedModelID === '')).toBe(true);
+    expect(selectableModels([discovered])).toHaveLength(0);
   });
 });
