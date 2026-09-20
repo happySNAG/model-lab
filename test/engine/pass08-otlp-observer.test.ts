@@ -80,6 +80,14 @@ function tracePayload(conversationID = THREAD, effort = 'medium'): unknown {
   };
 }
 
+/** The same payload with one attribute removed, for the cases that are ABOUT its absence. */
+function withoutAttribute(payload: unknown, key: string): unknown {
+  return JSON.parse(JSON.stringify(payload), (_name, value) => (
+    Array.isArray(value)
+      ? value.filter((entry) => !(entry !== null && typeof entry === 'object' && entry.key === key))
+      : value));
+}
+
 async function post(endpoint: string, payload: unknown): Promise<void> {
   await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
 }
@@ -118,11 +126,16 @@ describe('the collector binds loopback and keeps what arrives', () => {
     await observer.stop();
   });
 
-  it('returns UNCORRELATED rather than waiting forever when no turn span arrives', async () => {
+  it('returns UNCORRELATED rather than waiting forever when NO EFFORT is reported at all', async () => {
     const observer = await OTLPObserver.start({ evidenceFile: path.join(directory, 'd.jsonl'), observeTimeoutMilliseconds: 120, shutdownGraceMilliseconds: 0 });
-    await post(observer.endpoint, logPayload());
+    // The effort attribute is STRIPPED here, and that is the whole point of the case. Until 0.155.0
+    // a `codex.conversation_starts` record carried no effort and this payload stood for "the
+    // conversation is known and nothing has said what it did". 0.155.0 puts the applied effort on
+    // exactly that record, so the unstripped payload now — correctly — correlates, and the case has
+    // to build the silence it means to test rather than rely on the CLI still being quiet.
+    await post(observer.endpoint, withoutAttribute(logPayload(), 'reasoning_effort'));
     const turn = await observer.observe(THREAD);
-    // Logs arrived, so the conversation is known; no turn span, so nothing is claimed about effort.
+    // Logs arrived, so the conversation is known; nothing reported an effort, so nothing is claimed.
     expect(turn?.correlated).toBe(false);
     expect(turn?.turnReasoningEffort).toBeUndefined();
     expect(turn?.recordCount).toBeGreaterThan(0);

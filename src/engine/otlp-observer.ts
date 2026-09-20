@@ -54,6 +54,43 @@ export const OTLP_SENSITIVE_ATTRIBUTES = [
   'user.email', 'user.account_id', 'conversation.id', 'host.name', 'service.instance.id',
 ] as const;
 
+/**
+ * WHERE THE APPLIED EFFORT IS READ FROM, and why there is more than one place.
+ *
+ * codex-cli 0.154.0 put it on the TRACE spans, as `codex.turn.reasoning_effort` and
+ * `codex.request.reasoning_effort`, and those spans carried `conversation.id`. 0.155.0 moved it to
+ * the `codex.conversation_starts` LOG record as a flat `reasoning_effort`, and STOPPED putting
+ * `conversation.id` on spans at all — so on 0.155.0 the old names are not merely absent, they are
+ * unjoinable. An observer reading only the 0.154.0 names records four perfectly good conversations
+ * as `correlated: false` and reports the effort as unavailable, which is what it did.
+ *
+ * Both are read, so an upgrade in either direction keeps working. The flat name is taken ONLY from
+ * the conversation-start record: `reasoning_effort` is a common enough attribute name that reading
+ * it from any record that happened to carry it would be how unrelated telemetry gets attached to a
+ * request.
+ */
+const CONVERSATION_STARTS_EVENT = 'codex.conversation_starts';
+
+/**
+ * Record an effort, or refuse to.
+ *
+ * Two different efforts for one conversation means the join is wrong somewhere, and the honest
+ * answer is that this turn's effort is unavailable — not the first value, and not the last one to
+ * arrive. Once ambiguous, always ambiguous: a third record agreeing with one of them does not break
+ * the tie, it just makes the count 2-1.
+ */
+function recordEffort(entry: OTLPTurnObservation, effort: string): void {
+  if (entry.effortAmbiguous === true) return;
+  if (entry.turnReasoningEffort !== undefined && entry.turnReasoningEffort !== effort) {
+    entry.effortAmbiguous = true;
+    entry.turnReasoningEffort = undefined;
+    entry.correlated = false;
+    return;
+  }
+  entry.turnReasoningEffort = effort;
+  entry.correlated = true;
+}
+
 /** What one Codex turn said about itself. Every field optional: the tool may say nothing. */
 export interface OTLPTurnObservation {
   /**
@@ -78,10 +115,16 @@ export interface OTLPTurnObservation {
    * collected. A row is never told that nothing was observed when something was merely late.
    */
   correlated: boolean;
-  /** `codex.turn.reasoning_effort` — the effort the CLI says it applied to the turn. */
+  /** The effort the CLI says it applied to the turn. See `CONVERSATION_STARTS_EVENT` for where it is read from. */
   turnReasoningEffort?: string;
   /** `codex.request.reasoning_effort` — the effort it says it sent on the request. */
   requestReasoningEffort?: string;
+  /**
+   * Set when one conversation reported two DIFFERENT efforts. The value is then dropped and never
+   * reinstated: a join that cannot say which of two figures belongs to this turn has not correlated
+   * it, and reporting either one would be a guess wearing the evidence's clothes.
+   */
+  effortAmbiguous?: boolean;
   inputTokens?: number;
   nonCachedInputTokens?: number;
   cachedInputTokens?: number;
@@ -190,9 +233,11 @@ export class OTLPObserver implements OTLPTurnSource {
         if (typeof value === 'string' && /^-?\d+$/.test(value)) return Number(value);
         return undefined;
       };
-      // The turn span is the record that makes an observation complete. Everything else refines it.
-      const turnEffort = text('codex.turn.reasoning_effort');
-      if (turnEffort !== undefined) { entry.turnReasoningEffort = turnEffort; entry.correlated = true; }
+      // The record carrying the effort is what makes an observation complete. Everything else refines
+      // it. WHICH record that is depends on the CLI version — see `CONVERSATION_STARTS_EVENT`.
+      const turnEffort = text('codex.turn.reasoning_effort')
+        ?? (text('event.name') === CONVERSATION_STARTS_EVENT ? text('reasoning_effort') : undefined);
+      if (turnEffort !== undefined) recordEffort(entry, turnEffort);
       entry.requestReasoningEffort = text('codex.request.reasoning_effort') ?? entry.requestReasoningEffort;
       entry.mcpServers = text('mcp_servers') ?? entry.mcpServers;
       const assign = (field: keyof OTLPTurnObservation, key: string): void => {
