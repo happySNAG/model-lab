@@ -31,7 +31,21 @@ export const WORKSPACE_SUITE_FOUNDATION_VERSION = '1';
  */
 export const BROKEN_SUM_MEAN: WorkspaceCase = makeWorkspaceCase({
   id: 'ws.broken-sum.mean',
-  version: '1',
+  // 3 — `environmentAllowlist: ['HOME', 'USER']`. Version 1 unlocked nothing, because the only driver
+  // that had ever run this case was the scripted one, which needs no session. A real subscription
+  // CLI does. Version 2 unlocked `HOME` on the assumption that a home directory was what `claude`
+  // needed to find its session; the first live run disproved it, failing with `Not logged in` before
+  // it sent anything, and a zero-cost `claude auth status` probe showed that `USER` is the name that
+  // actually matters — the OAuth token is read from the macOS Keychain by an account name taken from
+  // it. See `ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK` for the full reading, including the finding that
+  // withholding `HOME` does not withhold the home directory on this platform.
+  //
+  // Both are asked for BY NAME, here, where a reader sees them — and `workspaceComparabilityKey`
+  // names `environmentAllowlist` explicitly, so a result produced with them can never be merged with
+  // one produced without. Nothing injects either behind the case: a driver that needed one and did
+  // not find it in the frozen allow-list fails to authenticate, loudly, which is exactly what
+  // happened and is why this version exists.
+  version: '3',
   suiteID: WORKSPACE_SUITE_FOUNDATION,
   suiteVersion: WORKSPACE_SUITE_FOUNDATION_VERSION,
   title: 'Fix the arithmetic mean without touching its test',
@@ -59,7 +73,11 @@ export const BROKEN_SUM_MEAN: WorkspaceCase = makeWorkspaceCase({
     maximumAttempts: 2,
     tools: { fileRead: true, fileWrite: true, commandExecution: true, allowedExecutables: [] },
     networkPolicy: 'providerOnly',
-    environmentAllowlist: [],
+    // The two names a case may unlock, and the whole reason `ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK`
+    // exists. `USER` is the one that makes the subscription session reachable; `HOME` is stated
+    // because this case means to be explicit about it, not because withholding it would be a
+    // control. See `WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX` and the note on that constant.
+    environmentAllowlist: ['HOME', 'USER'],
   },
   verification: {
     commands: [

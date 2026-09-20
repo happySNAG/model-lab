@@ -26,7 +26,9 @@ import { LiveHost } from './live-host';
 import { RoutingHost } from './frontier-host';
 import { FrontierAdapter, MeteredAPIAdapter, SubscriptionCLIAdapter } from './frontier-adapter';
 import { OpenCodeAdapter } from './opencode-adapter';
-import { OperationalEnvelope, PROVIDER_IDS, ProviderID, isLocal } from './provider';
+import { OperationalEnvelope, PROVIDER_IDS, ProviderBinding, ProviderID, isLocal } from './provider';
+import { WorkspaceAgentDriver } from './workspace-agent';
+import { ClaudeWorkspaceDriver } from './workspace-claude-driver';
 import { SpendTracker, SpendingAuthorization, restoreSpendFromRows } from './spending';
 import { CredentialLookupOptions } from './credentials';
 import { OTLPTurnSource } from './otlp-observer';
@@ -81,6 +83,31 @@ export function buildAdapter(provider: ProviderID, environment: NodeJS.ProcessEn
     default:
       return undefined;
   }
+}
+
+/**
+ * The WORKSPACE driver for a provider, where one exists yet.
+ *
+ * DELIBERATELY ONE ENTRY. `buildAdapter` above answers "can Cernum send this provider a prompt?" and
+ * has four answers; this answers "can Cernum hand this provider a repository?" and has one. A second
+ * entry would be a claim that a driver had been written and checked against that tool's installed
+ * help, and none has. `undefined` is therefore the honest answer for every other provider, and the
+ * caller reports it as "no workspace driver exists for this provider" rather than falling back to
+ * one that does — an answer from somebody else's tool is not this candidate's answer.
+ */
+export function buildWorkspaceDriver(binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>,
+                                     options: { executablePath?: string } = {}): WorkspaceAgentDriver | undefined {
+  if (binding.provider !== 'claudeCLI') return undefined;
+  return new ClaudeWorkspaceDriver({
+    requestedModelID: binding.requestedModelID,
+    effort: binding.effort,
+    executablePath: options.executablePath,
+  });
+}
+
+/** Every provider a workspace case can actually be run through. One, for now, and it says so. */
+export function providersWithWorkspaceDriver(): ProviderID[] {
+  return PROVIDER_IDS.filter((provider) => buildWorkspaceDriver({ provider, requestedModelID: '', effort: 'none' }) !== undefined);
 }
 
 /** Every provider a campaign or a smoke test can actually send a request through. */

@@ -209,17 +209,38 @@ export interface ToolPolicy extends Record<string, CanonicalValue | undefined> {
  * Names a case may add to its environment allow-list even though `isForbiddenEnvironmentName`
  * refuses them everywhere else.
  *
- * Exactly one, and it is `HOME`. A subscription CLI keeps its session under the user's home
- * directory and cannot authenticate without it; refusing it would mean the only providers this
- * benchmark can measure are the metered ones. So it may be asked for BY NAME, in the case, in the
- * digest — and everything else credential-shaped stays refused however it is spelled.
+ * TWO, AND BOTH ARE HERE BECAUSE A SUBSCRIPTION CLI CANNOT FIND ITS OWN SESSION WITHOUT THEM.
+ * Refusing them would mean the only providers this benchmark can measure are the metered ones. They
+ * may be asked for BY NAME, in the case, in the digest — and everything else credential-shaped stays
+ * refused however it is spelled.
+ *
+ *   `HOME`  where a subscription CLI keeps its configuration and its session files.
+ *   `USER`  ADDED AFTER THE FIRST LIVE CLAUDE RUN FAILED ON IT, and worth stating exactly, because
+ *           the evidence corrects what this list used to imply. That run was handed `HOME` and not
+ *           `USER`, and `claude` answered `Not logged in · Please run /login` before sending
+ *           anything. Probing `claude auth status` under the same allow-list — which costs no
+ *           allowance, because it reaches no model — established three things:
+ *             · with `HOME` alone:        loggedIn false, authMethod none
+ *             · with `HOME` and `USER`:   loggedIn true,  authMethod claude.ai, subscription max
+ *             · with `USER` and NO HOME:  loggedIn true, and configDirectory still resolved to the
+ *                                         real home directory
+ *           The reason is that this CLI reads its OAuth token from the macOS Keychain by shelling
+ *           out to `security find-generic-password -a <account>`, and the account it asks for is the
+ *           user name. `USER` is what makes the session REACHABLE.
+ *
+ *           The third reading is the uncomfortable one and is recorded rather than buried: WITHHOLDING
+ *           `HOME` DOES NOT WITHHOLD THE HOME DIRECTORY. Node resolves `os.homedir()` from the passwd
+ *           database when the variable is absent, so a case that leaves `HOME` off its allow-list has
+ *           not stopped the tool reading what is under it — it has only stopped handing it the path.
+ *           `HOME` stays on this list because a case that means to be explicit should be able to say
+ *           it, and the case below does; it is not, on this platform, a control.
  *
  * It lives beside the case rather than beside the driver because it is a rule about what may be
  * SEALED, and `validateWorkspaceCase` enforces it at authoring time. Catching it only when the
  * child is spawned would let a case carrying `ANTHROPIC_API_KEY` be written, reviewed, sealed and
  * shipped, and refuse for the first time on the machine that ran it.
  */
-export const ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK = ['HOME'];
+export const ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK = ['HOME', 'USER'];
 
 export interface WorkspaceExecutionPolicy extends Record<string, CanonicalValue | undefined> {
   /** The deadline for ONE attempt, agent time only. Verification has its own per-command budgets. */

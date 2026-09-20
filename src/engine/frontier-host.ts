@@ -105,8 +105,15 @@ export class RoutingHostError extends Error {
  * Three fields rather than one, because a missing number and a number missing FOR A REASON are
  * different records and a surface that has only the first has to guess. Zero is never written for
  * either: a zero allowance is a claim that a Max plan is free.
+ *
+ * EXPORTED, AND TAKING THE NARROWEST SHAPE IT READS. The workspace host (`workspace-host.ts`) has
+ * the same question to answer about the same providers, and a second copy of this reasoning would be
+ * a second place for the explanations to drift apart. It reads one optional number off the response,
+ * so that is all it asks for — a `FrontierResponse` satisfies it unchanged, and a
+ * `WorkspaceAgentResult`'s usage block can be made to.
  */
-function allowanceRecord(binding: ProviderBinding, response: FrontierResponse): {
+export function allowanceRecord(binding: ProviderBinding,
+                                response: { subscriptionIncludedUsageMicroUSD?: number }): {
   subscriptionIncludedUsageMicroUSD?: number;
   subscriptionAllowanceState: 'reported' | 'unavailable';
   subscriptionAllowanceProvenance: Provenance;

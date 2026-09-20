@@ -6,7 +6,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { BROKEN_SUM_MEAN } from '../../src/engine/workspace-catalog';
-import { makeWorkspaceCase, validateWorkspaceCase, workspaceCommand, workspaceComparabilityKey, WorkspaceCaseError } from '../../src/engine/workspace-case';
+import {
+  ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK, makeWorkspaceCase, validateWorkspaceCase, workspaceCommand,
+  workspaceComparabilityKey, WorkspaceCaseError,
+} from '../../src/engine/workspace-case';
+import { isForbiddenEnvironmentName } from '../../src/engine/isolation';
 import {
   ScriptedWorkspaceAgent, WorkspaceAgentDriver, WorkspaceAgentRequest, WorkspaceAgentResult,
   SCRIPTED_DRIVER_CAPABILITIES, workspaceEnvironment, WorkspaceAgentError,
@@ -303,8 +307,28 @@ describe('7 · HOME exposure is part of the sealed identity', () => {
   it('is visible in the case itself rather than only in a digest', () => {
     expect(build(['HOME']).execution.environmentAllowlist).toEqual(['HOME']);
     expect(build([]).execution.environmentAllowlist).toEqual([]);
-    // The sealed foundation case unlocks nothing: it is run by a scripted driver that needs no session.
-    expect(BROKEN_SUM_MEAN.execution.environmentAllowlist).toEqual([]);
+    // The sealed foundation case unlocks HOME and USER, AND NOTHING ELSE, since version 3. It is run
+    // by a real subscription CLI that reads its OAuth token from the macOS Keychain under an account
+    // name taken from USER. The point of this assertion is that the unlock is IN THE CASE: the first
+    // live Claude run was handed HOME and not USER and failed with `Not logged in` before sending
+    // anything, which is exactly what should happen — a driver that needs a name the frozen
+    // allow-list does not carry fails loudly rather than being handed it by the harness.
+    expect(BROKEN_SUM_MEAN.execution.environmentAllowlist).toEqual(['HOME', 'USER']);
+    expect(BROKEN_SUM_MEAN.version).toBe('3');
+  });
+
+  it('unlocks exactly the two names a subscription session needs, and nothing else credential-shaped', () => {
+    expect(ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK).toEqual(['HOME', 'USER']);
+    // Both are refused everywhere else, which is what makes naming them in a case a deliberate act.
+    for (const name of ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK) expect(isForbiddenEnvironmentName(name)).toBe(true);
+    // And the unlock does not widen to anything that carries authority.
+    for (const name of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'LOGNAME']) {
+      expect(ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK).not.toContain(name);
+    }
+    expect(() => workspaceEnvironment({
+      allowlist: ['USER', 'SSH_AUTH_SOCK'], temporaryDirectory: '/tmp/x',
+      source: { USER: 'somebody', SSH_AUTH_SOCK: '/private/tmp/agent' } as NodeJS.ProcessEnv,
+    })).toThrow(/SSH_AUTH_SOCK/);
   });
 });
 

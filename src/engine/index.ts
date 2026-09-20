@@ -40,6 +40,8 @@ export * from './workspace-transcript';
 export * from './workspace-agent';
 export * from './workspace-execution';
 export * from './workspace-scoring';
+export * from './workspace-host';
+export * from './workspace-claude-driver';
 export * from './blinded';
 export * from './adjudication';
 export * from './adjudication-markdown';
