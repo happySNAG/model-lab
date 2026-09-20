@@ -1,16 +1,25 @@
-// Cernum · executing through the OpenCode CLI.
+// Cernum · executing through the OpenCode CLI, IN THE SERVER EVENT FRAMING.
 //
-// NO REQUEST WAS SENT TO ANY MODEL to write or to run these tests, and none is sent by them. Every
-// fixture below is shaped from the GENERATED TYPES that ship with the tool —
-// `@opencode-ai/sdk/dist/gen/types.gen.d.ts`, where `AssistantMessage`, `TextPart`, `RetryPart` and
-// the five error variants are declared by OpenCode itself. The invocation was read from
-// `opencode run --help`, which spends nothing.
+// READ THIS BEFORE TAKING ANYTHING HERE AS EVIDENCE ABOUT A REAL REQUEST. Every fixture in this file
+// is a `message.updated` / `message.part.updated` event, shaped from the GENERATED TYPES that ship
+// with the tool — `@opencode-ai/sdk/dist/gen/types.gen.d.ts`, where `AssistantMessage`, `TextPart`,
+// `RetryPart` and the five error variants are declared by OpenCode itself. Those types are real, and
+// they describe the SERVER'S event stream.
 //
-// That distinction is the whole reason this file reads the way it does. Pass 4B wrote a CLI adapter
-// from assumption, and its tests used the same assumption, so a wholly broken adapter passed for
-// weeks. Shapes here come from the tool's own declarations; where OpenCode has NOT told us something
-// — whether a live reply really matches those types — the adapter refuses rather than guesses, and
-// the tests below pin the refusal.
+// `opencode run --format json` DOES NOT EMIT THAT FRAMING. It subscribes to the server stream and
+// re-writes a subset of it on stdout as `{type, timestamp, sessionID, part|error}` with underscored
+// type names, and it never forwards the assistant message at all. The first live request proved it,
+// and the parser — written from these types and tested against them — read none of it. See
+// `opencode-run-json-envelope.test.ts`, which drives the captured bytes, and take THAT file as the
+// statement of what a real OpenCode reply contains.
+//
+// SO WHAT IS THIS FILE FOR. The invocation assertions are unaffected: `opencode run --help` is the
+// same source either way. The envelope assertions cover the branch that reads the server framing,
+// which remains because the events are declared and because an assistant message is the only place
+// identity ever appears. NOTHING HERE ESTABLISHES THAT CERNUM CAN VERIFY AN OPENCODE MODEL on the
+// path it actually uses — in that framing it cannot, and the captured-envelope file says so.
+//
+// NO REQUEST IS SENT TO ANY MODEL by these tests.
 
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -41,7 +50,10 @@ const binding = (overrides: Partial<ProviderBinding> = {}): ProviderBinding => (
   ...overrides,
 } as ProviderBinding);
 
-/** An `AssistantMessage` as OpenCode's own types declare it. */
+/**
+ * An `AssistantMessage` as OpenCode's own types declare it — in the SERVER framing, which
+ * `run --format json` never writes to stdout. Not a shape any Cernum request receives.
+ */
 function assistantMessage(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     type: 'message.updated',
@@ -120,7 +132,7 @@ describe('v0.2.3 · OpenCode is invoked non-interactively, with the model named 
   });
 });
 
-describe('v0.2.3 · telemetry is read where OpenCode reports it, and marked unavailable where it does not', () => {
+describe('v0.2.3 · server framing (NOT emitted by `run --format json`) · telemetry off the assistant message', () => {
   it('reads tokens, cost, latency and finish reason from the assistant message', async () => {
     const response = await adapter(fakeRun(HAPPY)).complete({ binding: binding(), promptText: 'hi' });
 
@@ -163,7 +175,7 @@ describe('v0.2.3 · telemetry is read where OpenCode reports it, and marked unav
   });
 });
 
-describe('v0.2.3 · identity is read from the reply, never copied from the request', () => {
+describe('v0.2.3 · server framing (NOT emitted by `run --format json`) · identity is read, never copied', () => {
   it('reports the model OpenCode named, rejoined in OpenCode\'s addressing', async () => {
     const response = await adapter(fakeRun(HAPPY)).complete({ binding: binding(), promptText: 'hi' });
     expect(response.reportedModelID).toBe(MODEL);
@@ -188,8 +200,8 @@ describe('v0.2.3 · identity is read from the reply, never copied from the reque
   });
 });
 
-describe('v0.2.3 · a smoke through OpenCode proves execution, and says what it proved about identity', () => {
-  it('reaches PROVEN when OpenCode names the model it was asked for', async () => {
+describe('v0.2.3 · server framing (NOT emitted by `run --format json`) · what such a smoke would prove', () => {
+  it('WOULD reach PROVEN if OpenCode ever named the model on stdout — which under --format json it does not', async () => {
     const response = await adapter(fakeRun(HAPPY)).complete({ binding: binding(), promptText: 'hi' });
     const smoke = readSmoke(binding(), response, '2026-09-17T12:00:00Z');
 

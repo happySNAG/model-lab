@@ -34,7 +34,20 @@ const CREDENTIALS = [
 
 const MODELS = ['opencode/big-pickle', 'opencode/claude-opus-5', MODEL, 'opencode/gpt-5.6-terra'].join('\n');
 
-/** The JSON event stream `opencode run --format json` declares it emits. */
+/**
+ * THE SERVER EVENT FRAMING, which `opencode run --format json` does NOT emit.
+ *
+ * v0.2.5 captured a real request and found the CLI writes its own flat envelope instead —
+ * `{type, timestamp, sessionID, part|error}`, no assistant message, therefore no identity. See
+ * `test/engine/fixtures/opencode-run-json.ts`.
+ *
+ * This spec still feeds the server framing ON PURPOSE. It is the only framing in which a reply names
+ * its model, and the chain it exercises downstream — `proven` row, then selectable, then frozen into
+ * a campaign — needs a proven candidate to exist. Reshaping it to the captured envelope makes every
+ * OpenCode smoke `unverifiable`, which is a GOVERNANCE question (whether `opencodeCLI` receives the
+ * `requestAcceptedIdentityUnverifiable` treatment `codexCLI` has) and not a test fixture's to answer.
+ * Until that is decided this spec covers the downstream chain and not the envelope.
+ */
 const RUN_EVENTS = [
   JSON.stringify({ type: 'message.part.updated', properties: { part: { id: 'prt_1', sessionID: 's', messageID: 'm', type: 'text', text: 'ok' } } }),
   JSON.stringify({

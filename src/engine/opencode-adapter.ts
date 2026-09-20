@@ -18,28 +18,39 @@
 //       --variant <effort>             provider-specific reasoning effort
 //       --pure                         run without external plugins
 //
-//   THE RESPONSE ENVELOPE was read from the GENERATED TYPES that ship with the tool, at
+//   THE RESPONSE ENVELOPE was read, until v0.2.5, from the GENERATED TYPES that ship with the tool at
 //   `@opencode-ai/sdk/dist/gen/types.gen.d.ts` — `AssistantMessage`, `TextPart`, `RetryPart` and the
-//   five error variants. That is the tool's own declaration of what it emits, not a guess and not a
-//   transcript someone remembered.
+//   five error variants. THAT WAS THE WRONG LAYER, and it cost the first live request.
 //
-//   WHAT WAS NOT DONE: no request was sent to any model while writing or testing this. Every test
-//   drives a fake executable replaying fixtures shaped by those generated types. A live OpenCode
-//   request has therefore still never been made by this engine, and the support is labelled
-//   accordingly until one has been.
+//     Those types are real and they describe the SERVER's event stream. `opencode run --format json`
+//     does not forward that stream. It subscribes to it and re-writes a chosen subset onto stdout in
+//     a flat envelope of its own — `{type, timestamp, sessionID, part|error}`, with underscored event
+//     names — so this parser matched nothing at all, found no answer text, and reported a perfectly
+//     good reply as `malformedResponse`.
 //
-// -- IDENTITY, WHICH OPENCODE ACTUALLY REPORTS --------------------------------------------------
+//     Pass 4B's lesson was "do not write an adapter from assumption". The narrower lesson this cost
+//     buying twice is that READING THE TOOL'S TYPES IS NOT READING THE TOOL'S OUTPUT. The framing is
+//     now pinned to 922 bytes captured from a real authorized request — see
+//     `test/engine/fixtures/opencode-run-json.ts`, which carries the capture, its command and its
+//     sanitization — and the adapter is tested against those bytes first.
 //
-// `AssistantMessage` carries `providerID` and `modelID`: the model OpenCode says answered. That is
-// evidence returned by the provider, so an OpenCode attempt CAN reach a verified identity — unlike
-// Codex, whose `exec` names no model at all. It is read from the reply and never copied from the
-// request: if the message does not carry one, `reportedModelID` stays empty and the attempt is
-// identity-unverifiable. A reply naming a different model than was asked for is reported as a
-// mismatch rather than accepted quietly.
+// -- IDENTITY: OPENCODE REPORTS NONE ON THE PATH CERNUM USES ------------------------------------
+//
+// `AssistantMessage` carries `providerID` and `modelID`, and it is the only place OpenCode names the
+// model that answered. `run` reads that event ONLY inside its `format !== "json"` branch, where it
+// prints `> agent · modelID` for a person to read; under `--format json` it is never written to
+// stdout. The captured envelope confirms it: three events, no identity field anywhere.
+//
+// SO AN OPENCODE REQUEST PROVES EXECUTION AND NOTHING ABOUT WHO ANSWERED. `reportedModelID` stays
+// empty, the attempt is identity-unverifiable, and — the consequence worth stating plainly —
+// SUBSTITUTION IS UNDETECTABLE ON THIS PATH. The `modelMismatch` check below can only fire in the
+// server framing; it cannot protect a `--format json` request, because such a request would name no
+// substitute to catch. Identity is still never copied from the request to fill the gap.
 //
 // A LISTING STILL PROVES NOTHING. `opencode models` reads a cached catalogue; see `opencode-cli.ts`.
 // Only a request that was authorized, sent, and came back proves anything, and what it proves is
-// execution — the identity state is decided separately, by what the reply said.
+// execution — the identity state is decided separately, by what the reply said, and here it said
+// nothing.
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -61,19 +72,40 @@ export interface OpenCodeAdapterOptions {
   makeWorkingDirectory?: () => string;
 }
 
-/** What one `AssistantMessage` told us, reduced to what Cernum records. */
+/** What one OpenCode turn told us, reduced to what Cernum records. */
 export interface OpenCodeTurn {
   answerText: string;
-  /** `providerID/modelID` as OpenCode reported them. Empty when the reply carried no identity. */
+  /**
+   * `providerID/modelID` as OpenCode reported them. Empty when the reply carried no identity — which
+   * under `--format json` is ALWAYS, because that mode emits no assistant message. See the header.
+   */
   reportedModelID: string;
   usage: FrontierUsage;
   /** True when a `tokens` block was present, so a zero can be told from a silence. */
   usageReported: boolean;
-  /** OpenCode's own cost figure for the turn, in whatever units it reports. Undefined when absent. */
+  /**
+   * OpenCode's own cost figure, in whatever units it reports. Summed across `step-finish` parts, which
+   * is what OpenCode itself does to the message. Undefined when nothing reported one; `0` is a real
+   * zero and is preserved as one.
+   */
   reportedCost?: number;
-  /** Milliseconds between the message's created and completed timestamps, when it carried both. */
+  /**
+   * Milliseconds between the assistant message's created and completed timestamps. SERVER FRAMING
+   * ONLY, so undefined on every request this engine makes.
+   */
   reportedDurationMilliseconds?: number;
+  /**
+   * Milliseconds OpenCode says the visible text was generated in, from `time.start`/`time.end` on the
+   * text parts. NOT the request's duration — the request is longer than its visible text, and Cernum
+   * measures wall clock itself in `totalElapsedMilliseconds`.
+   */
+  reportedTextGenerationMilliseconds?: number;
+  /**
+   * Extra attempts OpenCode reported. SERVER FRAMING ONLY: `run --format json` forwards no retry
+   * part, so a retried request reads as 0 here and that 0 is a silence rather than a count.
+   */
   retryCount: number;
+  /** Why generation stopped: `reason` on the last `step-finish`. Not an effort level. */
   finishReason?: string;
   error?: { name: string; message: string; statusCode?: number; isRetryable?: boolean };
 }
@@ -85,14 +117,30 @@ const asNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 /**
- * Read the JSON event stream `opencode run --format json` writes.
+ * Read the event stream `opencode run --format json` writes.
  *
- * TOLERANT ABOUT FRAMING, STRICT ABOUT MEANING. The framing is not something this engine should be
- * brittle about — a line that is not JSON is skipped, and both a newline-delimited stream and a
- * single JSON array are accepted, because either would be a reasonable thing for the tool to emit
- * and neither changes what the events say. What is NOT tolerated is inventing a field: a number is
- * read only where the generated types declare one, an identity only from `providerID`/`modelID` on
- * an assistant message, and anything unrecognised is left undefined rather than defaulted to zero.
+ * TWO FRAMINGS, ONE OF WHICH IS THE ONE THIS ENGINE ACTUALLY RECEIVES.
+ *
+ *   THE CLI FRAMING, which is what `run --format json` emits and what a captured request proved it
+ *   emits. `run` subscribes to the server's event stream and re-writes a CHOSEN SUBSET of it onto
+ *   stdout in a flat envelope of its own making:
+ *
+ *       {"type": <name>, "timestamp": <ms>, "sessionID": <id>, "part": <Part>}
+ *       {"type": "error", "timestamp": <ms>, "sessionID": <id>, "error": <error>}
+ *
+ *   with `<name>` one of `step_start`, `step_finish`, `text`, `reasoning`, `tool_use`, `error`.
+ *   Note the underscores: these are the CLI's own names, not the SDK's dotted event names, and the
+ *   payload sits at the TOP LEVEL rather than under `properties`.
+ *
+ *   THE SERVER FRAMING — `message.updated` and `message.part.updated`, the SDK's declared `Event`
+ *   union — which `run --format json` does NOT write. It is still read below, because it is declared
+ *   by the tool and because it is the only framing in which identity ever appears; nothing in this
+ *   engine's own invocation reaches it. Every test naming that framing says so.
+ *
+ * TOLERANT ABOUT FRAMING, STRICT ABOUT MEANING. A line that is not JSON is skipped, and both a
+ * newline-delimited stream and a single JSON array are accepted. What is NOT tolerated is inventing
+ * a field: a number is read only where the tool emits one, an identity only from
+ * `providerID`/`modelID`, and anything unrecognised is left undefined rather than defaulted to zero.
  */
 export function parseOpenCodeRun(stdout: string): OpenCodeTurn {
   const events: JSONObject[] = [];
@@ -115,50 +163,170 @@ export function parseOpenCodeRun(stdout: string): OpenCodeTurn {
   }
 
   const turn: OpenCodeTurn = { answerText: '', reportedModelID: '', usage: {}, usageReported: false, retryCount: 0 };
+  // Parts arrive repeatedly as they stream, so both maps are keyed by part id and the LAST value for
+  // an id wins. Accumulating instead would count one streamed answer several times over.
   const textByPartID = new Map<string, string>();
+  const textMillisecondsByPartID = new Map<string, number>();
 
   for (const event of events) {
     const type = typeof event.type === 'string' ? event.type : '';
     const properties = isObject(event.properties) ? event.properties : undefined;
 
-    // `message.updated` carries the AssistantMessage: identity, tokens, cost, timing, finish, error.
-    if (type === 'message.updated' && properties) {
-      const info = isObject(properties.info) ? properties.info : undefined;
-      if (!info || info.role !== 'assistant') continue;
-      readAssistantMessage(info, turn);
-      continue;
-    }
-
-    // `message.part.updated` carries the visible text, and the retry parts.
-    if (type === 'message.part.updated' && properties) {
-      const part = isObject(properties.part) ? properties.part : undefined;
-      if (!part) continue;
-      if (part.type === 'text' && typeof part.text === 'string') {
-        // Parts arrive repeatedly as they stream; the last value for an id is the whole part. The
-        // `synthetic` and `ignored` flags mark text OpenCode itself does not treat as the answer.
-        if (part.synthetic === true || part.ignored === true) continue;
-        if (typeof part.id === 'string') textByPartID.set(part.id, part.text);
-        else turn.answerText += part.text;
+    switch (type) {
+      // -- THE CLI FRAMING ------------------------------------------------------------------------
+      case 'step_start': case 'step_finish': case 'text': case 'reasoning': case 'tool_use': {
+        const part = isObject(event.part) ? event.part : undefined;
+        if (part) readPart(part, turn, textByPartID, textMillisecondsByPartID);
+        break;
       }
-      if (part.type === 'retry') {
-        const attempt = asNumber(part.attempt);
-        // `attempt` counts from the tool's own numbering; the retry COUNT is how many extra tries
-        // happened, so the highest attempt number seen is what it is worth recording.
-        if (attempt !== undefined) turn.retryCount = Math.max(turn.retryCount, attempt);
-        else turn.retryCount += 1;
+      case 'error': {
+        const error = isObject(event.error) ? event.error : undefined;
+        if (error) readOpenCodeError(error, turn);
+        break;
       }
-      continue;
-    }
 
-    // A bare AssistantMessage, should the stream carry one without the event wrapper.
-    if (event.role === 'assistant' && typeof event.modelID === 'string') readAssistantMessage(event, turn);
+      // -- THE SERVER FRAMING, which this invocation never receives -------------------------------
+      case 'message.updated': {
+        const info = properties && isObject(properties.info) ? properties.info : undefined;
+        if (info && info.role === 'assistant') readAssistantMessage(info, turn);
+        break;
+      }
+      case 'message.part.updated': {
+        const part = properties && isObject(properties.part) ? properties.part : undefined;
+        if (part) readPart(part, turn, textByPartID, textMillisecondsByPartID);
+        break;
+      }
+
+      // A bare AssistantMessage, should the stream carry one without any wrapper.
+      default: {
+        if (event.role === 'assistant' && typeof event.modelID === 'string') readAssistantMessage(event, turn);
+      }
+    }
   }
 
   if (textByPartID.size > 0) turn.answerText = [...textByPartID.values()].join('');
   turn.answerText = turn.answerText.trim();
+  if (textMillisecondsByPartID.size > 0) {
+    turn.reportedTextGenerationMilliseconds =
+      [...textMillisecondsByPartID.values()].reduce((sum, span) => sum + span, 0);
+  }
   return turn;
 }
 
+/**
+ * Read one `Part`, from whichever framing carried it.
+ *
+ * The part shapes are identical in both: the CLI re-wraps the envelope and forwards the part
+ * untouched, so there is one reader rather than two that could drift apart.
+ */
+function readPart(
+  part: JSONObject, turn: OpenCodeTurn,
+  textByPartID: Map<string, string>, textMillisecondsByPartID: Map<string, number>,
+): void {
+  // THE VISIBLE ANSWER, and only that. A `reasoning` part is not the answer and is deliberately not
+  // read here: OpenCode emits it only under `--thinking`, which Cernum does not send, and folding
+  // thinking into the answer text would have measured the wrong string.
+  if (part.type === 'text' && typeof part.text === 'string') {
+    // The `synthetic` and `ignored` flags mark text OpenCode itself does not treat as the answer.
+    if (part.synthetic === true || part.ignored === true) return;
+    if (typeof part.id === 'string') textByPartID.set(part.id, part.text);
+    else turn.answerText += part.text;
+
+    // `time.start`/`time.end` on the text part is the window OPENCODE says that text was generated
+    // in. It is not the request's duration — the request is longer than its visible text — and it is
+    // recorded under a name that says which of the two it is.
+    const time = isObject(part.time) ? part.time : undefined;
+    const start = time ? asNumber(time.start) : undefined;
+    const end = time ? asNumber(time.end) : undefined;
+    if (start !== undefined && end !== undefined && end >= start && typeof part.id === 'string') {
+      textMillisecondsByPartID.set(part.id, end - start);
+    }
+    return;
+  }
+
+  if (part.type === 'step-finish') { readStepFinish(part, turn); return; }
+
+  if (part.type === 'retry') {
+    // `attempt` counts from the tool's own numbering; the retry COUNT is how many extra tries
+    // happened, so the highest attempt number seen is what it is worth recording.
+    //
+    // UNREACHABLE UNDER `--format json`, and left in because it costs nothing and the server framing
+    // does carry it. `run` has no branch that forwards a retry part to stdout, so a retried OpenCode
+    // request is indistinguishable here from a first-try one: `retryCount` stays 0 and that is a
+    // silence, not a zero.
+    const attempt = asNumber(part.attempt);
+    if (attempt !== undefined) turn.retryCount = Math.max(turn.retryCount, attempt);
+    else turn.retryCount += 1;
+  }
+}
+
+/**
+ * Read a `step-finish` part: the only place `--format json` reports tokens, cost or a finish reason.
+ *
+ * THE ARITHMETIC IS OPENCODE'S OWN, NOT ONE INVENTED HERE. In the tool's session loop the assistant
+ * message is updated as `assistantMessage.cost += step.cost` and `assistantMessage.tokens =
+ * step.tokens` — cost ACCUMULATES across steps, the token block is REPLACED by the last step's, and
+ * `assistantMessage.finish = step.reason`. `--format json` never emits that message, so the same
+ * three rules are applied here to the step parts it does emit, and a multi-step run therefore
+ * reports what OpenCode would itself have reported for it.
+ */
+function readStepFinish(part: JSONObject, turn: OpenCodeTurn): void {
+  const tokens = isObject(part.tokens) ? part.tokens : undefined;
+  if (tokens) {
+    turn.usageReported = true;
+    turn.usage = usageFromTokens(tokens);
+  }
+  const cost = asNumber(part.cost);
+  if (cost !== undefined) turn.reportedCost = (turn.reportedCost ?? 0) + cost;
+  if (typeof part.reason === 'string') turn.finishReason = part.reason;
+}
+
+/**
+ * The token block, which OpenCode emits in the same shape on a step part and on a message.
+ *
+ * `input` is FRESH input only: the captured envelope's `total` is exactly
+ * `input + output + reasoning + cache.read`, so cached input is counted apart rather than folded in —
+ * which is the contract `FrontierUsage` states. `total` is therefore derivable and is not stored: a
+ * field that can only ever disagree with its own parts is not worth keeping.
+ */
+function usageFromTokens(tokens: JSONObject): FrontierUsage {
+  const usage: FrontierUsage = {};
+  const input = asNumber(tokens.input);
+  const output = asNumber(tokens.output);
+  const reasoning = asNumber(tokens.reasoning);
+  if (input !== undefined) usage.inputTokens = input;
+  if (output !== undefined) usage.visibleOutputTokens = output;
+  if (reasoning !== undefined) usage.reasoningTokens = reasoning;
+  const cache = isObject(tokens.cache) ? tokens.cache : undefined;
+  if (cache) {
+    const read = asNumber(cache.read);
+    const write = asNumber(cache.write);
+    if (read !== undefined) usage.cacheReadInputTokens = read;
+    if (write !== undefined) usage.cacheCreationInputTokens = write;
+  }
+  return usage;
+}
+
+/** The error object both framings carry: `{name, data}`, as the SDK's five variants declare it. */
+function readOpenCodeError(error: JSONObject, turn: OpenCodeTurn): void {
+  const data = isObject(error.data) ? error.data : {};
+  turn.error = {
+    name: typeof error.name === 'string' ? error.name : 'UnknownError',
+    message: typeof data.message === 'string' ? data.message : '',
+    statusCode: asNumber(data.statusCode),
+    isRetryable: typeof data.isRetryable === 'boolean' ? data.isRetryable : undefined,
+  };
+}
+
+/**
+ * Read an `AssistantMessage`, which arrives ONLY in the server framing.
+ *
+ * `run --format json` never writes one — it consumes `message.updated` inside its `format !== "json"`
+ * branch, to print `> agent · modelID` for a person to read, and forwards nothing. So every field
+ * below is unreachable on this engine's own invocation, identity included. It is read anyway because
+ * the event is declared, and because if identity ever does reach stdout this is where it is taken
+ * from. It is never a reason to claim identity that did not arrive.
+ */
 function readAssistantMessage(info: JSONObject, turn: OpenCodeTurn): void {
   // IDENTITY IS READ, NEVER COPIED FROM THE REQUEST. OpenCode addresses models as provider/model,
   // so the two fields are rejoined in the tool's own addressing rather than in one invented here.
@@ -171,21 +339,7 @@ function readAssistantMessage(info: JSONObject, turn: OpenCodeTurn): void {
   const tokens = isObject(info.tokens) ? info.tokens : undefined;
   if (tokens) {
     turn.usageReported = true;
-    const cache = isObject(tokens.cache) ? tokens.cache : undefined;
-    const usage: FrontierUsage = {};
-    const input = asNumber(tokens.input);
-    const output = asNumber(tokens.output);
-    const reasoning = asNumber(tokens.reasoning);
-    if (input !== undefined) usage.inputTokens = input;
-    if (output !== undefined) usage.visibleOutputTokens = output;
-    if (reasoning !== undefined) usage.reasoningTokens = reasoning;
-    if (cache) {
-      const read = asNumber(cache.read);
-      const write = asNumber(cache.write);
-      if (read !== undefined) usage.cacheReadInputTokens = read;
-      if (write !== undefined) usage.cacheCreationInputTokens = write;
-    }
-    turn.usage = usage;
+    turn.usage = usageFromTokens(tokens);
   }
 
   const cost = asNumber(info.cost);
@@ -201,15 +355,7 @@ function readAssistantMessage(info: JSONObject, turn: OpenCodeTurn): void {
   if (typeof info.finish === 'string') turn.finishReason = info.finish;
 
   const error = isObject(info.error) ? info.error : undefined;
-  if (error) {
-    const data = isObject(error.data) ? error.data : {};
-    turn.error = {
-      name: typeof error.name === 'string' ? error.name : 'UnknownError',
-      message: typeof data.message === 'string' ? data.message : '',
-      statusCode: asNumber(data.statusCode),
-      isRetryable: typeof data.isRetryable === 'boolean' ? data.isRetryable : undefined,
-    };
-  }
+  if (error) readOpenCodeError(error, turn);
 }
 
 /**

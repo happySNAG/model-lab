@@ -16,6 +16,19 @@
 // fixtures shaped from the generated types the tool ships. The fixtures cover a success, a reply
 // that names nobody, a substitution, a refusal, a timeout, unreadable output, and a secret in an
 // error message.
+//
+// -- v0.2.5: WHICH FRAMING THESE FIXTURES ARE, WHICH IS NOT THE ONE OPENCODE WRITES ------------
+//
+// The `message.updated` / `message.part.updated` fixtures below are the SERVER event framing. A real
+// `opencode run --format json` writes `{type, timestamp, sessionID, part|error}` with underscored
+// type names and NO assistant message, so the `proven` verdicts in this file describe a reply that
+// names its model — which that mode never sends. They are kept because the verdict LOGIC they pin is
+// framing-independent and still correct, and because the mismatch and identity branches have no other
+// coverage. `opencode-run-json-envelope.test.ts` drives the captured bytes and records the real
+// outcome: the answer parses, and identity is unverifiable.
+//
+// The one thing this file therefore must NOT be read as: evidence that a live OpenCode smoke reaches
+// `proven`. On the path Cernum invokes, it reaches `unverifiable`.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
@@ -45,6 +58,7 @@ function fakeOpenCode(body: string): string {
 const textPart = (text: string) =>
   JSON.stringify({ type: 'message.part.updated', properties: { part: { id: 'prt_1', type: 'text', text } } });
 
+/** SERVER framing. `run --format json` emits no assistant message; see the header. */
 const assistant = (modelID: string, extra: Record<string, unknown> = {}) => JSON.stringify({
   type: 'message.updated',
   properties: {
@@ -64,7 +78,7 @@ async function smoke(body: string, modelID = UNION_ALPHA_MODEL_ID, timeoutMillis
   return identitySmokeTest(frozen, adapter);
 }
 
-describe('v0.2.4 · Union Alpha, driven through a fake executable, verdict by verdict', () => {
+describe('v0.2.4 · Union Alpha, driven through a fake executable, verdict by verdict (server framing)', () => {
   it('SUCCESS — the reply names the model that was asked for, so identity is proven', async () => {
     const result = await smoke(`echo '${textPart('ok')}'; echo '${assistant('union-alpha')}'`);
 
