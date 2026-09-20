@@ -20,7 +20,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  AUTHORIZED_COHORT, CERNUM_V2_ADDITIONS, FORBIDDEN_SUBSTITUTIONS, HISTORICAL_IDENTITY_EVIDENCE,
+  AUTHORIZED_COHORT, CERNUM_V2_ADDITIONS, FORBIDDEN_SUBSTITUTIONS, FREE_OPENCODE_POOL_ADDITIONS,
+  HISTORICAL_IDENTITY_EVIDENCE,
   RECONCILED_IN_PASS_5C, REQUESTED_COHORT,
   assertCohortComplete, configurationKey, historicalEvidenceFor, ladderConfigurations, reconcileCohort,
 } from '../../src/engine/reconciliation';
@@ -92,16 +93,25 @@ describe('the requested cohort survives being forgotten', () => {
   // THE FROZEN REQUEST IS NOT A PLACE TO PUT NEW THINGS. Accommodating a new candidate by editing
   // Pass 5C's list would erase the baseline the whole comparison depends on, in the way hardest to
   // notice -- by making a test go green.
+  // EACH AUTHORISATION KEEPS ITS OWN LIST, AND THAT IS WHAT IS ASSERTED. `CERNUM_V2_ADDITIONS` is
+  // still exactly Union Alpha — the free OpenCode pool was authorised under `FREE_OPENCODE_POOL_ADDITIONS`
+  // rather than appended here, for the same reason the Pass 5C request was not appended to: a list
+  // whose contents a test pins stops being worth pinning the moment later work starts adding to it.
   it('keeps the Pass 5C request frozen at 12, and declares later additions separately', () => {
     expect(REQUESTED_COHORT).toHaveLength(12);
     expect(REQUESTED_COHORT.some((e) => e.provider === 'opencodeCLI')).toBe(false);
     expect(CERNUM_V2_ADDITIONS.map((e) => e.modelID)).toEqual(['opencode/union-alpha']);
-    expect(AUTHORIZED_COHORT).toHaveLength(REQUESTED_COHORT.length + CERNUM_V2_ADDITIONS.length);
+    expect(AUTHORIZED_COHORT).toHaveLength(
+      REQUESTED_COHORT.length + CERNUM_V2_ADDITIONS.length + FREE_OPENCODE_POOL_ADDITIONS.length);
   });
 
+  // THE SPECIMEN CHANGED, THE RULE DID NOT. This named `opencode/big-pickle`, which was then an
+  // OpenCode model nobody had authorised; it is now a member of the authorised free pool, so it no
+  // longer demonstrates anything. The finance model is the specimen precisely because it IS free and
+  // IS listed and was still left off deliberately — being available is not being authorised.
   it('still reports a ladder entry nobody authorised as extra', () => {
     const authorized = new Set(AUTHORIZED_COHORT.map(configurationKey));
-    expect(authorized.has(configurationKey({ provider: 'opencodeCLI', modelID: 'opencode/big-pickle', effort: 'none' } as any))).toBe(false);
+    expect(authorized.has(configurationKey({ provider: 'opencodeCLI', modelID: 'opencode/ling-3.0-flash-fin-free', effort: 'none' } as any))).toBe(false);
   });
 
   it('does not throw while the cohort is whole', () => {

@@ -39,6 +39,8 @@ import {
   UNION_ALPHA_MODEL_ID, parseOpenCodeVersion, parseOpenCodeModels, parseOpenCodeCredentials,
   opencodeHasCredential, opencodeCredentialDisclosure, OPENCODE_SUPPORT_MATURITY, OPENCODE_COST_EXPLANATION,
   OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_PROOF_PATH,
+  OPENCODE_CATALOGUE_OBSERVED_AT, OPENCODE_CATALOGUE_SOURCE, OPENCODE_FREE_LIST_PRICE_EXPLANATION,
+  UNION_ALPHA_NOT_LISTED_SINCE, UNION_ALPHA_RETIREMENT_NOTE,
 } from './opencode-cli';
 
 /** How far the truth about a provider has actually been established. */
@@ -164,13 +166,90 @@ const CLI_EXECUTABLE: Partial<Record<ProviderID, string>> = {
 };
 
 /**
+ * What a provider's own catalogue says a model costs to call. A LIST PRICE, NEVER A MEASURED CHARGE.
+ *
+ * Kept deliberately separate from `costProvenance`, which answers a different question: what did
+ * Cernum actually observe this request cost. A provider can publish a zero list price for a model
+ * whose real charge this engine still has no way to read back, and OpenCode is exactly that case.
+ * Letting a published price stand in for an observed one is how a benchmark starts reporting a
+ * number nobody measured.
+ */
+export type CataloguedCost = 'free' | 'paid' | 'unknown';
+
+/**
+ * WHERE A LADDER ROW'S NAME CAME FROM, AND WHEN SOMETHING LAST LOOKED.
+ *
+ * A ladder row is a plan, and a plan written from memory or from a documentation page is how a model
+ * that was never offered ends up being asked for. This records the opposite: the exact command whose
+ * output was read, the day it was read, and whether that output named this identifier.
+ *
+ * IT IS STILL NOT AVAILABILITY. `catalogueStatus: 'listed'` means a catalogue named it, which is
+ * worth recording and is worth nothing more -- see `OPENCODE_LISTING_IS_A_CATALOGUE`. Every row
+ * carrying one of these is still born `unproven`, and `selectableModels` still filters it out. The
+ * field that can make a model selectable is `availability`, it lives on a discovered row rather than
+ * on a plan, and nothing in this structure writes to it.
+ */
+export interface LadderProvenance {
+  /** Whether a live provider listing named this identifier when it was last read. */
+  catalogueStatus: 'listed' | 'notListed';
+  /** The command whose output was read. Never documentation, never recollection. */
+  source: string;
+  observedAt: string;
+  cataloguedCost: CataloguedCost;
+  /** In words: what was read, and what it does and does not establish. */
+  detail: string;
+}
+
+export interface LadderEntry {
+  provider: ProviderID;
+  modelID: string;
+  displayName: string;
+  /** Effort levels this project intends to exercise. Desired, not confirmed. */
+  desiredEfforts: string[];
+  /** Absent on a row nothing has checked against a live listing. Never inferred, never guessed. */
+  provenance?: LadderProvenance;
+}
+
+/**
+ * The six zero-list-price OpenCode models this project intends to test, as ladder rows.
+ *
+ * Declared as its own named constant rather than inlined so that "the free pool" is a thing the
+ * tests, the terminal and a reader can each refer to by name, and so that a row leaving the pool is
+ * one visible deletion rather than a line lost in a hundred-line literal.
+ *
+ * `displayName` is OpenCode's own `name` field from the catalogue, and `modelID` is OpenCode's own
+ * `provider/model` address carried through unchanged -- so what Cernum asks for and what OpenCode
+ * was told are the same bytes, exactly as for Union Alpha in the ladder below.
+ */
+export const FREE_OPENCODE_DEVELOPMENT_POOL: LadderEntry[] = ([
+  ['opencode/big-pickle', 'Big Pickle', 'reasoning, multi-step problem solving and tool use; 200k context'],
+  ['opencode/mimo-v2.5-free', 'MiMo V2.5 Free', 'open-weight omni model for text and agents; 200k context'],
+  ['opencode/muse-spark-1.2-contributor-free', 'Muse Spark 1.2 Free', 'coding-focused: code generation, complex debugging, codebase understanding; 1M context'],
+  ['opencode/muse-spark-1.3-contributor-free', 'Muse Spark 1.3 Free', 'multimodal reasoning for coding and agentic workflows; 1M context'],
+  ['opencode/nemotron-3-ultra-free', 'Nemotron 3 Ultra Free', 'open-weight reasoning and agent accuracy; 1M context'],
+  ['opencode/nemotron-3.5-lightning-free', 'Nemotron 3.5 Lightning Free', 'open-weight MoE for agentic tasks; 262k context'],
+] as const).map(([modelID, displayName, shape]): LadderEntry => ({
+  provider: 'opencodeCLI',
+  modelID,
+  displayName,
+  desiredEfforts: ['none'],
+  provenance: {
+    catalogueStatus: 'listed',
+    source: OPENCODE_CATALOGUE_SOURCE,
+    observedAt: OPENCODE_CATALOGUE_OBSERVED_AT,
+    cataloguedCost: 'free',
+    detail: `${shape}. ${OPENCODE_FREE_LIST_PRICE_EXPLANATION}`,
+  },
+}));
+
+/**
  * The models this project INTENDS to test, once something proves the account can invoke them.
  *
  * This list is a plan, not a capability claim, and it is deliberately inert: every entry is born
  * `unproven`, `selectableModels` filters those out, and the campaign builder refuses one. Editing
  * this list can therefore never make a model runnable — only discovery can.
  */
-export const DESIRED_CANDIDATE_LADDER: { provider: ProviderID; modelID: string; displayName: string; desiredEfforts: string[] }[] = [
+export const DESIRED_CANDIDATE_LADDER: LadderEntry[] = [
   // OPUS 5 AND FABLE 5.1 ARE REQUIRED COHORT MEMBERS, AND NEITHER IS THE MODEL BELOW IT.
   //
   // Pass 5B tested what it had and reported what it tested, honestly. But its combined candidate
@@ -223,9 +302,47 @@ export const DESIRED_CANDIDATE_LADDER: { provider: ProviderID; modelID: string; 
   // because nothing has established which variants OpenCode accepts for this model, and asking for
   // an effort level a provider does not have is how Pass 5 turned a correct 404 into a wrong
   // conclusion.
-  { provider: 'opencodeCLI', modelID: UNION_ALPHA_MODEL_ID, displayName: 'Union Alpha', desiredEfforts: ['none'] },
+  //
+  // AND AS OF 2026-09-20, OPENCODE NO LONGER LISTS IT. The row stays, marked `notListed` with the
+  // date and the command that established it, because "we never asked" and "we asked and it is gone"
+  // are different facts and only the second is true. See `UNION_ALPHA_RETIREMENT_NOTE`.
+  {
+    provider: 'opencodeCLI', modelID: UNION_ALPHA_MODEL_ID, displayName: 'Union Alpha', desiredEfforts: ['none'],
+    provenance: {
+      catalogueStatus: 'notListed',
+      source: OPENCODE_CATALOGUE_SOURCE,
+      observedAt: UNION_ALPHA_NOT_LISTED_SINCE,
+      // UNKNOWN rather than `paid`. The catalogue no longer carries the model, so it no longer
+      // carries a price for it, and the last price anyone saw is not a price that is still offered.
+      cataloguedCost: 'unknown',
+      detail: UNION_ALPHA_RETIREMENT_NOTE,
+    },
+  },
+  // THE FREE OPENCODE POOL, READ OFF THE LIVE LISTING ON 2026-09-20 AND NOT OUT OF ANYONE'S MEMORY.
+  //
+  // WHY THESE SIX AND NOT SOME OTHERS. `opencode models` named 71 identifiers under the `opencode`
+  // provider. Seven of the 71 carry a catalogue list price of input $0 / output $0. Six of those
+  // seven describe themselves as reasoning, coding or agentic models and report `tool_call: true`,
+  // which is the shape of work Cernum benchmarks. The seventh, `opencode/ling-3.0-flash-fin-free`,
+  // is a FINANCE-domain model -- free and tool-capable, and not a development model, so it is left
+  // off deliberately rather than by oversight, and named here so the omission is a decision on the
+  // record instead of a gap somebody later fills by guessing.
+  //
+  // WHAT ADDING THEM DOES, EXACTLY. It makes them DISCOVERABLE and it makes them nameable to
+  // `cernum smoke --models`. It does not make them selectable, routable, or qualified: these rows
+  // are born `unproven` like every other row in this list, `selectableModels` drops them, and the
+  // campaign builder refuses one. Discovery will not change that either -- an OpenCode listing is a
+  // cached catalogue, so discovering these six moves them from "named in a plan" to "named in a plan
+  // and also present in a catalogue", which is not a step towards being callable. Only an authorized
+  // request that was sent and came back can do that. See `OPENCODE_PROOF_PATH`.
+  //
+  // EVERY ONE ENTERS AT EFFORT `none`, INCLUDING THE TWO THE CATALOGUE GIVES EFFORT LEVELS FOR. The
+  // catalogue reports `minimal|low|medium|high|xhigh` for both Muse Spark rows. That is the same
+  // cached file that proves nothing about entitlement, and Pass 5 has already demonstrated what
+  // happens when a request carries a setting the provider turns out not to accept: a correct refusal
+  // gets read as a fact about the model. Efforts are added after execution is proven, not before.
+  ...FREE_OPENCODE_DEVELOPMENT_POOL,
 ];
-
 const LADDER_CAVEAT =
   'named in the intended testing ladder, and nothing has confirmed it. A model identifier is not a capability claim: '
   + 'lineups change, a subscription tier may not include what another does, and an installed CLI may predate a model '
@@ -240,7 +357,17 @@ export function desiredCandidates(at: string): DiscoveredFrontierModel[] {
       modelID: entry.modelID,
       displayName: entry.displayName,
       availability: 'unproven' as const,
-      evidence: `${entry.displayName} is ${LADDER_CAVEAT}`,
+      // THE PROVENANCE IS APPENDED, NOT SUBSTITUTED. A row whose identifier was read off a live
+      // listing is better evidenced than one written from memory, and saying so is useful. It is
+      // still `unproven`, and the caveat that says why stays in front of the provenance rather than
+      // being softened by it — which is the order a reader needs, because "OpenCode listed this on
+      // 2026-09-20" is exactly the sentence that reads like availability if it comes first.
+      evidence: `${entry.displayName} is ${LADDER_CAVEAT}`
+        + (entry.provenance
+          ? ` Provenance: ${entry.provenance.source} ${entry.provenance.catalogueStatus === 'listed' ? 'named' : 'did NOT name'}`
+            + ` ${entry.modelID} on ${entry.provenance.observedAt}; catalogued cost ${entry.provenance.cataloguedCost}.`
+            + ` ${entry.provenance.detail}`
+          : ''),
       verifiedModelID: '',
       desiredEfforts: entry.desiredEfforts,
       discoveredAt: at,

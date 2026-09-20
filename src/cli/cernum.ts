@@ -432,7 +432,10 @@ async function commandProviders(options: Options): Promise<void> {
     say('No provider discovery has been run, so no frontier model is selectable yet.');
     say('The intended testing ladder, none of it confirmed:');
     for (const model of desiredCandidates(new Date().toISOString())) {
-      say(`  unproven  ${model.modelID.padEnd(28)} ${model.displayName}`);
+      // WIDE ENOUGH FOR AN OPENCODE ADDRESS. These identifiers are `provider/model`, and the free
+      // pool's longest runs to 39 characters — at 28 the column collapsed and the display names
+      // stopped lining up the moment the pool was added.
+      say(`  unproven  ${model.modelID.padEnd(42)} ${model.displayName}`);
     }
     say('');
   }

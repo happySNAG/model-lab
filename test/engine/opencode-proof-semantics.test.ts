@@ -48,12 +48,19 @@ const here = () => '/usr/local/bin/opencode';
 const NOW = () => new Date('2026-09-17T12:00:00Z');
 
 describe('v0.2.2 · a listing is a catalogue, and a catalogue is not permission', () => {
+  // COUNTED AGAINST THE FIXTURE, NOT AGAINST A LITERAL. This read `toBe(5)` while the ladder named
+  // one OpenCode model; the free pool added six more, so the result now also carries the refused
+  // rows for the pool members this fixture does not list, and a hard 5 failed on a correct answer.
+  // Deriving the count keeps the assertion about the SEMANTICS — every listed row unproven, every
+  // unlisted ladder row refused, nothing proven either way — instead of about the ladder's length.
   it('records every listed model as unproven, with an empty verifiedModelID', async () => {
     const status = await discoverOpenCodeCLI({ findExecutable: here, now: NOW, run: READY });
+    const listed = MODELS.split('\n').filter((line) => line.length > 0);
 
-    expect(status.models.length).toBe(5);
+    expect(status.models.filter((model) => listed.includes(model.modelID))).toHaveLength(listed.length);
     for (const model of status.models) {
       expect(model.availability).not.toBe('proven');
+      expect(model.availability).toBe(listed.includes(model.modelID) ? 'unproven' : 'refused');
       // A verified identifier is what a PROVIDER RETURNED. Nothing returned anything here.
       expect(model.verifiedModelID).toBe('');
     }

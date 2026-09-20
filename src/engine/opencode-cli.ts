@@ -270,6 +270,62 @@ export const OPENCODE_SUPERSEDED_NO_PROOF_PATH =
   + 'authorized request it could make and record. Until one exists, no OpenCode model is selectable for '
   + 'a campaign. `cernum smoke` drives the subscription CLIs only and will refuse opencodeCLI by name.';
 
+/**
+ * THE FREE POOL, AND THE TWO THINGS "FREE" HERE DOES AND DOES NOT MEAN.
+ *
+ * `opencode models` listed 71 identifiers under the `opencode` provider on 2026-09-20 against
+ * `opencode-ai@1.18.31`, and the catalogue those identifiers are drawn from -- the same cached
+ * `~/.cache/opencode/models.json` described in `OPENCODE_LISTING_IS_A_CATALOGUE` -- carries a `cost`
+ * object per model. Seven of the 71 carry `input: 0` and `output: 0`.
+ *
+ * WHAT THAT ESTABLISHES: the provider's own catalogue PUBLISHES A LIST PRICE OF ZERO for those
+ * seven. That is a real, citable fact about the provider's price list, and it is the reason these
+ * models are a sensible place to start benchmarking a metered provider.
+ *
+ * WHAT IT DOES NOT ESTABLISH, AND THE DISTINCTION IS THE WHOLE POINT: it is not a measured charge,
+ * and it does not make `OPENCODE_COST_EXPLANATION` any less true. Cernum still has no per-request
+ * charge to read back from OpenCode, so the cost PROVENANCE of an actual OpenCode attempt remains
+ * `unavailable` -- for a zero-list-price model exactly as much as for a $15/Mtok one. A list price
+ * is what a provider says it will charge; a cost provenance is what Cernum observed it charge. The
+ * engine must never let the first quietly stand in for the second, which is why the ladder records
+ * this under `cataloguedCost` and not under anything named cost.
+ *
+ * And it is not an availability claim either. A free model in a cached catalogue is DISCOVERED and
+ * UNPROVEN like every other row; the price is zero whether or not this credential may call it.
+ */
+export const OPENCODE_CATALOGUE_OBSERVED_AT = '2026-09-20';
+export const OPENCODE_CATALOGUE_SOURCE = '`opencode models` · opencode-ai@1.18.31 · credential `OpenCode Zen [api]`';
+
+export const OPENCODE_FREE_LIST_PRICE_EXPLANATION =
+  'OpenCode\'s own model catalogue publishes a list price of input $0 / output $0 for this model. That is a '
+  + 'statement by the provider about its price list, not a charge Cernum measured: the cost provenance of an '
+  + 'OpenCode attempt is still UNAVAILABLE. Nor is a price an entitlement -- a zero list price says nothing about '
+  + 'whether this credential may call the model, and this row is DISCOVERED and UNPROVEN like every other.';
+
+/**
+ * UNION ALPHA IS NO LONGER SERVED, AND THE ROW STAYS ANYWAY.
+ *
+ * `opencode models` named 71 models on 2026-09-20 and `opencode/union-alpha` was not one of them; it
+ * had been listed when the row was written in v0.2.2. The identifier is therefore recorded as NOT
+ * LISTED, with the date and the command that established it.
+ *
+ * DELETING THE ROW WOULD HAVE BEEN THE WRONG CORRECTION, and it is the tempting one, because a
+ * ladder with no unavailable entries looks tidy. But "Cernum never asked for Union Alpha" and
+ * "Cernum asked and OpenCode no longer serves it" are different facts, and only the second one is
+ * true. Removing the row would destroy the evidence that the question was ever asked -- the exact
+ * failure mode `reconciliation.ts` exists to prevent, arriving from the other direction.
+ *
+ * The row is inert either way: `discoverOpenCodeCLI` already records a ladder identifier the listing
+ * does not name as `refused`, which is not selectable, so an unavailable model cannot enter a
+ * campaign whether or not anyone reads this note.
+ */
+export const UNION_ALPHA_NOT_LISTED_SINCE = '2026-09-20';
+export const UNION_ALPHA_RETIREMENT_NOTE =
+  'OpenCode listed 71 models on 2026-09-20 and `opencode/union-alpha` was not among them, though it was listed '
+  + 'when this row was written. The row is KEPT so the record shows the question was asked and answered, rather '
+  + 'than showing a ladder that never named it. Discovery records an unlisted ladder identifier as REFUSED, so it '
+  + 'is not selectable; nothing about keeping it here makes it callable.';
+
 /** Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it". */
 export const OPENCODE_SUPPORT_MATURITY =
   'UNTESTED METERED API. Cernum can discover OpenCode, read its version, list its models and see whether '
