@@ -70,6 +70,7 @@ import {
   WorkspaceAttemptRecord, WorkspaceRunOptions, WorkspaceRunResult, runWorkspaceCase,
 } from './workspace-execution';
 import { WorkspaceScorecard, scoreWorkspaceRun } from './workspace-scoring';
+import { verifyProviderIdentity } from './verification';
 
 export class WorkspaceHostError extends Error {
   constructor(readonly code: string, message: string) {
@@ -343,7 +344,16 @@ export class WorkspaceRoutingHost {
       // THE PROVIDER'S WORD OR NOTHING, exactly as on the prose side. Empty means the tool named
       // nobody — never a copy of what was asked for.
       reportedModelID: deciding?.agent.reportedModelID ?? '',
+      // THE TWO HALVES OF IDENTITY, KEPT APART AND BOTH RECORDED.
+      //
+      // `bindingIdentityState` is what was known BEFORE the request — copied off the frozen binding
+      // and never touched by what came back. `executionIdentityVerdict` is what THIS execution
+      // established, from the same `verifyProviderIdentity` ladder the prose path uses. The first
+      // live workspace run recorded `unverifiable` beside a reply that named `claude-haiku-4-5`, and
+      // both were true; a reader could not tell which fact was which. Now they are two fields with
+      // two names, and nothing writes the second over the first.
       bindingIdentityState: binding.identityState,
+      ...executionIdentity(binding, deciding?.agent.reportedModelID ?? ''),
       inputTokens: input,
       freshInputTokens: sum('freshInputTokens'),
       cacheCreationInputTokens: sum('cacheCreationInputTokens'),
@@ -366,6 +376,27 @@ export class WorkspaceRoutingHost {
       rawUsage: decidingUsage?.rawUsage,
     };
   }
+}
+
+/**
+ * What THIS execution established about who answered, beside what was known before it.
+ *
+ * Returns nothing when there was no reply to read, so a refused or unattempted run records no
+ * post-run verdict at all rather than an `unverifiable` that would read as a finding. Absent and
+ * "nothing confirmed it" are different records, and only one of them is true here.
+ */
+export function executionIdentity(binding: ProviderBinding, reportedModelID: string):
+  Pick<FrontierAttemptRecord, 'executionIdentityVerdict' | 'executionIdentityDetail'> {
+  if (reportedModelID.length === 0) {
+    return {
+      executionIdentityVerdict: 'unverifiable',
+      executionIdentityDetail: `the tool named no model in its reply, so this execution confirmed nothing about `
+        + `whether ${binding.requestedModelID} answered. This is a statement about THIS request, made after it; `
+        + 'what was known beforehand is on `bindingIdentityState` and is unchanged by it.',
+    };
+  }
+  const verification = verifyProviderIdentity(binding.requestedModelID, reportedModelID);
+  return { executionIdentityVerdict: verification.state, executionIdentityDetail: verification.detail };
 }
 
 /**

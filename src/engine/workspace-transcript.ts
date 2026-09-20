@@ -26,6 +26,7 @@
 
 import { CanonicalValue, digestObject } from './canonical';
 import { redactSecrets, redactValue } from './redaction';
+import { reconcileReportedPath } from './workspace-path-reconciliation';
 
 export type EventProvenance = 'engineObserved' | 'agentReported';
 
@@ -141,7 +142,23 @@ export interface TranscriptEvent extends Record<string, CanonicalValue | undefin
   callID?: string;
   argumentsDigest?: string;
   ok?: boolean;
+  /** EXACTLY what was reported or observed. Never rewritten; see `workspaceRelativePath`. */
   path?: string;
+  /**
+   * The same file in the engine's own vocabulary, when an AGENT-REPORTED path could be reconciled
+   * against the live workspace.
+   *
+   * ADDED AFTER THE FIRST LIVE RUN, where `claude` reported `/private/var/…/work/src/stats.js` and
+   * the engine's `changedPaths` said `src/stats.js`. Both true, and impossible to line up. This is
+   * the second field rather than a rewrite of the first, and the event's provenance is untouched:
+   * see `PATH_RECONCILIATION_IS_NOT_OBSERVATION`. Absent when the path resolves outside the
+   * workspace, which is the case that must never gain a relative-looking form.
+   */
+  workspaceRelativePath?: string;
+  /** `alreadyRelative` | `normalizedFromAbsolute` | `outsideWorkspace` | `unresolvable`. */
+  pathResolution?: string;
+  /** Why no relative form was produced. Present exactly when `workspaceRelativePath` is absent. */
+  pathResolutionReason?: string;
   beforeSHA256?: string;
   afterSHA256?: string;
   byteCount?: number;
@@ -234,6 +251,23 @@ export interface TranscriptSummary {
   finalResponseCount: number;
   boundaryRefusalCount: number;
   harnessFaultCount: number;
+  /**
+   * Agent-reported paths that were ABSOLUTE and resolved inside this attempt's workspace.
+   *
+   * A non-zero count is the ordinary state for a CLI driver, not a warning: `claude` names the paths
+   * it edits absolutely. It is counted so a reader can see how much of the testimony below needed
+   * lining up before it could be compared against the diff at all.
+   */
+  reportedPathsNormalizedFromAbsolute: number;
+  /**
+   * Agent-reported paths that do NOT resolve inside this attempt's workspace.
+   *
+   * THE ONE TO LOOK AT. It is testimony rather than evidence — the engine's own boundary refusals
+   * and the re-digest of the untouched baseline are what actually decide whether the workspace held
+   * — but a tool that says it touched something outside the tree it was given is saying something
+   * worth reading, and a column that only ever showed tidy relative paths would have hidden it.
+   */
+  reportedPathsOutsideWorkspace: number;
   /** Why this attempt stopped, lifted off `attemptFinished`. Absent while an attempt is in flight. */
   terminationReason?: TerminationReason;
   /**
@@ -273,7 +307,14 @@ export class TranscriptBuilder {
 
   private sequence = 0;
 
-  constructor(private readonly startedAtMilliseconds: number, private readonly now: () => number = () => Date.now()) {}
+  /**
+   * `workspaceRoot` is what makes path reconciliation possible, and it is OPTIONAL because a
+   * transcript is useful without it. A builder made without one records exactly what it always did:
+   * every reported path verbatim, and no second field. The runner supplies it, because the runner is
+   * the only thing that knows which disposable directory this attempt actually measured.
+   */
+  constructor(private readonly startedAtMilliseconds: number, private readonly now: () => number = () => Date.now(),
+              private readonly workspaceRoot?: string) {}
 
   get count(): number {
     return this.events.length;
@@ -297,6 +338,7 @@ export class TranscriptBuilder {
     }
     const event: TranscriptEvent = redactValue({
       ...payload,
+      ...this.reconciliationFor(provenance, payload),
       seq: this.sequence++,
       atMilliseconds: Math.max(0, Math.round(this.now() - this.startedAtMilliseconds)),
       kind,
@@ -306,6 +348,30 @@ export class TranscriptBuilder {
     });
     this.events.push(event);
     return event;
+  }
+
+  /**
+   * Line an AGENT-REPORTED path up with the workspace this attempt measured.
+   *
+   * ONLY FOR TESTIMONY. An `engineObserved` event's `path` is already workspace-relative because
+   * this engine wrote it from its own diff, and running it through a reconciler would be the engine
+   * checking its own arithmetic against itself. Returns nothing at all when there is no workspace
+   * root, no path, or the path is not a string — so the event is emitted exactly as it was built.
+   */
+  private reconciliationFor(provenance: EventProvenance, payload: Partial<TranscriptEvent>): Partial<TranscriptEvent> {
+    if (provenance !== 'agentReported') return {};
+    if (this.workspaceRoot === undefined) return {};
+    const reported = payload.path;
+    if (typeof reported !== 'string' || reported.length === 0) return {};
+    const reconciled = reconcileReportedPath(this.workspaceRoot, reported);
+    return {
+      // THE REPORTED VALUE IS RE-ASSERTED, not merely left alone. A later payload field cannot
+      // overwrite it, because this spread comes after the caller's.
+      path: reconciled.reported,
+      workspaceRelativePath: reconciled.workspaceRelative,
+      pathResolution: reconciled.resolution,
+      pathResolutionReason: reconciled.reason,
+    };
   }
 
   /** The finished transcript. Safe to call more than once; the builder keeps collecting afterwards. */
@@ -343,6 +409,8 @@ export function summariseTranscript(events: TranscriptEvent[]): TranscriptSummar
       ?? [...events].reverse().find((event) => event.kind === 'harnessFault')?.terminationReason,
     boundaryRefusalCount: events.filter((event) => event.kind === 'boundaryRefusal').length,
     harnessFaultCount: events.filter((event) => event.kind === 'harnessFault').length,
+    reportedPathsNormalizedFromAbsolute: events.filter((event) => event.pathResolution === 'normalizedFromAbsolute').length,
+    reportedPathsOutsideWorkspace: events.filter((event) => event.pathResolution === 'outsideWorkspace').length,
     executablesInvoked: sortedUnique(commands.filter((event) => typeof event.executable === 'string').map((event) => event.executable!)),
     lastEventAtMilliseconds: events.length === 0 ? 0 : events[events.length - 1].atMilliseconds,
   };

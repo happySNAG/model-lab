@@ -339,11 +339,14 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
   const workspaceCase = options.case;
   const { attemptIndex, now } = context;
   const startedAtMilliseconds = now();
-  const transcript = new TranscriptBuilder(startedAtMilliseconds, now);
 
   fs.mkdirSync(options.sandboxRoot, { recursive: true });
   const attemptRoot = fs.mkdtempSync(path.join(fs.realpathSync(options.sandboxRoot), `cernum-ws-${workspaceCase.id}-${attemptIndex}-`));
   const workRoot = path.join(attemptRoot, 'work');
+  // THE BUILDER IS MADE AFTER THE WORKSPACE IS NAMED, so it can reconcile the paths a driver reports
+  // against the tree this attempt actually measures. The root is handed over rather than looked up,
+  // because the runner is the only thing that knows which disposable directory this is.
+  const transcript = new TranscriptBuilder(startedAtMilliseconds, now, workRoot);
   const baselineRoot = path.join(attemptRoot, 'baseline');
   const scratchRoot = path.join(attemptRoot, 'tmp');
   fs.mkdirSync(scratchRoot, { recursive: true });

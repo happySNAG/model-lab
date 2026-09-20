@@ -36,6 +36,16 @@ import {
   buildSmokeBinding, isSmokeAuthorizationRefusal, projectedMeteredBoundMicroUSD, renderMicroUSD,
   plannedWorkFor, pricingFor, privacyDisclosure, residencyDisclosure, steppingClock, syntheticCandidate,
   terminateAllCLIProcesses,
+  // The workspace path: a case, a binding, a driver, a durable record — every one of them the same
+  // object the engine's own surfaces read, imported from the one public boundary this file uses.
+  ALWAYS_ALLOWED_ENVIRONMENT_NAMES, PROVIDER_IDS, ProviderBinding, ProviderBindingError,
+  WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, WorkspaceBindingError, WorkspaceCampaign,
+  allWorkspaceCases, assertSandboxRootIsSafe, billingLabel, buildWorkspaceBinding, buildWorkspaceDriver,
+  describePreRunIdentity, describeScorecard, describeWorkspaceRequest, discloseWorkspaceDriver, isMetered,
+  manifestSeal, providersWithWorkspaceDriver, readDiscoveryStore as readDiscoveryStoreForWorkspace,
+  resolvePreRunIdentity, sha256Text, validateWorkspaceCatalog, workspaceInstructionText,
+  workspacePromptRecordOf, workspaceRecordPaths, workspaceRecordRoot, workspaceTimeoutFor,
+  CLAUDE_CLI_VERSION_VERIFIED_AGAINST,
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
   IDENTITY_UNVERIFIABLE_CAVEAT, IdentityAdmission, IdentityAdmissionError, NEVER_AFFECTS,
   REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance, authorizeIdentityAdmission,
@@ -148,6 +158,7 @@ function parse(argv: string[]): { command: string; positional: string[]; options
 const OPTION_VALUE_SHAPES: Record<string, { kind: 'positiveInteger' | 'dollars'; hint: string }> = {
   'max-attempts': { kind: 'positiveInteger', hint: 'a whole number of requests, like 1 or 6' },
   repeats: { kind: 'positiveInteger', hint: 'a whole number of passes per case, like 1' },
+  timeout: { kind: 'positiveInteger', hint: 'a whole number of milliseconds, like 600000' },
   ceiling: { kind: 'dollars', hint: 'an amount in dollars, like 5 or 5.00' },
   'authorize-metered': { kind: 'dollars', hint: 'an amount in dollars, like 0.50 or 5.00' },
 };
@@ -1468,6 +1479,342 @@ async function commandRun(positional: string[], options: Options, resuming: bool
   if (status.state === 'aborted') process.exit(3);
 }
 
+
+// MARK: - Workspace
+
+/**
+ * The fixture root a workspace case's `fixturePath` resolves inside.
+ *
+ * Defaults to the `fixtures/` directory shipped beside this build, because a sealed case names a
+ * path relative to a root and a root nobody named is a root nobody can check. `--fixtures` exists
+ * for a checkout whose fixtures live somewhere else; it is never guessed from the working directory,
+ * which is how a benchmark ends up measuring whatever tree it happened to be launched from.
+ */
+function defaultFixtureRoot(): string {
+  return path.resolve(__dirname, '..', '..', 'fixtures');
+}
+
+/**
+ * Where disposable workspaces are made.
+ *
+ * UNDER THE OS TEMP DIRECTORY BY DEFAULT, and never under the campaign root — `assertSandboxRootIsSafe`
+ * refuses a sandbox inside any Git working tree, and the campaign root is frequently inside one on a
+ * development machine. A person who wants it elsewhere says so.
+ */
+function defaultWorkspaceSandbox(): string {
+  return path.join(os.tmpdir(), 'cernum-workspace-sandbox');
+}
+
+/** A record name that is filesystem-safe and says what it is. Stable enough to type, unique enough to keep. */
+function defaultRecordName(caseID: string, at: Date): string {
+  const stamp = at.toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'Z');
+  return `${caseID.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${stamp.toLowerCase()}`;
+}
+
+/**
+ * Run ONE workspace case: hand a model a repository, read the tree it leaves, and seal the result.
+ *
+ * WHY THIS COMMAND EXISTS. The first live workspace execution was driven by a scratchpad TypeScript
+ * file. It proved the architecture and it proved nothing repeatable: the binding it ran was one the
+ * engine's own validator refused, no manifest was frozen, no ledger row was written, and the only
+ * account of what happened was console output. Every one of those is a property of THE ENTRY POINT
+ * rather than of the engine below it, which is why the fix is a supported command rather than a
+ * better script.
+ *
+ * THE SHAPE FOLLOWS THE REST OF THIS CLI. Cernum's commands are flat verbs — `discover`, `smoke`,
+ * `create`, `run` — declared in one table that decides help, option validation and effect class
+ * before dispatch. A nested `workspace run …` would have been the first nested command in the
+ * program and would have needed its own parser, which is exactly the kind of second parser
+ * `command-spec.ts` exists to prevent.
+ *
+ * ONE OBJECT DESCRIBES THE RUN, AND EVERY SURFACE READS IT. The binding is built once, by
+ * `buildWorkspaceBinding`, and validated where it is built; the dry run renders that binding, the
+ * record freezes it, and the request is sent under it. A preview cannot describe a run other than
+ * the one that happens.
+ */
+async function commandWorkspace(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  validateWorkspaceCatalog();
+
+  // 1. THE CASE. Named by the person; there is no default and there will not be one.
+  if (positional.length === 0) {
+    fail('no workspace case named, and this command has no default.\n'
+      + `Name one: ${TERMINAL_COMMAND} workspace <case-id> --provider <id> --model <id>\n`
+      + `Cases: ${allWorkspaceCases().map((entry) => `${entry.id}@${entry.version}`).join(', ')}\n`
+      + `See what it would do without doing it: add --dry-run`, 2);
+  }
+  if (positional.length > 1) {
+    fail(`one workspace case at a time, but ${positional.length} were named: ${positional.join(', ')}.`, 2);
+  }
+  const caseID = positional[0];
+  const workspaceCase = allWorkspaceCases().find((entry) => entry.id === caseID);
+  if (!workspaceCase) {
+    fail(`'${caseID}' is not a workspace case this build knows.\n`
+      + `Cases: ${allWorkspaceCases().map((entry) => `${entry.id}@${entry.version}`).join(', ')}\n`
+      + 'A workspace case is sealed data in this repository; nothing here composes one at run time.', 2);
+  }
+
+  // 2. THE ROUTE. Both halves required, and neither is inferred from the other.
+  if (options.provider === undefined) {
+    fail('--provider is required. A workspace case is run by a provider\'s WORKSPACE DRIVER, and there is no default.\n'
+      + `Providers with a workspace driver in this build: ${providersWithWorkspaceDriver().join(', ')}`, 2);
+  }
+  if (options.model === undefined) {
+    fail('--model is required. Cernum never invents a model identifier, and a workspace run must say which model '
+      + 'was asked to do the work.', 2);
+  }
+  const provider = String(options.provider) as ProviderID;
+  if (!PROVIDER_IDS.includes(provider)) {
+    fail(`'${provider}' is not a provider this engine models. Known: ${PROVIDER_IDS.join(', ')}.`, 2);
+  }
+  const modelID = String(options.model);
+  const effort = String(options.effort ?? 'none');
+  if (!EFFORT_LEVELS.includes(effort as EffortLevel)) {
+    fail(`'${effort}' is not an effort level this engine models. Valid: ${EFFORT_LEVELS.join(', ')}.`, 2);
+  }
+
+  // 3. THE DRIVER, AND THE REFUSAL THAT MATTERS MOST. A provider Cernum can send a PROMPT to is not
+  //    necessarily one it can hand a REPOSITORY. Falling back to prose execution here would answer a
+  //    different question and record the answer under this case's name.
+  const driver = buildWorkspaceDriver({ provider, requestedModelID: modelID, effort: effort as EffortLevel });
+  if (!driver) {
+    fail(`workspace driver unavailable: ${provider} has no workspace driver in this build, so a repository cannot be `
+      + 'handed to it.\n'
+      + `Providers with one: ${providersWithWorkspaceDriver().join(', ') || '(none)'}\n`
+      + 'Cernum does not fall back to prose execution for a workspace case: asking a model to DESCRIBE a fix is not '
+      + 'a measurement of it making one, and recording one under the other would be the most misleading thing this '
+      + 'command could do.', 2);
+  }
+
+  // 4. IDENTITY, RESOLVED FROM THE EVIDENCE THIS MACHINE ALREADY HAS, before anything is sent. The
+  //    discovery store is the one mechanism that can say a route is proven, and this reads it rather
+  //    than starting from `unverifiable` and discovering afterwards that the model named itself.
+  const identity = resolvePreRunIdentity(readDiscoveryStoreForWorkspace(root), provider, modelID);
+
+  const attemptCeiling = options['max-attempts'] === undefined ? undefined : Number(options['max-attempts']);
+  let timeoutMilliseconds: number;
+  try {
+    timeoutMilliseconds = workspaceTimeoutFor(workspaceCase,
+      options.timeout === undefined ? undefined : Number(options.timeout));
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error), 2);
+  }
+
+  // 5. THE BINDING, BUILT ONCE AND VALIDATED WHERE IT IS BUILT. Everything below reads this object.
+  let binding: ProviderBinding;
+  try {
+    binding = buildWorkspaceBinding({
+      candidate: `${provider}:${modelID}${effort === 'none' ? '' : `@${effort}`}`,
+      provider,
+      modelID,
+      effort: effort as EffortLevel,
+      timeoutMilliseconds,
+      identity,
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceBindingError || error instanceof ProviderBindingError) {
+      return fail(`${error.code}: ${error.message}\nNothing was sent and nothing was written.`, 2);
+    }
+    throw error;
+  }
+
+  const fixtureRoot = path.resolve(String(options.fixtures ?? defaultFixtureRoot()));
+  const sandboxRoot = path.resolve(String(options.sandbox ?? defaultWorkspaceSandbox()));
+  const now = new Date();
+  const recordName = String(options.record ?? defaultRecordName(workspaceCase.id, now));
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(recordName)) {
+    fail(`record name '${recordName}' is not filesystem-safe (lowercase letters, digits, hyphens)`, 2);
+  }
+  const recordRoot = path.join(workspaceRecordRoot(root), recordName);
+  const disclosure = discloseWorkspaceDriver(driver, workspaceCase);
+  const dryRun = options['dry-run'] === true;
+
+  // 6. WHAT WOULD BE DONE, ALWAYS PRINTED BEFORE ANYTHING IS DONE. Under --dry-run this is the whole
+  //    command; otherwise it is the disclosure that precedes the run. ONE renderer, so the preview
+  //    and the live disclosure cannot drift.
+  say(dryRun ? 'DRY RUN — nothing below is sent, nothing is frozen, and no allowance is consumed.'
+    : 'About to hand a model a repository and send real requests.');
+  say('');
+  for (const line of describeWorkspaceRequest({ case: workspaceCase, binding, attemptCeiling })) say(`  ${line}`);
+  say(`  instruction     ${workspacePromptRecordOf(workspaceCase).text.split('\n').length} line(s), `
+    + `sha256 ${sha256Text(workspaceInstructionText(workspaceCase)).slice(0, 16)}…`);
+  say('');
+  say(`  fixture         ${workspaceCase.source.fixturePath} under ${fixtureRoot}`);
+  say(`  fixture digest  ${workspaceCase.source.expectedTreeDigest ?? 'UNSEALED — this case accepts whatever is in that directory today'}`);
+  say(`  sealed          ${workspaceCase.source.sealed ? 'yes — a drifted tree refuses the run before anything is sent' : 'NO'}`);
+  say('');
+  for (const line of describePreRunIdentity(identity)) say(`  ${line}`);
+  say(`  binding         ${describeBinding(binding)}`);
+  say(`  validation      PASS — this binding was validated by the same validateBinding every binding passes`);
+  say('');
+  say(`  driver          ${disclosure.driverID} (${disclosure.provider})`);
+  say(`  executable      ${disclosure.executablePath ?? 'NOT FOUND ON PATH'}`);
+  if (disclosure.invocation) {
+    say(`  argv            ${disclosure.provider === 'claudeCLI' ? 'claude' : disclosure.driverID} `
+      + `${disclosure.invocation.map((argument) => (argument === '' ? "''" : argument)).join(' ')}`);
+    say('  stdin           the case instruction (never argv)');
+  } else {
+    say('  argv            this driver does not disclose its invocation');
+  }
+  // THE VERSION THE FLAGS WERE DERIVED FROM, which is the only thing that makes them checkable. A
+  // dry run deliberately does NOT probe the installed binary: this command contacts nothing, and
+  // `cernum discover claudeCLI` is the command whose job is to ask a tool what it is.
+  say(`  flags verified  against ${CLAUDE_CLI_VERSION_VERIFIED_AGAINST}`
+    + ` — this run does not probe the installed binary; \`${TERMINAL_COMMAND} discover ${provider}\` does`);
+  say(`  tools           ${(disclosure.toolNames ?? []).join(', ') || '(none)'}`);
+  say(`  allowed         ${(disclosure.allowedToolRules ?? []).join(', ') || '(none)'}`);
+  say(`  environment     allow-list ${workspaceCase.execution.environmentAllowlist.join(', ') || '(machine names only)'}`
+    + ` + ${ALWAYS_ALLOWED_ENVIRONMENT_NAMES.join(', ')}`);
+  for (const name of workspaceCase.execution.environmentAllowlist) {
+    say(`    ${name.padEnd(12)} ${process.env[name] === undefined ? 'NOT SET on this machine — the child will not receive it'
+      : `disclosed to the child (value present; not printed)`}`);
+  }
+  say('');
+  if (disclosure.capabilityShortfalls.length > 0) {
+    say('  CAPABILITY SHORTFALL — this case cannot be run through this driver:');
+    for (const shortfall of disclosure.capabilityShortfalls) for (const line of wrap(shortfall, 70)) say(`    ! ${line}`);
+    say('');
+  }
+  for (const note of disclosure.unexpressed ?? []) {
+    for (const line of wrap(`UNEXPRESSED — nothing would be sent: ${note}`, 70)) say(`  ! ${line}`);
+  }
+  for (const line of disclosure.activeIsolation ?? []) for (const wrapped of wrap(line, 70)) say(`  isolation     ${wrapped}`);
+  say('');
+  for (const note of disclosure.notEnforceable ?? []) {
+    for (const line of wrap(note, 70)) say(`  NOT ENFORCED  ${line}`);
+  }
+  say('');
+  say('  verification    run by THIS engine, with no provider credentials at all:');
+  for (const command of workspaceCase.verification.commands) {
+    say(`    ${command.id.padEnd(16)} ${command.executable} ${command.args.join(' ')}`
+      + `  [${command.kind}${command.required ? ', required' : ', reported only'}]`);
+  }
+  for (const command of workspaceCase.verification.hiddenCommands) {
+    say(`    ${command.id.padEnd(16)} (hidden from the model) ${command.executable} ${command.args.join(' ')}`);
+  }
+  for (const invariant of workspaceCase.verification.invariants) {
+    say(`    invariant        ${invariant.path}`
+      + `${invariant.mustNotContain.length > 0 ? ` must not contain ${invariant.mustNotContain.join(', ')}` : ''}`);
+  }
+  say(`    baseline        ${workspaceCase.verification.establishBaseline
+    ? 'established before the agent sees the tree, so "regression" is a measurement' : 'NOT established'}`);
+  say('');
+  say(`  billing         ${billingLabel(binding)}`);
+  say(`  spend ceiling   ${isMetered(binding) ? 'REQUIRED' : 'not applicable — no card is billed by this execution class'}`);
+  say(`  sandbox         ${sandboxRoot}`);
+  say(`  record          ${recordRoot}`);
+  say(`    manifest      ${workspaceRecordPaths(recordRoot).manifest}`);
+  say(`    ledger        ${workspaceRecordPaths(recordRoot).ledger}`);
+  say(`    evidence      ${workspaceRecordPaths(recordRoot).evidence}`);
+  if (options.evidence !== undefined) say(`  evidence file   ${path.resolve(String(options.evidence))}`);
+  say('');
+  for (const line of wrap(WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, 74)) say(`  ${line}`);
+  say('');
+
+  // The sandbox is checked in BOTH modes, because "this would have been refused" is exactly what a
+  // preview is for. It makes no directory and reaches nothing.
+  try {
+    assertSandboxRootIsSafe(sandboxRoot, fixtureRoot);
+  } catch (error) {
+    fail(`${error instanceof Error ? error.message : String(error)}\nNothing was run.`, 2);
+  }
+
+  if (dryRun) {
+    say('No request was sent, no manifest was frozen and no directory was made.');
+    say(`Re-run without --dry-run (and with --yes) to run it: ${TERMINAL_COMMAND} workspace ${caseID} `
+      + `--provider ${provider} --model ${modelID}${attemptCeiling === undefined ? '' : ` --max-attempts ${attemptCeiling}`} --yes`);
+    return;
+  }
+
+  if (disclosure.capabilityShortfalls.length > 0) {
+    fail('this driver cannot do what this case requires, so nothing was sent. The shortfalls are listed above.', 6);
+  }
+  if (options.yes !== true) {
+    fail('Nothing was run. Re-run with --yes once the run described above is what you intend to spend allowance on.', 3);
+  }
+
+  // 7. THE DURABLE RECORD, FROZEN BEFORE THE FIRST REQUEST. A record that appeared only on success
+  //    would be a record that cannot describe a failure, and a failure is a result.
+  const campaign = WorkspaceCampaign.create({
+    root: recordRoot,
+    label: `${workspaceCase.id}@${workspaceCase.version} · ${provider}:${modelID}`,
+    case: workspaceCase,
+    binding,
+    identity,
+    driver,
+    hardware: {
+      platform: process.platform, architecture: process.arch, model: os.hostname(),
+      cpuCoreCount: os.cpus().length, physicalMemoryBytes: os.totalmem(), osVersion: `${os.type()} ${os.release()}`,
+    },
+    runtimeVersion: `${PRODUCT.name} ${PRODUCT.version}`,
+    fixtureRoot,
+    sandboxRoot,
+    attemptCeiling,
+    preserveFailedWorkspaces: options['preserve-failed'] === true,
+    onAttempt: (record) => {
+      say(`  attempt ${record.attemptIndex + 1}: ${record.terminationReason} · `
+        + `${record.diff.changes.length} file(s) changed · ${record.elapsedMilliseconds} ms`);
+    },
+  });
+  say(`Record frozen at ${campaign.root}`);
+  // `manifestSeal` already opens with `manifest <id>`, so the id is not repeated in front of it.
+  say(`  seal ${manifestSeal(campaign.manifest)}`);
+  say('');
+
+  const { outcome, record } = await campaign.run();
+
+  say('');
+  say(describeScorecard(outcome.scorecard));
+  say('');
+  say(`  status          ${record.status}`);
+  say(`  composite       ${record.compositeMilli === undefined ? 'unavailable' : `${record.compositeMilli} / 1000`}`);
+  say(`  attempts        ${record.attemptsUsed} used, ${record.retriesRequired} retr(ies)`
+    + `${record.attemptCeilingApplied === undefined ? '' : ` (operator cap ${record.attemptCeilingApplied})`}`);
+  say(`  changed         ${record.changedFileCount} file(s), ${record.changedLineCount} line(s)`);
+  say(`  scope           ${record.scopeClean === true ? 'clean' : 'VIOLATED'}`);
+  say(`  regressions     ${record.regressionCount}`);
+  say(`  patch           ${record.patchDigest} (${record.patchByteCount} bytes)`);
+  say(`  baseline tree   ${record.workspaceBaselineTreeDigest}`);
+  say(`  final tree      ${record.workspaceFinalTreeDigest}`);
+  say(`  transcript      ${record.transcriptDigest}`);
+  say('');
+  // THE TWO IDENTITY FACTS, PRINTED AS TWO FACTS, in the order they became true.
+  say(`  identity BEFORE ${record.bindingIdentityState} (resolved from ${record.bindingIdentityResolvedFrom}`
+    + `${record.bindingIdentityProvenAt === undefined ? '' : `, proven ${record.bindingIdentityProvenAt}`})`);
+  say(`  identity AFTER  ${record.executionIdentityVerdict ?? 'not established'}`
+    + `${record.reportedModelID ? ` — the tool named ${record.reportedModelID}` : ' — the tool named no model'}`);
+  say('');
+  say(`  tokens          in ${record.inputTokens ?? 'not reported'} · out ${record.visibleOutputTokens ?? 'not reported'}`
+    + ` · reasoning ${record.reasoningTokens ?? 'not reported'} (${record.usageProvenance})`);
+  say(`  marginal charge ${record.costMicroUSD === undefined ? 'UNAVAILABLE — not zero'
+    : `$${(record.costMicroUSD / 1_000_000).toFixed(6)}`} (${record.costProvenance})`);
+  say(`  plan allowance  ${record.subscriptionIncludedUsageMicroUSD === undefined ? 'not reported — which is not zero'
+    : `$${(record.subscriptionIncludedUsageMicroUSD / 1_000_000).toFixed(6)} at list value — a zero charge is not a zero cost`}`);
+  say(`  wall clock      ${record.wallClockMilliseconds} ms · wasted ${record.wastedMilliseconds} ms / ${record.wastedTokens} tokens`);
+  say('');
+  say(`Sealed: ${campaign.paths.record}`);
+  say(`  ledger row    ${path.join(campaign.paths.ledger, 'results.jsonl')}`);
+  say(`  transcript    ${record.transcriptEvidencePath ?? '(none)'}`);
+
+  if (options.evidence !== undefined) {
+    const evidencePath = path.resolve(String(options.evidence));
+    fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
+    fs.writeFileSync(evidencePath, JSON.stringify({
+      writtenAt: new Date().toISOString(),
+      cernumVersion: PRODUCT.version,
+      note: 'A workspace run, in full. The durable record beside the ledger is the authority; this file is the same '
+        + 'evidence in one place for a reader who does not have the record directory.',
+      record,
+      binding,
+      driver: disclosure,
+      run: outcome.run,
+      scorecard: outcome.scorecard,
+      frontier: outcome.frontier,
+    }, null, 2) + '\n', 'utf8');
+    say(`Evidence written to ${evidencePath}`);
+  }
+}
+
 async function commandStatus(positional: string[], options: Options): Promise<void> {
   const root = String(options.root ?? defaultCampaignRoot());
   const [name] = positional;
@@ -2158,6 +2505,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'create': return commandCreate(positional, options);
     case 'run': return commandRun(positional, options, false, invocationLine);
     case 'resume': return commandRun(positional, options, true, invocationLine);
+    case 'workspace': return commandWorkspace(positional, options);
     case 'status': return commandStatus(positional, options);
     case 'verify': return commandVerify(positional, options);
     case 'finalize': return commandFinalize(positional, options);

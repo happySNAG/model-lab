@@ -136,6 +136,60 @@ export const REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE = 'requestAcceptedIdentityUn
  */
 export type BindingIdentityState = 'verified' | 'unverifiable' | typeof REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
 
+/**
+ * WHAT KIND OF REQUEST A BINDING DESCRIBES, AND THEREFORE WHAT ITS BUDGETS MEAN.
+ *
+ * Every binding before this pass described one shape of request: a prompt goes out, a completion
+ * comes back, and `maxInputTokens`/`maxOutputTokens` are the ceiling the request itself carries.
+ * `validateBinding` refused a zero on either, and it was right to: a prose request whose output
+ * ceiling is zero asks a provider for nothing.
+ *
+ * A WORKSPACE TASK IS NOT THAT SHAPE. What goes out is an instruction and a directory; what comes
+ * back is a tree. `ClaudeWorkspaceDriver` documents the consequence in
+ * `CLAUDE_OUTPUT_IS_NOT_BOUNDED`: this CLI has no output-token budget flag that applies to a
+ * subscription session, so there is nowhere in the invocation to PUT a ceiling. A workspace binding
+ * carrying `maxOutputTokens: 4096` would be a binding whose frozen number never reached the tool —
+ * the same defect `unexpressed` refuses a run over on the driver side.
+ *
+ * So the contract is declared, and the budget rule follows from it rather than from a number. The
+ * two facts a reader must never confuse — "zero because nobody configured a budget" and "zero
+ * because the contract cannot carry one" — are now different FIELDS rather than the same integer,
+ * and each is refused in the other's place.
+ *
+ * ABSENT MEANS `proseCompletion`. `canonicalJSON` drops an undefined key entirely, so every
+ * envelope already frozen to disk hashes to exactly the bytes it always did, and every existing
+ * binding is validated under exactly the rule it was written against.
+ */
+export type ExecutionContract =
+  /** A prompt out, a completion back. The budgets are the request's own ceiling. */
+  | 'proseCompletion'
+  /** An instruction and a directory out, a tree back. See `workspace-case.ts`. */
+  | 'workspaceTask';
+
+/**
+ * How the provider-side token ceiling is expressed — stated, never inferred from a zero.
+ *
+ * `notExpressibleByContract` is an ASSERTION, not a permission. It says the execution contract has
+ * no field for a ceiling, so the binding names none; it does not say the run is unmeasured. Tokens,
+ * cost and plan allowance are still read off the provider's own reply afterwards and recorded on
+ * the same `FrontierAttemptRecord` a prose attempt produces, and a metered binding is still checked
+ * against the spend ceiling before the attempt — `worstCaseAttemptMicroUSD` reads the budgets, so a
+ * metered workspace binding is refused by `unboundedMeteredWorkspaceBinding` below rather than
+ * allowed through a ceiling it would compute as zero.
+ */
+export type TokenCeilingExpression =
+  /** The binding names a positive input and output budget and the request carries them. */
+  | 'boundedByBinding'
+  /** The contract has nowhere to put one. Only ever legal on a `workspaceTask` binding. */
+  | 'notExpressibleByContract';
+
+export const WORKSPACE_TOKEN_CEILING_IS_UNEXPRESSED =
+  'this binding describes a workspace task, whose execution contract has no field for a provider-side token ceiling: '
+  + 'the instruction and a directory go out and a tree comes back, and the installed CLI documents no output budget '
+  + 'that applies to a subscription session. The binding therefore names NO ceiling rather than naming one that would '
+  + 'never reach the tool. What the request actually consumed is measured after the fact, from the provider\'s own '
+  + 'usage block, and recorded on the same attempt record a prose attempt produces.';
+
 /** Published prices, as they stood at a moment somebody recorded. Never inferred, never defaulted. */
 export interface PricingSnapshot {
   /**
@@ -204,6 +258,17 @@ export interface ProviderBinding {
   effort: EffortLevel;
   thinkingMode: ThinkingMode;
   sampling: SamplingSettings;
+  /**
+   * What shape of request this binding describes. Absent means `proseCompletion`, which is what
+   * every binding frozen before this pass is, and what every prose binding stays.
+   */
+  executionContract?: ExecutionContract;
+  /**
+   * Whether the two budgets below are a ceiling or an admitted absence. Absent means
+   * `boundedByBinding`, so a binding that says nothing is held to the rule it always was.
+   */
+  tokenCeiling?: TokenCeilingExpression;
+  /** The request's ceiling when `tokenCeiling` is `boundedByBinding`; exactly 0 when it is not. */
   maxInputTokens: number;
   maxOutputTokens: number;
   timeoutMilliseconds: number;
@@ -342,8 +407,12 @@ export function describeBinding(binding: ProviderBinding): string {
   const thinking = binding.thinkingMode === 'enabled' ? 'thinking on'
     : binding.thinkingMode === 'disabled' ? 'thinking off'
       : 'thinking left to the provider';
+  // Appended only where it is true, so every prose line is byte-identical to what it always was.
+  const contract = isWorkspaceBinding(binding)
+    ? ' · workspace task · no provider token ceiling (the contract carries none; usage is measured after the fact)'
+    : '';
   return `${PROVIDER_LABELS[binding.provider]} · ${EXECUTION_CLASS_LABELS[binding.executionClass]} · `
-    + `${binding.requestedModelID} · ${identity} · ${effort} · ${thinking} · ${billingLabel(binding)}`;
+    + `${binding.requestedModelID} · ${identity} · ${effort} · ${thinking} · ${billingLabel(binding)}${contract}`;
 }
 
 /**
@@ -368,6 +437,26 @@ export interface BindingValidationOptions {
    * state is written down beside the request it authorises.
    */
   allowUnpricedMetered?: boolean;
+}
+
+/**
+ * The contract a binding describes. ABSENT MEANS PROSE, so nothing frozen before this pass moves.
+ *
+ * A function rather than a default on the struct, because a default written into `makeBinding` would
+ * be a default the bindings already on disk never got, and this has to answer the same for both.
+ */
+export function executionContractOf(binding: Pick<ProviderBinding, 'executionContract'>): ExecutionContract {
+  return binding.executionContract ?? 'proseCompletion';
+}
+
+/** How this binding expresses its token ceiling. Absent means it names one, as every prose binding does. */
+export function tokenCeilingOf(binding: Pick<ProviderBinding, 'tokenCeiling'>): TokenCeilingExpression {
+  return binding.tokenCeiling ?? 'boundedByBinding';
+}
+
+/** True when this binding describes a repository task rather than a prompt. */
+export function isWorkspaceBinding(binding: Pick<ProviderBinding, 'executionContract'>): boolean {
+  return executionContractOf(binding) === 'workspaceTask';
 }
 
 export function validateBinding(binding: ProviderBinding, options: BindingValidationOptions = {}): void {
@@ -418,8 +507,44 @@ export function validateBinding(binding: ProviderBinding, options: BindingValida
       `${binding.candidate}: ${binding.billingBasis} execution is not billed per token, so a per-token price on it `
       + 'would be a number that looks like a cost and is not one');
   }
-  if (binding.maxOutputTokens <= 0 || binding.maxInputTokens <= 0) {
-    throw new ProviderBindingError('emptyBudget', `${binding.candidate}: input and output budgets must both be positive`);
+  // THE BUDGET RULE, DECIDED BY THE EXECUTION CONTRACT RATHER THAN BY THE NUMBER.
+  //
+  // Nothing about the prose rule is relaxed: a binding that does not declare otherwise is
+  // `boundedByBinding`, and a zero on either side is still `emptyBudget`. What changes is that a
+  // binding may now SAY its contract has no ceiling to carry — and saying so costs it the right to
+  // name one, so the two readings of a zero can never be mistaken for each other.
+  const contract = executionContractOf(binding);
+  const ceiling = tokenCeilingOf(binding);
+  if (ceiling === 'boundedByBinding') {
+    if (binding.maxOutputTokens <= 0 || binding.maxInputTokens <= 0) {
+      throw new ProviderBindingError('emptyBudget', `${binding.candidate}: input and output budgets must both be positive`);
+    }
+  } else {
+    if (contract !== 'workspaceTask') {
+      throw new ProviderBindingError('ceilingNotExpressibleOutsideWorkspace',
+        `${binding.candidate}: only a workspaceTask binding may declare that its contract cannot carry a token `
+        + 'ceiling. A prose request has a place to put one, so a prose binding that named no ceiling would be a '
+        + 'binding nobody had configured rather than one nobody could configure.');
+    }
+    if (binding.maxInputTokens !== 0 || binding.maxOutputTokens !== 0) {
+      throw new ProviderBindingError('unexpressedCeilingWithBudget',
+        `${binding.candidate}: this binding declares that its execution contract cannot carry a token ceiling AND `
+        + `names one (${binding.maxInputTokens} in, ${binding.maxOutputTokens} out). Those cannot both be true. A `
+        + 'number frozen here would never reach the tool, and a manifest that recorded it would describe a limit '
+        + 'that was never in force.');
+    }
+    if (isMetered(binding)) {
+      // FAIL CLOSED, and this is the one refusal that keeps the exception from becoming a hole in
+      // the spending ceiling. `worstCaseAttemptMicroUSD` bounds a metered attempt from the frozen
+      // budgets; with no budgets it would bound it at zero, and a ceiling that computes every
+      // attempt as free is not a ceiling. A metered workspace run needs a contract that can carry a
+      // bound before it can be authorised, and there is not one yet.
+      throw new ProviderBindingError('unboundedMeteredWorkspaceBinding',
+        `${binding.candidate}: this binding is billed per token and declares no token ceiling, so the worst case for `
+        + 'one attempt cannot be computed and the spending ceiling would be enforced against zero. Cernum refuses a '
+        + 'paid run it cannot bound. A subscription workspace run is unaffected: its marginal API charge is zero and '
+        + 'the allowance it consumes is recorded rather than bounded.');
+    }
   }
   if (binding.timeoutMilliseconds <= 0) {
     throw new ProviderBindingError('noTimeout', `${binding.candidate}: a binding with no timeout can hang a campaign indefinitely`);

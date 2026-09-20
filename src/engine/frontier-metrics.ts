@@ -297,6 +297,24 @@ export interface FrontierAttemptRecord extends Record<string, CanonicalValue | u
    */
   bindingIdentityState?: string;
   /**
+   * WHAT THIS EXECUTION ITSELF ESTABLISHED — `verified`, `substituted` or `unverifiable`.
+   *
+   * THE POST-RUN HALF OF A PAIR, and the field above is the PRE-RUN half. The first workspace
+   * result recorded `bindingIdentityState: unverifiable` beside `reportedModelID: claude-haiku-4-5`,
+   * and both were correct: nothing had proven the route before the request, and the tool named the
+   * model afterwards. A reader with only those two fields has to know which one is a statement about
+   * the past to read them at all, and the obvious misreading — that the run was somehow unverified
+   * despite naming its model — is the wrong one.
+   *
+   * So the two facts are two fields, each labelled with WHEN it was true. This one is produced by
+   * `verifyProviderIdentity`, from the same ladder the prose path uses, and it NEVER writes back
+   * over `bindingIdentityState`: what was known before the request stays what was known before the
+   * request, whatever came back. Absent when nothing was executed.
+   */
+  executionIdentityVerdict?: string;
+  /** Why, in words, from the same ladder. Present exactly when the verdict is. */
+  executionIdentityDetail?: string;
+  /**
    * EVERY input token the provider processed, cached and fresh.
    *
    * Pass 6 recorded the FRESH REMAINDER here and called it the input count. On the Claude envelope
