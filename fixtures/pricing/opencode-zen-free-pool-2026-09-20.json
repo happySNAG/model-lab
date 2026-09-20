@@ -1,0 +1,140 @@
+{
+  "opencodeCLI:opencode/big-pickle": {
+    "source": "PUBLISHED LIST PRICE (not an observed charge) · OpenCode Zen model catalogue, read via `opencode models opencode` from ~/.cache/opencode/models.json (sha256 32dbd7b873101532…, 4710099 bytes) · opencode-ai@1.18.31 · unit USD per million tokens · https://opencode.ai/docs/zen",
+    "capturedAt": "2026-09-20T20:31:54Z",
+    "inputMicroUSDPerMillionTokens": 0,
+    "outputMicroUSDPerMillionTokens": 0,
+    "pricingProvenance": "publishedCataloguePrice",
+    "publishedUSDPerMillionTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": null
+    },
+    "unit": "USD per million tokens",
+    "currency": "USD",
+    "freeMarking": "zeroListPrice",
+    "cacheReadTierPublished": true,
+    "cacheWriteTierPublished": true,
+    "contextTierPublished": false,
+    "cacheTierTreatment": "OpenCode Zen publishes a separate cache-read rate for all six models and a cache-write rate for opencode/big-pickle only. Cernum's PricingSnapshot has no cache tier, so no cache rate is used as a rate and none is invented for the five models that publish no cache-write figure. Instead the treatment already established in frontier-host.ts applies unchanged: every input-side token — fresh, cache-write and cache-read alike — is priced at the single published input rate. That can overstate a charge and can never understate one, which is the only direction in which an imprecise pricing model is safe for a spending ceiling.",
+    "notAMeasuredCharge": "This is OpenCode Zen's PUBLISHED LIST PRICE, read from the provider's own model catalogue on 2026-09-20T20:31:54Z. It is a statement by the provider about what it will charge. It is NOT a charge Cernum observed: no OpenCode request has ever returned a per-request charge to this interface, and the cost provenance of an OpenCode attempt remains UNAVAILABLE — for a zero-list-price model exactly as much as for a $15/Mtok one. A published price may be stale, may be wrong, may not apply to this credential, and says nothing about whether this credential may call the model at all: every row in the cohort is still DISCOVERED and UNPROVEN.",
+    "reconciliationRequired": "POST-RUN RECONCILIATION IS STILL REQUIRED. These are published catalogue prices, not observed charges, so a completed run at an estimated $0.00 is not evidence that $0.00 was billed. After any scored OpenCode campaign, the provider account's own usage and billing record must be read and compared against what Cernum estimated, and the difference recorded. Until that comparison exists, the cost of an OpenCode campaign is ESTIMATED FROM A PRICE LIST and nothing more. OpenCode Zen is a metered API. Cernum holds the provider's PUBLISHED list prices for the free development pool -- captured from its own catalogue, with a source and a timestamp, and usable for an ESTIMATE -- and it holds no OBSERVED charge for any OpenCode attempt: OpenCode returns no per-request charge this interface may read, so the cost PROVENANCE of an OpenCode attempt is UNAVAILABLE -- not zero, not free, and not measured. A published price is what the provider says it will charge; a cost provenance is what Cernum watched it charge. Token counts are recorded where OpenCode reports them."
+  },
+  "opencodeCLI:opencode/mimo-v2.5-free": {
+    "source": "PUBLISHED LIST PRICE (not an observed charge) · OpenCode Zen model catalogue, read via `opencode models opencode` from ~/.cache/opencode/models.json (sha256 32dbd7b873101532…, 4710099 bytes) · opencode-ai@1.18.31 · unit USD per million tokens · https://opencode.ai/docs/zen",
+    "capturedAt": "2026-09-20T20:31:54Z",
+    "inputMicroUSDPerMillionTokens": 0,
+    "outputMicroUSDPerMillionTokens": 0,
+    "pricingProvenance": "publishedCataloguePrice",
+    "publishedUSDPerMillionTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": null,
+      "reasoning": null
+    },
+    "unit": "USD per million tokens",
+    "currency": "USD",
+    "freeMarking": "zeroListPrice",
+    "cacheReadTierPublished": true,
+    "cacheWriteTierPublished": false,
+    "contextTierPublished": false,
+    "cacheTierTreatment": "OpenCode Zen publishes a separate cache-read rate for all six models and a cache-write rate for opencode/big-pickle only. Cernum's PricingSnapshot has no cache tier, so no cache rate is used as a rate and none is invented for the five models that publish no cache-write figure. Instead the treatment already established in frontier-host.ts applies unchanged: every input-side token — fresh, cache-write and cache-read alike — is priced at the single published input rate. That can overstate a charge and can never understate one, which is the only direction in which an imprecise pricing model is safe for a spending ceiling.",
+    "notAMeasuredCharge": "This is OpenCode Zen's PUBLISHED LIST PRICE, read from the provider's own model catalogue on 2026-09-20T20:31:54Z. It is a statement by the provider about what it will charge. It is NOT a charge Cernum observed: no OpenCode request has ever returned a per-request charge to this interface, and the cost provenance of an OpenCode attempt remains UNAVAILABLE — for a zero-list-price model exactly as much as for a $15/Mtok one. A published price may be stale, may be wrong, may not apply to this credential, and says nothing about whether this credential may call the model at all: every row in the cohort is still DISCOVERED and UNPROVEN.",
+    "reconciliationRequired": "POST-RUN RECONCILIATION IS STILL REQUIRED. These are published catalogue prices, not observed charges, so a completed run at an estimated $0.00 is not evidence that $0.00 was billed. After any scored OpenCode campaign, the provider account's own usage and billing record must be read and compared against what Cernum estimated, and the difference recorded. Until that comparison exists, the cost of an OpenCode campaign is ESTIMATED FROM A PRICE LIST and nothing more. OpenCode Zen is a metered API. Cernum holds the provider's PUBLISHED list prices for the free development pool -- captured from its own catalogue, with a source and a timestamp, and usable for an ESTIMATE -- and it holds no OBSERVED charge for any OpenCode attempt: OpenCode returns no per-request charge this interface may read, so the cost PROVENANCE of an OpenCode attempt is UNAVAILABLE -- not zero, not free, and not measured. A published price is what the provider says it will charge; a cost provenance is what Cernum watched it charge. Token counts are recorded where OpenCode reports them."
+  },
+  "opencodeCLI:opencode/muse-spark-1.2-contributor-free": {
+    "source": "PUBLISHED LIST PRICE (not an observed charge) · OpenCode Zen model catalogue, read via `opencode models opencode` from ~/.cache/opencode/models.json (sha256 32dbd7b873101532…, 4710099 bytes) · opencode-ai@1.18.31 · unit USD per million tokens · https://opencode.ai/docs/zen",
+    "capturedAt": "2026-09-20T20:31:54Z",
+    "inputMicroUSDPerMillionTokens": 0,
+    "outputMicroUSDPerMillionTokens": 0,
+    "pricingProvenance": "publishedCataloguePrice",
+    "publishedUSDPerMillionTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": null,
+      "reasoning": null
+    },
+    "unit": "USD per million tokens",
+    "currency": "USD",
+    "freeMarking": "zeroListPrice",
+    "cacheReadTierPublished": true,
+    "cacheWriteTierPublished": false,
+    "contextTierPublished": false,
+    "cacheTierTreatment": "OpenCode Zen publishes a separate cache-read rate for all six models and a cache-write rate for opencode/big-pickle only. Cernum's PricingSnapshot has no cache tier, so no cache rate is used as a rate and none is invented for the five models that publish no cache-write figure. Instead the treatment already established in frontier-host.ts applies unchanged: every input-side token — fresh, cache-write and cache-read alike — is priced at the single published input rate. That can overstate a charge and can never understate one, which is the only direction in which an imprecise pricing model is safe for a spending ceiling.",
+    "notAMeasuredCharge": "This is OpenCode Zen's PUBLISHED LIST PRICE, read from the provider's own model catalogue on 2026-09-20T20:31:54Z. It is a statement by the provider about what it will charge. It is NOT a charge Cernum observed: no OpenCode request has ever returned a per-request charge to this interface, and the cost provenance of an OpenCode attempt remains UNAVAILABLE — for a zero-list-price model exactly as much as for a $15/Mtok one. A published price may be stale, may be wrong, may not apply to this credential, and says nothing about whether this credential may call the model at all: every row in the cohort is still DISCOVERED and UNPROVEN.",
+    "reconciliationRequired": "POST-RUN RECONCILIATION IS STILL REQUIRED. These are published catalogue prices, not observed charges, so a completed run at an estimated $0.00 is not evidence that $0.00 was billed. After any scored OpenCode campaign, the provider account's own usage and billing record must be read and compared against what Cernum estimated, and the difference recorded. Until that comparison exists, the cost of an OpenCode campaign is ESTIMATED FROM A PRICE LIST and nothing more. OpenCode Zen is a metered API. Cernum holds the provider's PUBLISHED list prices for the free development pool -- captured from its own catalogue, with a source and a timestamp, and usable for an ESTIMATE -- and it holds no OBSERVED charge for any OpenCode attempt: OpenCode returns no per-request charge this interface may read, so the cost PROVENANCE of an OpenCode attempt is UNAVAILABLE -- not zero, not free, and not measured. A published price is what the provider says it will charge; a cost provenance is what Cernum watched it charge. Token counts are recorded where OpenCode reports them."
+  },
+  "opencodeCLI:opencode/muse-spark-1.3-contributor-free": {
+    "source": "PUBLISHED LIST PRICE (not an observed charge) · OpenCode Zen model catalogue, read via `opencode models opencode` from ~/.cache/opencode/models.json (sha256 32dbd7b873101532…, 4710099 bytes) · opencode-ai@1.18.31 · unit USD per million tokens · https://opencode.ai/docs/zen",
+    "capturedAt": "2026-09-20T20:31:54Z",
+    "inputMicroUSDPerMillionTokens": 0,
+    "outputMicroUSDPerMillionTokens": 0,
+    "pricingProvenance": "publishedCataloguePrice",
+    "publishedUSDPerMillionTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": null,
+      "reasoning": null
+    },
+    "unit": "USD per million tokens",
+    "currency": "USD",
+    "freeMarking": "zeroListPrice",
+    "cacheReadTierPublished": true,
+    "cacheWriteTierPublished": false,
+    "contextTierPublished": false,
+    "cacheTierTreatment": "OpenCode Zen publishes a separate cache-read rate for all six models and a cache-write rate for opencode/big-pickle only. Cernum's PricingSnapshot has no cache tier, so no cache rate is used as a rate and none is invented for the five models that publish no cache-write figure. Instead the treatment already established in frontier-host.ts applies unchanged: every input-side token — fresh, cache-write and cache-read alike — is priced at the single published input rate. That can overstate a charge and can never understate one, which is the only direction in which an imprecise pricing model is safe for a spending ceiling.",
+    "notAMeasuredCharge": "This is OpenCode Zen's PUBLISHED LIST PRICE, read from the provider's own model catalogue on 2026-09-20T20:31:54Z. It is a statement by the provider about what it will charge. It is NOT a charge Cernum observed: no OpenCode request has ever returned a per-request charge to this interface, and the cost provenance of an OpenCode attempt remains UNAVAILABLE — for a zero-list-price model exactly as much as for a $15/Mtok one. A published price may be stale, may be wrong, may not apply to this credential, and says nothing about whether this credential may call the model at all: every row in the cohort is still DISCOVERED and UNPROVEN.",
+    "reconciliationRequired": "POST-RUN RECONCILIATION IS STILL REQUIRED. These are published catalogue prices, not observed charges, so a completed run at an estimated $0.00 is not evidence that $0.00 was billed. After any scored OpenCode campaign, the provider account's own usage and billing record must be read and compared against what Cernum estimated, and the difference recorded. Until that comparison exists, the cost of an OpenCode campaign is ESTIMATED FROM A PRICE LIST and nothing more. OpenCode Zen is a metered API. Cernum holds the provider's PUBLISHED list prices for the free development pool -- captured from its own catalogue, with a source and a timestamp, and usable for an ESTIMATE -- and it holds no OBSERVED charge for any OpenCode attempt: OpenCode returns no per-request charge this interface may read, so the cost PROVENANCE of an OpenCode attempt is UNAVAILABLE -- not zero, not free, and not measured. A published price is what the provider says it will charge; a cost provenance is what Cernum watched it charge. Token counts are recorded where OpenCode reports them."
+  },
+  "opencodeCLI:opencode/nemotron-3-ultra-free": {
+    "source": "PUBLISHED LIST PRICE (not an observed charge) · OpenCode Zen model catalogue, read via `opencode models opencode` from ~/.cache/opencode/models.json (sha256 32dbd7b873101532…, 4710099 bytes) · opencode-ai@1.18.31 · unit USD per million tokens · https://opencode.ai/docs/zen",
+    "capturedAt": "2026-09-20T20:31:54Z",
+    "inputMicroUSDPerMillionTokens": 0,
+    "outputMicroUSDPerMillionTokens": 0,
+    "pricingProvenance": "publishedCataloguePrice",
+    "publishedUSDPerMillionTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": null,
+      "reasoning": null
+    },
+    "unit": "USD per million tokens",
+    "currency": "USD",
+    "freeMarking": "zeroListPrice",
+    "cacheReadTierPublished": true,
+    "cacheWriteTierPublished": false,
+    "contextTierPublished": false,
+    "cacheTierTreatment": "OpenCode Zen publishes a separate cache-read rate for all six models and a cache-write rate for opencode/big-pickle only. Cernum's PricingSnapshot has no cache tier, so no cache rate is used as a rate and none is invented for the five models that publish no cache-write figure. Instead the treatment already established in frontier-host.ts applies unchanged: every input-side token — fresh, cache-write and cache-read alike — is priced at the single published input rate. That can overstate a charge and can never understate one, which is the only direction in which an imprecise pricing model is safe for a spending ceiling.",
+    "notAMeasuredCharge": "This is OpenCode Zen's PUBLISHED LIST PRICE, read from the provider's own model catalogue on 2026-09-20T20:31:54Z. It is a statement by the provider about what it will charge. It is NOT a charge Cernum observed: no OpenCode request has ever returned a per-request charge to this interface, and the cost provenance of an OpenCode attempt remains UNAVAILABLE — for a zero-list-price model exactly as much as for a $15/Mtok one. A published price may be stale, may be wrong, may not apply to this credential, and says nothing about whether this credential may call the model at all: every row in the cohort is still DISCOVERED and UNPROVEN.",
+    "reconciliationRequired": "POST-RUN RECONCILIATION IS STILL REQUIRED. These are published catalogue prices, not observed charges, so a completed run at an estimated $0.00 is not evidence that $0.00 was billed. After any scored OpenCode campaign, the provider account's own usage and billing record must be read and compared against what Cernum estimated, and the difference recorded. Until that comparison exists, the cost of an OpenCode campaign is ESTIMATED FROM A PRICE LIST and nothing more. OpenCode Zen is a metered API. Cernum holds the provider's PUBLISHED list prices for the free development pool -- captured from its own catalogue, with a source and a timestamp, and usable for an ESTIMATE -- and it holds no OBSERVED charge for any OpenCode attempt: OpenCode returns no per-request charge this interface may read, so the cost PROVENANCE of an OpenCode attempt is UNAVAILABLE -- not zero, not free, and not measured. A published price is what the provider says it will charge; a cost provenance is what Cernum watched it charge. Token counts are recorded where OpenCode reports them."
+  },
+  "opencodeCLI:opencode/nemotron-3.5-lightning-free": {
+    "source": "PUBLISHED LIST PRICE (not an observed charge) · OpenCode Zen model catalogue, read via `opencode models opencode` from ~/.cache/opencode/models.json (sha256 32dbd7b873101532…, 4710099 bytes) · opencode-ai@1.18.31 · unit USD per million tokens · https://opencode.ai/docs/zen",
+    "capturedAt": "2026-09-20T20:31:54Z",
+    "inputMicroUSDPerMillionTokens": 0,
+    "outputMicroUSDPerMillionTokens": 0,
+    "pricingProvenance": "publishedCataloguePrice",
+    "publishedUSDPerMillionTokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": null,
+      "reasoning": null
+    },
+    "unit": "USD per million tokens",
+    "currency": "USD",
+    "freeMarking": "zeroListPrice",
+    "cacheReadTierPublished": true,
+    "cacheWriteTierPublished": false,
+    "contextTierPublished": false,
+    "cacheTierTreatment": "OpenCode Zen publishes a separate cache-read rate for all six models and a cache-write rate for opencode/big-pickle only. Cernum's PricingSnapshot has no cache tier, so no cache rate is used as a rate and none is invented for the five models that publish no cache-write figure. Instead the treatment already established in frontier-host.ts applies unchanged: every input-side token — fresh, cache-write and cache-read alike — is priced at the single published input rate. That can overstate a charge and can never understate one, which is the only direction in which an imprecise pricing model is safe for a spending ceiling.",
+    "notAMeasuredCharge": "This is OpenCode Zen's PUBLISHED LIST PRICE, read from the provider's own model catalogue on 2026-09-20T20:31:54Z. It is a statement by the provider about what it will charge. It is NOT a charge Cernum observed: no OpenCode request has ever returned a per-request charge to this interface, and the cost provenance of an OpenCode attempt remains UNAVAILABLE — for a zero-list-price model exactly as much as for a $15/Mtok one. A published price may be stale, may be wrong, may not apply to this credential, and says nothing about whether this credential may call the model at all: every row in the cohort is still DISCOVERED and UNPROVEN.",
+    "reconciliationRequired": "POST-RUN RECONCILIATION IS STILL REQUIRED. These are published catalogue prices, not observed charges, so a completed run at an estimated $0.00 is not evidence that $0.00 was billed. After any scored OpenCode campaign, the provider account's own usage and billing record must be read and compared against what Cernum estimated, and the difference recorded. Until that comparison exists, the cost of an OpenCode campaign is ESTIMATED FROM A PRICE LIST and nothing more. OpenCode Zen is a metered API. Cernum holds the provider's PUBLISHED list prices for the free development pool -- captured from its own catalogue, with a source and a timestamp, and usable for an ESTIMATE -- and it holds no OBSERVED charge for any OpenCode attempt: OpenCode returns no per-request charge this interface may read, so the cost PROVENANCE of an OpenCode attempt is UNAVAILABLE -- not zero, not free, and not measured. A published price is what the provider says it will charge; a cost provenance is what Cernum watched it charge. Token counts are recorded where OpenCode reports them."
+  }
+}

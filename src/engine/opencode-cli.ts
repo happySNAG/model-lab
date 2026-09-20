@@ -185,15 +185,27 @@ export function opencodeCredentialDisclosure(parsed: ReturnType<typeof parseOpen
 /**
  * The cost position for an OpenCode row, stated rather than computed.
  *
- * Cernum has no pricing table for OpenCode Zen and no provider-reported charge to read, so there is
- * no honest way to put a number on an OpenCode request. `unavailable` is the answer, and it is the
- * answer on every artefact, rather than a zero that would read as free.
+ * REVISED, because half of it had become false and the false half was the reassuring one. This used
+ * to say "Cernum holds no pricing table for OpenCode Zen and no provider-reported charge to read".
+ * The second clause still holds. The first stopped holding when the provider's published catalogue
+ * prices for the free development pool were captured -- see `opencode-pricing.ts`, which records six
+ * published list prices with their source, their digest and their capture time.
+ *
+ * SO THE POSITION IS NARROWER THAN IT WAS, AND IT IS NARROWER IN ONLY ONE DIRECTION. Cernum can now
+ * ESTIMATE an OpenCode campaign, because an estimate needs a price list and one exists. It still
+ * cannot MEASURE one, because that needs a charge read back per request and OpenCode returns none
+ * this engine may use: the one cost figure it has ever emitted carries no declared unit. So
+ * `costProvenance` remains `unavailable` on every OpenCode attempt, which is the claim that was
+ * actually load-bearing, and a published zero does not soften it.
  */
 export const OPENCODE_COST_PROVENANCE = 'unavailable' as const;
 export const OPENCODE_COST_EXPLANATION =
-  'OpenCode Zen is a metered API. Cernum holds no pricing for it and OpenCode reports no per-request '
-  + 'charge to this interface, so the cost of an OpenCode attempt is UNAVAILABLE -- not zero, not free, '
-  + 'and not estimated. Token counts are recorded where OpenCode reports them.';
+  'OpenCode Zen is a metered API. Cernum holds the provider\'s PUBLISHED list prices for the free '
+  + 'development pool -- captured from its own catalogue, with a source and a timestamp, and usable for an '
+  + 'ESTIMATE -- and it holds no OBSERVED charge for any OpenCode attempt: OpenCode returns no per-request '
+  + 'charge this interface may read, so the cost PROVENANCE of an OpenCode attempt is UNAVAILABLE -- not '
+  + 'zero, not free, and not measured. A published price is what the provider says it will charge; a cost '
+  + 'provenance is what Cernum watched it charge. Token counts are recorded where OpenCode reports them.';
 
 /**
  * WHAT `opencode models` IS, ESTABLISHED BY LOOKING AT WHERE THE ANSWER COMES FROM.
@@ -310,9 +322,11 @@ export const OPENCODE_SUPERSEDED_NO_PROOF_PATH =
  * seven. That is a real, citable fact about the provider's price list, and it is the reason these
  * models are a sensible place to start benchmarking a metered provider.
  *
- * WHAT IT DOES NOT ESTABLISH, AND THE DISTINCTION IS THE WHOLE POINT: it is not a measured charge,
- * and it does not make `OPENCODE_COST_EXPLANATION` any less true. Cernum still has no per-request
- * charge to read back from OpenCode, so the cost PROVENANCE of an actual OpenCode attempt remains
+ * WHAT IT DOES NOT ESTABLISH, AND THE DISTINCTION IS THE WHOLE POINT: it is not a measured charge.
+ * These seven prices have since been CAPTURED as a sourced pricing snapshot -- `opencode-pricing.ts`
+ * holds the six cohort members with their source, digest and capture time -- and capturing them moved
+ * nothing here. Cernum still has no per-request charge to read back from OpenCode that it may use, so
+ * the cost PROVENANCE of an actual OpenCode attempt remains
  * `unavailable` -- for a zero-list-price model exactly as much as for a $15/Mtok one. A list price
  * is what a provider says it will charge; a cost provenance is what Cernum observed it charge. The
  * engine must never let the first quietly stand in for the second, which is why the ladder records
@@ -489,8 +503,10 @@ export const OPENCODE_FLOOR_INJECTED_INPUT_TOKENS = OPENCODE_MEASURED_REQUEST_IN
  * have returned, leaving the pre-existing problem visible instead of dressing it up.
  *
  * PRICING IS NOT INVOLVED. This returns TOKENS. What a token costs is `PricingSnapshot`'s business,
- * and Cernum holds no pricing for OpenCode at all -- see `OPENCODE_COST_EXPLANATION`. Correcting a
- * token estimate must not be allowed to imply a dollar figure that no source supports.
+ * and the only snapshot Cernum holds for OpenCode is a PUBLISHED catalogue list price -- see
+ * `opencode-pricing.ts` -- never an observed charge. Correcting a token estimate must not be allowed
+ * to imply a measured dollar figure, and a published rate of zero must not be allowed to imply that
+ * the token count it multiplies is small.
  */
 export function openCodeEstimatedInputFloor(
   promptDerivedInputTokens: number, plannedAttempts: number, maximumInputTokens: number,
@@ -508,8 +524,9 @@ export const OPENCODE_INPUT_FLOOR_DERIVATION =
   + 'for a 19-character prompt worth about 5, so roughly 7,928 tokens per request are injected whatever is '
   + 'asked. That MEASURED figure is added once per planned attempt -- unrounded and undoubled, unlike the '
   + 'ceiling allowance, because a floor may not carry a safety margin -- and the result is held at or below the '
-  + 'frozen input ceiling and at or above the ordinary prompt-derived estimate. It is a token count. It implies '
-  + 'no dollar figure: Cernum holds no pricing snapshot for OpenCode.';
+  + 'frozen input ceiling and at or above the ordinary prompt-derived estimate. It is a token count, and it '
+  + 'implies no MEASURED dollar figure: the only pricing snapshot Cernum holds for OpenCode is the provider\'s '
+  + 'own PUBLISHED list price, captured with a source and a timestamp, and never a charge this engine observed.';
 
 /**
  * Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it".

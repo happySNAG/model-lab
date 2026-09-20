@@ -155,10 +155,16 @@ describe('Pass 7 · the floor is the measurement, not the ceiling\'s margin', ()
       .toBeGreaterThan(210 + OPENCODE_FLOOR_INJECTED_INPUT_TOKENS);
   });
 
-  it('states its derivation in words, and the words claim no dollar figure', () => {
+  it('states its derivation in words, and the words claim no MEASURED dollar figure', () => {
     expect(OPENCODE_INPUT_FLOOR_DERIVATION).toContain('7,933');
     expect(OPENCODE_INPUT_FLOOR_DERIVATION).toContain('7,928');
-    expect(OPENCODE_INPUT_FLOOR_DERIVATION).toContain('no pricing snapshot');
+    // REVISED: this asserted `no pricing snapshot`, which was true until the provider's published
+    // catalogue prices were captured. What the sentence must still refuse is the stronger claim — that
+    // the floor implies a charge anybody OBSERVED — so the assertion moved to the distinction that
+    // survives the capture rather than to the absence that did not.
+    expect(OPENCODE_INPUT_FLOOR_DERIVATION).toContain('no MEASURED dollar figure');
+    expect(OPENCODE_INPUT_FLOOR_DERIVATION).toContain('PUBLISHED list price');
+    expect(OPENCODE_INPUT_FLOOR_DERIVATION).toContain('never a charge this engine observed');
     expect(OPENCODE_INPUT_FLOOR_DERIVATION).not.toMatch(/\$\d/);
   });
 });
