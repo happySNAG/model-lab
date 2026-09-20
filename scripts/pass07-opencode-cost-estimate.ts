@@ -26,11 +26,13 @@
 // themselves, that they are a preview and not evidence. It is never written to disk, it names a
 // campaign label that no real campaign uses, and its digest is therefore valid for nothing.
 //
-// THE REASON THIS IS SAFE TO DO AND UNSAFE TO COPY. Five of the six cohort members have never been
-// sent a request by anything, so no admission record for them can honestly exist yet — see
-// `EVIDENCE_STATUS` below, which is reported rather than smoothed over. A preview that quietly
-// supplied plausible evidence strings for those five would be manufacturing the exact artefact the
-// admission design exists to require a person to write by hand.
+// THE REASON THIS IS SAFE TO DO AND UNSAFE TO COPY. A preview that quietly supplied plausible
+// evidence strings would be manufacturing the exact artefact the admission design exists to require a
+// person to write by hand. That remains true now that all six HAVE been smoked: a real admission
+// record cites a real artifact and is sealed by a person, and neither of those happens here — see
+// `SMOKE_EVIDENCE` and `EVIDENCE_STATUS` below, which name the artifacts rather than assert them.
+// When this was written five of the six had never been sent a request by anything, so no record for
+// them could honestly exist at all; the safeguard is unchanged, only the shortfall it guards is.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -70,16 +72,40 @@ const REPEATS = 1;
 const PREVIEW_LABEL = 'pass-7-opencode-cost-preview-NOT-A-CAMPAIGN';
 
 /**
+ * The smoke artifact each cohort member's evidence rests on.
+ *
+ * Named here rather than found by scanning a directory. The artifacts live in the user data directory,
+ * outside this repository, so a script that went looking would report whatever happened to be on one
+ * machine and would call a cohort evidenced because a file was present. These six are the ones the Pass 7
+ * admission record cites, and a member of the pool that is not in this table reads as unsmoked.
+ */
+export const SMOKE_EVIDENCE: Record<string, { artifact: string; capturedAt: string }> = {
+  'opencode/big-pickle': { artifact: 'pass07-big-pickle-smoke-20260920T205400Z.json', capturedAt: '2026-09-20T20:52:05Z' },
+  'opencode/mimo-v2.5-free': { artifact: 'pass07-mimo-v2.5-free-smoke-20260920T205000Z.json', capturedAt: '2026-09-20T20:49:55Z' },
+  'opencode/muse-spark-1.2-contributor-free': { artifact: 'pass07-muse-spark-1.2-smoke-20260920T205500Z.json', capturedAt: '2026-09-20T20:52:16Z' },
+  'opencode/muse-spark-1.3-contributor-free': { artifact: 'pass07-muse-spark-1.3-smoke-20260920T205600Z.json', capturedAt: '2026-09-20T20:52:27Z' },
+  'opencode/nemotron-3-ultra-free': { artifact: 'pass07-nemotron-3-ultra-free-smoke-20260920T205100Z.json', capturedAt: '2026-09-20T20:50:08Z' },
+  'opencode/nemotron-3.5-lightning-free': { artifact: 'pass07-nemotron-3.5-lightning-free-smoke-20260920T205200Z.json', capturedAt: '2026-09-20T20:50:19Z' },
+};
+
+/**
  * Which cohort members have execution evidence, and which have none.
  *
- * ONE OF SIX. `opencode/big-pickle` was sent an authorized request on 2026-09-20 and answered. The
- * other five have never been sent anything by this engine, so the only thing known about them is that
- * a cached catalogue names them and publishes a price. That is reported here, beside the money, because
- * a cohort of six priced candidates reads as six ready candidates and five of them are not.
+ * SIX OF SIX, as of 2026-09-20T20:52Z. Every member of the pool has now been sent exactly one authorized
+ * identity smoke, each with `--evidence`, and each came back ACCEPTED and PARSED at
+ * `requestAcceptedIdentityUnverifiable`. THAT IS THE WHOLE CLAIM. The request was accepted and something
+ * answered; WHICH model answered is not known and cannot be known on this path, because `opencode run
+ * --format json` emits no assistant message and a substituted model would return the same bytes. Nothing
+ * here is proven or selectable, and scoring these still takes a sealed admission a person writes.
+ *
+ * This read ONE OF SIX until the six smokes above: only `opencode/big-pickle` had been asked anything, and
+ * the other five carried `noRequestEverSent` — a cached catalogue row, a published price, and nothing else.
+ * `noRequestEverSent` is kept in the union rather than deleted as unreachable, so a model added to the pool
+ * without a smoke reads as what it is instead of inheriting this line's status.
  */
-export const EVIDENCE_STATUS: Record<string, 'executionProven' | 'noRequestEverSent'> =
+export const EVIDENCE_STATUS: Record<string, 'requestAcceptedIdentityUnverifiable' | 'noRequestEverSent'> =
   Object.fromEntries(FREE_OPENCODE_DEVELOPMENT_POOL.map((entry) => [entry.modelID,
-    entry.modelID === OPENCODE_FIRST_LIVE_REQUEST_MODEL ? 'executionProven' : 'noRequestEverSent']));
+    SMOKE_EVIDENCE[entry.modelID] === undefined ? 'noRequestEverSent' : 'requestAcceptedIdentityUnverifiable']));
 
 /** Field values that say what they are. Nothing reads these as evidence, and nothing should. */
 const PREVIEW_EVIDENCE = 'PREVIEW-ONLY — this is a cost preview, not an admission; no evidence is asserted here';
@@ -224,7 +250,12 @@ function main(): void {
   say(`  provenance        publishedCataloguePrice — NOT measured billing`);
   say();
   say('EXECUTION EVIDENCE PER CANDIDATE');
-  for (const [modelID, status] of Object.entries(EVIDENCE_STATUS)) say(`  ${status.padEnd(20)} ${modelID}`);
+  say('  ACCEPTED AND PARSED is not identity proven: the reply names no model on this path.');
+  for (const [modelID, status] of Object.entries(EVIDENCE_STATUS)) {
+    const evidence = SMOKE_EVIDENCE[modelID];
+    say(`  ${status.padEnd(36)} ${modelID}`);
+    say(`  ${' '.repeat(36)}   ${evidence ? `${evidence.artifact} · captured ${evidence.capturedAt}` : 'no artifact'}`);
+  }
   say();
   for (const [heading, body] of [
     ['DOES THE $0 LIST PRICE MAKE THE CEILING $0?', ZERO_LIST_PRICE_DOES_NOT_MEAN_ZERO_BILL],
@@ -243,7 +274,9 @@ function main(): void {
   for (const line of result.lines) for (const wrapped of wrap(line, 108)) say(`  ${wrapped}`);
   say();
   say(`First live OpenCode request: ${OPENCODE_FIRST_LIVE_REQUEST_MODEL} on ${OPENCODE_FIRST_LIVE_REQUEST_AT}. `
-    + 'Published price for that model corroborated by its unit-unverified reported zero; the other five unmeasured.');
+    + `All ${FREE_OPENCODE_DEVELOPMENT_POOL.length} cohort members have since been smoked once each with --evidence `
+    + '(2026-09-20T20:49Z–20:52Z). Each returned a reported cost of zero in an UNDECLARED UNIT, which corroborates '
+    + 'the published zero no more than it would corroborate any other number — no charge was observed for any of them.');
   say(`Pricing file: ${PRICING_FILE} · published price for `
     + `${FREE_OPENCODE_DEVELOPMENT_POOL.filter((e) => publishedPriceFor(e.modelID)).length} of `
     + `${FREE_OPENCODE_DEVELOPMENT_POOL.length} cohort members.`);

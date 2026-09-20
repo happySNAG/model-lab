@@ -37,7 +37,7 @@ import {
 import { OPENCODE_BIG_PICKLE_OBSERVED } from './fixtures/opencode-run-json';
 import { billingBasisOf, executionClassOf, pricingFor } from '../../src/engine/provider';
 import { SpendingError, authorizeSpending, worstCaseAttemptMicroUSD } from '../../src/engine/spending';
-import { EVIDENCE_STATUS, PRICING_FILE, estimateCohort } from '../../scripts/pass07-opencode-cost-estimate';
+import { EVIDENCE_STATUS, PRICING_FILE, SMOKE_EVIDENCE, estimateCohort } from '../../scripts/pass07-opencode-cost-estimate';
 
 const repositoryRoot = path.resolve(__dirname, '..', '..');
 const pricingFileContents = JSON.parse(
@@ -288,11 +288,33 @@ describe('Pass 7 · the non-executing cohort estimate', () => {
     expect(estimate.lines.join('\n')).toContain(OPENCODE_ZEN_PRICING_CAPTURED_AT);
   });
 
-  it('reports that five of the six cohort members have never been sent a request', () => {
-    // A cohort of six priced candidates reads as six ready candidates. One is execution-proven; the rest
-    // are a catalogue entry and a price, which is not an admission and must not be presented as one.
-    expect(EVIDENCE_STATUS[OPENCODE_FIRST_LIVE_REQUEST_MODEL]).toBe('executionProven');
-    expect(Object.values(EVIDENCE_STATUS).filter((value) => value === 'noRequestEverSent')).toHaveLength(5);
+  it('reports every cohort member as accepted-and-unverifiable, and names the artifact each rests on', () => {
+    // WHAT THIS ASSERTION USED TO BE, AND WHY IT MOVED. Until 2026-09-20T20:52Z it read "five of the six
+    // have never been sent a request": one member was execution-proven and the rest were a catalogue entry
+    // and a price. All six have since been smoked once each with --evidence, so that assertion was checking
+    // a shortfall that no longer exists. The claim it is replaced by is the one that SURVIVES a complete
+    // cohort: a smoke establishes acceptance, never identity, and a cohort with six smokes behind it is
+    // exactly as unproven as a cohort with one.
+    expect(EVIDENCE_STATUS[OPENCODE_FIRST_LIVE_REQUEST_MODEL]).toBe('requestAcceptedIdentityUnverifiable');
+    for (const entry of FREE_OPENCODE_DEVELOPMENT_POOL) {
+      expect(EVIDENCE_STATUS[entry.modelID]).toBe('requestAcceptedIdentityUnverifiable');
+      // Every status of that kind must be backed by a NAMED artifact. A status asserted without one would
+      // be the manufactured evidence this whole preview is written to avoid.
+      expect(SMOKE_EVIDENCE[entry.modelID]?.artifact).toMatch(/^pass07-.*\.json$/);
+      expect(SMOKE_EVIDENCE[entry.modelID]?.capturedAt).toMatch(/^2026-09-20T\d\d:\d\d:\d\dZ$/);
+    }
+    expect(Object.values(EVIDENCE_STATUS).filter((value) => value === 'noRequestEverSent')).toHaveLength(0);
+    // NOT 'executionProven', and never a word that reads as selectable. The reply names no model on this
+    // path, so a substituted model would be indistinguishable and the status must not imply otherwise.
+    expect(Object.values(EVIDENCE_STATUS)).not.toContain('executionProven');
+  });
+
+  it('leaves noRequestEverSent reachable for a pool member with no artifact', () => {
+    // The union keeps both values so a model added to the pool later reads as unsmoked rather than
+    // inheriting the status of the six that were. This is the guard on that, since nothing in the cohort
+    // exercises the branch today.
+    expect(SMOKE_EVIDENCE['opencode/model-that-was-never-smoked']).toBeUndefined();
+    expect(Object.keys(SMOKE_EVIDENCE)).toHaveLength(FREE_OPENCODE_DEVELOPMENT_POOL.length);
   });
 
   it('explains that a zero list price does not make the BILL zero', () => {
