@@ -27,6 +27,7 @@ import {
   AuthorizationMode, BillingBasis, EffortLevel, ExecutionClass, PricingSnapshot, ProviderBinding, ProviderID,
   authorizationModeForProvider, billingBasisOf, executionClassOf, isMetered, validateBinding,
 } from './provider';
+import { openCodeInputBudget } from './opencode-cli';
 
 /**
  * The budgets a smoke request is frozen under.
@@ -35,6 +36,30 @@ import {
  * smoke is entitled to see the numbers the bound came out of rather than a figure with no derivation.
  */
 export const SMOKE_MAX_INPUT_TOKENS = 1_024;
+
+/**
+ * The same budget for OpenCode, plus what OpenCode measurably adds to a request.
+ *
+ * 1,024 was a budget for the PROMPT, and on this provider the prompt is not the request. The
+ * measurement is of THIS EXACT REQUEST and not an analogous one: the captured envelope was produced
+ * by `IDENTITY_SMOKE_PROMPT` -- `Reply with only: ok`, nineteen characters -- and reported 7,933
+ * input-side tokens. So the bound `projectedMeteredBoundMicroUSD` was checking a ceiling against was
+ * 7.7x below the request it was authorising. `openCodeInputBudget` carries the derivation; this
+ * names the result so the smoke path and the campaign path are sized by one arithmetic, not two.
+ */
+export const OPENCODE_SMOKE_MAX_INPUT_TOKENS = openCodeInputBudget(SMOKE_MAX_INPUT_TOKENS);
+
+/**
+ * The input budget one smoke request is frozen under, by provider.
+ *
+ * Only `opencodeCLI` differs, and only because only `opencodeCLI` has been measured. A provider with
+ * no measurement keeps the budget it had: inventing an overhead for one nobody has observed would be
+ * the same guess this correction exists to remove, pointed the other way.
+ */
+export function smokeInputBudgetFor(provider: ProviderID): number {
+  return provider === 'opencodeCLI' ? OPENCODE_SMOKE_MAX_INPUT_TOKENS : SMOKE_MAX_INPUT_TOKENS;
+}
+
 /** The prompt asks for one word. This is the smallest budget worth naming, not an expectation. */
 export const SMOKE_MAX_OUTPUT_TOKENS = 16;
 export const SMOKE_TIMEOUT_MILLISECONDS = 120_000;
@@ -90,7 +115,7 @@ export function buildSmokeBinding(options: SmokeBindingOptions): ProviderBinding
     effort: options.effort,
     thinkingMode: 'runtimeDefault',
     sampling: { temperatureMilli: null, topPMilli: null, seed: null },
-    maxInputTokens: SMOKE_MAX_INPUT_TOKENS,
+    maxInputTokens: smokeInputBudgetFor(options.provider),
     // This engine cannot ENFORCE an output budget through a CLI. It is recorded on every attempt as
     // not-enforceable rather than pretended otherwise, and it is what the cost bound is computed from.
     maxOutputTokens: SMOKE_MAX_OUTPUT_TOKENS,

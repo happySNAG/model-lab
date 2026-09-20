@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   METERED_AUTHORIZATION_NOTE, SMOKE_MAX_INPUT_TOKENS, SMOKE_MAX_OUTPUT_TOKENS, UNPRICED_METERED_DISCLOSURE,
   authorizationClassOf, authorizeSmoke, buildSmokeBinding, isSmokeAuthorizationRefusal,
-  projectedMeteredBoundMicroUSD,
+  projectedMeteredBoundMicroUSD, smokeInputBudgetFor,
 } from '../../src/engine/smoke-binding';
 import {
   PricingSnapshot, ProviderBinding, ProviderID, billingBasisOf, executionClassOf, isMetered, validateBinding,
@@ -207,10 +207,18 @@ describe('v0.2.4 · a metered smoke is refused unless it was authorized by name'
   });
 
   it('computes the bound from the frozen budgets, so a reader can reproduce it', () => {
-    const bound = projectedMeteredBoundMicroUSD(priced()[0])!;
-    const expected = Math.ceil((SMOKE_MAX_INPUT_TOKENS * PRICES.inputMicroUSDPerMillionTokens) / 1_000_000)
+    const binding = priced()[0];
+    const bound = projectedMeteredBoundMicroUSD(binding)!;
+    // THE INPUT BUDGET IS PROVIDER-SPECIFIC AS OF PASS 7, and this reproduction has to use the one
+    // the binding was actually frozen under. OpenCode's is `SMOKE_MAX_INPUT_TOKENS` plus the injected
+    // overhead its one measured request showed; every other provider's is still the bare 1,024.
+    // Reproducing it from the flat constant would recompute a bound no request is sent under —
+    // which is the class of defect this whole file exists to pin.
+    const expected = Math.ceil((smokeInputBudgetFor(binding.provider) * PRICES.inputMicroUSDPerMillionTokens) / 1_000_000)
       + Math.ceil((SMOKE_MAX_OUTPUT_TOKENS * PRICES.outputMicroUSDPerMillionTokens) / 1_000_000);
     expect(bound).toBe(expected);
+    expect(binding.maxInputTokens).toBe(smokeInputBudgetFor(binding.provider));
+    expect(smokeInputBudgetFor('claudeCLI')).toBe(SMOKE_MAX_INPUT_TOKENS);
   });
 
   it('refuses a ceiling on an unpriced candidate: there would be nothing to check it against', () => {

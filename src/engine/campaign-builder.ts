@@ -45,6 +45,7 @@ import {
   localOllamaBinding,
 } from './provider';
 import { DiscoveredFrontierModel } from './discovery';
+import { openCodeInputBudget } from './opencode-cli';
 import { PlannedWork } from './spending';
 import {
   AdmittedCandidateEvidence, IdentityAdmission, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionFor,
@@ -299,7 +300,19 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
       effort: frontier.effort,
       thinkingMode: frontier.thinkingMode,
       sampling: frontier.sampling ?? { temperatureMilli: null, topPMilli: null, seed: null },
-      maxInputTokens: frontier.maxInputTokens ?? defaults.maxInputTokens,
+      // OPENCODE PAYS A MEASURED TAX ON TOP OF THE PROMPT, AND THE BUDGET SAYS SO.
+      //
+      // `defaults` describes the campaign's own prompts and nothing else. That is the right number
+      // for a provider Cernum hands a prompt to. `opencode run` is handed a prompt and sends an
+      // AGENT TURN, and the one live request this engine has made measured 7,933 input-side tokens
+      // for a prompt worth about 5 — so the default was 13.5x below the request, in the one figure
+      // `worstCaseAttemptMicroUSD` stops a run against. Added rather than maximised, because every
+      // attempt is its own `--pure` session and pays the whole overhead again. Applied to an
+      // explicit override too: the override sizes the PROMPT, and the tax is not the prompt.
+      // See `OPENCODE_INPUT_BUDGET_DERIVATION`.
+      maxInputTokens: frontier.provider === 'opencodeCLI'
+        ? openCodeInputBudget(frontier.maxInputTokens ?? defaults.maxInputTokens)
+        : frontier.maxInputTokens ?? defaults.maxInputTokens,
       maxOutputTokens: frontier.maxOutputTokens ?? defaults.maxOutputTokens,
       timeoutMilliseconds: frontier.timeoutMilliseconds ?? 300_000,
       retry: frontier.retry ?? DEFAULT_RETRY,

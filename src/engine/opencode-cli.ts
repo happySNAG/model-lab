@@ -364,6 +364,89 @@ export const OPENCODE_FIRST_LIVE_REQUEST_AT = '2026-09-20';
 export const OPENCODE_FIRST_LIVE_REQUEST_MODEL = 'opencode/big-pickle';
 
 /**
+ * WHAT ONE OPENCODE REQUEST ACTUALLY COSTS IN INPUT TOKENS, MEASURED — and the budget derived from it.
+ *
+ * THE DEFECT THIS EXISTS TO CORRECT. A campaign's input budget comes from `budgetsFor`, which reads
+ * the largest synthetic context any chosen case declares and counts its CHARACTERS as tokens. Across
+ * the whole catalogue that is 588, and on a suite like `foundation` it is 135. Those numbers describe
+ * the PROMPT. They do not describe the request, because `opencode run` does not send the prompt: it
+ * sends an agent turn — system prompt, tool schemas, session scaffolding — with the prompt inside it.
+ * The one live request this engine has ever made measured that, and the pre-run estimate was 13.5x
+ * below it. An estimate that low is not a conservative estimate that turned out wrong; it is a
+ * ceiling that would not have stopped anything, because `worstCaseAttemptMicroUSD` is computed from
+ * the same figure.
+ *
+ * THE MEASUREMENT. The captured envelope in `test/engine/fixtures/opencode-run-json.ts`, verbatim:
+ * `opencode/big-pickle`, opencode-ai@1.18.31, macOS arm64, an empty `--dir` under `--pure`, the
+ * prompt `Reply with only: ok`. Its `step_finish` part reports
+ * `tokens: {total: 7936, input: 6141, output: 3, reasoning: 0, cache: {write: 0, read: 1792}}`.
+ *
+ * CACHE-READ IS ADDITIONAL, NOT A SUBSET, and the capture proves it rather than assuming it:
+ * 6141 + 3 + 0 + 1792 = 7936, which is the `total` the runtime emitted. So the input side of that
+ * request was 6141 + 1792 + 0 = 7933 tokens, and that is the quantity a budget has to bound —
+ * `frontier-host.ts` already prices `totalInputTokens` (fresh + cache-write + cache-read) at the one
+ * input rate `PricingSnapshot` carries, precisely because the schema has no cache tier and charging
+ * cached tokens at the full rate can only overstate. A ceiling built on the fresh remainder would
+ * bound a different number from the one the charge is computed from.
+ *
+ * WHY THE HEADROOM IS A DOUBLING AND WHY THAT IS NOT A FUDGE. The base is not an estimate that might
+ * be off by a factor; it is one sample. One model, one CLI version, one empty working directory. The
+ * free pool this is being sized for is six models whose system prompts and tool schemas nothing in
+ * this repository has measured, and OpenCode's scaffolding is what varies between them. So the
+ * measured overhead is rounded up to the next power of two (8192) and doubled. The asymmetry is the
+ * argument: a budget set too high makes a ceiling strict, and a budget set too low makes it
+ * decorative.
+ *
+ * IT IS AN ADDEND, NOT A REPLACEMENT. Every attempt is its own `opencode run` in its own `--pure`
+ * session, so every attempt pays the whole overhead again, on top of whatever the campaign budgets
+ * for its own prompt. `openCodeInputBudget` adds; it does not take a maximum.
+ */
+export const OPENCODE_MEASURED_REQUEST_INPUT = {
+  capturedAt: OPENCODE_FIRST_LIVE_REQUEST_AT,
+  modelID: OPENCODE_FIRST_LIVE_REQUEST_MODEL,
+  cliVersion: 'opencode-ai@1.18.31',
+  /** `tokens.input`: the FRESH remainder, not the total. */
+  freshInputTokens: 6_141,
+  /** `tokens.cache.read`: additional to the fresh remainder, and priced at the input rate. */
+  cacheReadInputTokens: 1_792,
+  /** `tokens.cache.write`: zero on this capture, and counted here so a later non-zero one is visible. */
+  cacheWriteInputTokens: 0,
+  /** What a budget must bound: 6141 + 1792 + 0. */
+  totalInputTokens: 7_933,
+  /** `Reply with only: ok` is 19 characters; 19 / 4 rounds to 5 at the estimator's own divisor. */
+  promptInputTokens: 5,
+  /** The total less the prompt's own share: what OpenCode injects whatever Cernum asks. */
+  injectedInputTokens: 7_928,
+} as const;
+
+/**
+ * The per-attempt allowance for OpenCode's injected context: the measurement above, rounded up to
+ * the next power of two and doubled for the fact that it is a single sample. 2 x 8192.
+ */
+export const OPENCODE_INJECTED_INPUT_TOKENS = 16_384;
+
+/** The derivation, in words, for an artefact or a person reading a ceiling rather than this file. */
+export const OPENCODE_INPUT_BUDGET_DERIVATION =
+  'An OpenCode attempt is an agent turn, not a prompt: the one live request Cernum has made (2026-09-20, '
+  + 'opencode/big-pickle, opencode-ai@1.18.31) carried 7,933 input-side tokens -- 6,141 fresh plus 1,792 '
+  + 'served from cache, which the envelope\'s own total proves are additional rather than a subset -- for a '
+  + '19-character prompt worth about 5. So roughly 7,928 tokens per request are injected whatever is asked. '
+  + 'Every attempt is its own `--pure` session and pays that again, so it is ADDED to the budget the chosen '
+  + 'suites imply rather than replacing it. The allowance is 16,384: the measured overhead rounded up to the '
+  + 'next power of two and doubled, because it is ONE sample on ONE model and a budget set too low makes a '
+  + 'spending ceiling decorative.';
+
+/**
+ * The input budget an OpenCode binding is frozen under, from the budget the campaign's own prompts imply.
+ *
+ * Used by BOTH places an OpenCode binding is built — the campaign builder and the smoke binding — so
+ * a preview, a manifest and a ceiling cannot be sized by three different arithmetics.
+ */
+export function openCodeInputBudget(promptInputTokens: number): number {
+  return promptInputTokens + OPENCODE_INJECTED_INPUT_TOKENS;
+}
+
+/**
  * Named so nobody mistakes "Cernum can address this model" for "Cernum has benchmarked it".
  *
  * REVISED 2026-09-20, because the previous version had become false. It said "no live OpenCode
