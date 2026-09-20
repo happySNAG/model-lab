@@ -229,8 +229,11 @@ describe('requestAcceptedIdentityUnverifiable — approved in Pass 6, and still 
 });
 
 describe('the admission record, if a person ever writes one', () => {
-  it('applies to codexCLI and to nothing else', () => {
-    expect(ADMISSIBLE_PROVIDERS).toEqual(['codexCLI']);
+  it('applies to codexCLI and opencodeCLI, and to nothing else', () => {
+    // Pass 7 added opencodeCLI on a separate written approval: `run --format json` emits no assistant
+    // message, so that path structurally cannot name the model that answered. The list is CLOSED, which
+    // is the property this test exists for — a provider that reports identity must never appear on it.
+    expect(ADMISSIBLE_PROVIDERS).toEqual(['codexCLI', 'opencodeCLI']);
   });
 
   it('refuses a Claude candidate outright — that CLI names its model, so this would hide a real fault', () => {

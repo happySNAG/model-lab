@@ -35,6 +35,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { OpenCodeAdapter } from '../../src/engine/opencode-adapter';
+import { REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE } from '../../src/engine/identity-admission';
 import { buildSmokeBinding } from '../../src/engine/smoke-binding';
 import { identitySmokeTest } from '../../src/engine/identity-smoke';
 import { modelsFromSmokes, supersedeStaleOpenCodeEvidence } from '../../src/engine/discovery-store';
@@ -102,10 +103,18 @@ describe('v0.2.4 · Union Alpha, driven through a fake executable, verdict by ve
     expect(result.verdict).toBe('unverifiable');
     expect(result.reportedModelID).toBe('');
     expect(result.requestedModelID).toBe(UNION_ALPHA_MODEL_ID);
-    // OpenCode is not the admissible provider: it DOES report identity, so a silence here is a
-    // different problem from Codex's, and it is never laundered into the Pass 6 admission state.
-    expect(result.identityState).toBe('unverifiable');
+    // PASS 7 CHANGED THIS LINE, and the reason it changed is the whole decision. It used to read
+    // `unverifiable`, on the premise that OpenCode "DOES report identity, so a silence here is a
+    // different problem from Codex's". The captured envelope disproved the premise: `run --format json`
+    // emits no assistant message, so the silence is structural and identical in kind to Codex's. An
+    // accepted, answered OpenCode request therefore lands on the admission state.
+    //
+    // WHAT THAT STATE IS NOT: proven, selectable, promotable or routable. The verdict above is still
+    // `unverifiable` and the returned model is still empty — see the Pass 7 governance tests.
+    expect(result.identityState).toBe(REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE);
+    expect(result.verdict).not.toBe('proven');
     expect(result.evidence).toMatch(/rather than assumed to be the model that was requested/);
+    expect(result.evidence).toMatch(/emits no assistant message/);
   });
 
   it('MODEL MISMATCH — a real answer from a different model is refused, not accepted', async () => {

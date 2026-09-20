@@ -22,7 +22,9 @@
 // may spend real money on.
 //
 // PASS 6 ADDS EXACTLY ONE WAY PAST THAT REFUSAL, and it is not a weakening of it. A campaign may
-// carry a sealed `IdentityAdmission` naming specific Codex configurations, and a candidate that
+// carry a sealed `IdentityAdmission` naming specific configurations on a provider whose interface
+// structurally cannot name the model that answered — Codex since Pass 6, OpenCode since Pass 7, and
+// nothing else; see `IDENTITY_ADMISSIBLE_PROVIDERS`. A candidate that
 // record names is built with the identity state `requestAcceptedIdentityUnverifiable` instead of
 // being refused. Everything else is unchanged: a campaign without a record refuses every unproven
 // candidate exactly as before, on every provider; the record is per campaign and per configuration;

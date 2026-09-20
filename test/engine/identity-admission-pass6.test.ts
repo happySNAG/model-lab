@@ -24,12 +24,13 @@ import { Campaign } from '../../src/engine/campaign';
 import { buildCampaignPlan } from '../../src/engine/campaign-builder';
 import { freezeManifest, verifyManifest } from '../../src/engine/manifest';
 import {
-  ADMISSION_APPROVAL, ADMISSIBLE_PROVIDERS, ACTIVATION_SATISFIED_BY, AdmittedCandidateEvidence,
+  ADMISSION_APPROVAL, ADMISSIBLE_PROVIDERS, ADMISSION_PROVIDER_APPROVALS, IDENTITY_UNNAMEABLE_BECAUSE,
+  ACTIVATION_SATISFIED_BY, AdmittedCandidateEvidence,
   IdentityAdmission, NEVER_AFFECTS, NOT_PROMOTABLE_BECAUSE, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
   assertSurfaceCanStamp, authorizeIdentityAdmission, isPromotable, isRoutable,
 } from '../../src/engine/identity-admission';
 import {
-  IDENTITY_ADMISSIBLE_PROVIDER, ProviderBindingError, describeBinding, validateBinding,
+  IDENTITY_ADMISSIBLE_PROVIDERS, ProviderBindingError, describeBinding, validateBinding,
 } from '../../src/engine/provider';
 import {
   IDENTITY_UNVERIFIABLE_CAVEAT, aggregateFromRows, attemptMetricsFromRow, describeCandidateMetrics,
@@ -109,9 +110,47 @@ describe('the approval itself is recorded, not merely acted on', () => {
     expect(all).toMatch(/Ordra/);
   });
 
-  it('keeps the one-provider restriction in the two places that enforce it, agreeing', () => {
-    expect(ADMISSIBLE_PROVIDERS).toEqual([IDENTITY_ADMISSIBLE_PROVIDER]);
-    expect(IDENTITY_ADMISSIBLE_PROVIDER).toBe('codexCLI');
+  it('keeps the provider restriction in the two places that enforce it, agreeing', () => {
+    // Pass 7 made this a two-provider list. The invariant under test was never "exactly one provider"
+    // — it is that the authority a PERSON reads (`ADMISSIBLE_PROVIDERS`) and the authority the BINDING
+    // VALIDATOR applies (`IDENTITY_ADMISSIBLE_PROVIDERS`) are the same list and cannot drift.
+    expect(ADMISSIBLE_PROVIDERS).toEqual(IDENTITY_ADMISSIBLE_PROVIDERS);
+    expect(IDENTITY_ADMISSIBLE_PROVIDERS).toEqual(['codexCLI', 'opencodeCLI']);
+  });
+
+  it('admits ONLY providers that structurally cannot name the model, and says why for each', () => {
+    // The bar for membership, asserted rather than described: every admissible provider carries its
+    // own reason, and no provider that DOES name its model is on the list.
+    for (const provider of IDENTITY_ADMISSIBLE_PROVIDERS) {
+      expect(IDENTITY_UNNAMEABLE_BECAUSE[provider]).toBeTruthy();
+    }
+    for (const naming of ['claudeCLI', 'anthropicAPI', 'openaiAPI', 'ollama'] as const) {
+      expect(IDENTITY_ADMISSIBLE_PROVIDERS).not.toContain(naming);
+      expect(IDENTITY_UNNAMEABLE_BECAUSE[naming]).toBeUndefined();
+    }
+  });
+
+  it('records WHO approved each admissible provider, and on what evidence', () => {
+    // "The exception is approved" and "this provider is inside it" are different claims. Each provider
+    // on the list has to carry the second, or it got there without anybody deciding.
+    for (const provider of IDENTITY_ADMISSIBLE_PROVIDERS) {
+      const approval = ADMISSION_PROVIDER_APPROVALS[provider];
+      expect(approval).toBeDefined();
+      expect(approval!.approvedBy.length).toBeGreaterThan(0);
+      expect(approval!.evidence.length).toBeGreaterThan(0);
+      expect(approval!.approvedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+    // And the Pass 6 origin of the exception is not overwritten by the Pass 7 extension.
+    expect(ADMISSION_APPROVAL.pass).toBe('Cernum Pass 6');
+    expect(ADMISSION_PROVIDER_APPROVALS.opencodeCLI!.pass).toBe('Cernum Pass 7');
+  });
+
+  it('states, for OpenCode, that substitution is undetectable and not merely unproven', () => {
+    // The one thing a reader must not take from this admission: that OpenCode's position equals
+    // Codex's. It is weaker, the approval was given knowing that, and the reason string says so.
+    expect(IDENTITY_UNNAMEABLE_BECAUSE.opencodeCLI).toMatch(/SUBSTITUTED model would return the same bytes/);
+    expect(IDENTITY_UNNAMEABLE_BECAUSE.opencodeCLI).toMatch(/cannot detect substitution/);
+    expect(ADMISSION_PROVIDER_APPROVALS.opencodeCLI!.evidence).toMatch(/UNDETECTABLE/);
   });
 });
 

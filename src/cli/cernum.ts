@@ -1907,9 +1907,12 @@ function commandGeneralHelp(): void {
   say('                      A model that provider discovery has not PROVEN this account can call is');
   say('                      refused here. A model name is a plan, not a capability.');
   say('  --admit-identity-unverifiable <file>');
-  say('                      run named Codex configurations whose identity CANNOT be proven, under a');
-  say('                      written, sealed, per-campaign authorization. Applies to codexCLI only —');
-  say('                      its CLI names no model in any reply. Every attempt, report, chart, export');
+  say('                      run named configurations whose identity CANNOT be proven, under a written,');
+  say('                      sealed, per-campaign authorization. Applies to codexCLI and opencodeCLI');
+  say('                      only: `codex exec` names no model in any reply, and `opencode run --format');
+  say('                      json` emits no assistant message. On OpenCode a substituted model would be');
+  say('                      INDISTINGUISHABLE, so that path cannot detect substitution at all — weaker');
+  say('                      than Codex, and admitted knowing it. Every attempt, report, chart, export');
   say('                      and screen stamps the state; the returned-model field stays empty; the');
   say('                      candidate earns no capability role and no retention recommendation, and is');
   say('                      never a routing or promotion target. Requires --yes-identity-unverifiable.');

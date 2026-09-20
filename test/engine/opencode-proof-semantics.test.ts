@@ -108,7 +108,12 @@ describe('v0.2.2 · a listing is a catalogue, and a catalogue is not permission'
     const status = await discoverOpenCodeCLI({ findExecutable: here, now: NOW, run: READY });
     expect(status.models.every((model) => model.availability !== 'proven')).toBe(true);
     expect(OPENCODE_PROOF_PATH).toContain('proves EXECUTION');
-    expect(OPENCODE_PROOF_PATH).toContain('names no model leaves the candidate unproven');
+    // Pass 7 corrected the identity clause: it used to say identity was proven "as far as the returned
+    // providerID/modelID support", which described a field this interface never sends. What it must
+    // still say, and does, is that NO OpenCode candidate comes out of this proven.
+    expect(OPENCODE_PROOF_PATH).toContain('NOTHING ABOUT IDENTITY');
+    expect(OPENCODE_PROOF_PATH).toContain('every OpenCode candidate stays unproven');
+    expect(OPENCODE_PROOF_PATH).toContain('never promotable, never routable, and never proven');
   });
 });
 

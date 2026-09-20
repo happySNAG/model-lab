@@ -25,6 +25,7 @@ import { OpenCodeAdapter, parseOpenCodeRun } from '../../src/engine/opencode-ada
 import { buildSmokeBinding } from '../../src/engine/smoke-binding';
 import { identitySmokeTest } from '../../src/engine/identity-smoke';
 import { totalInputTokens } from '../../src/engine/frontier-adapter';
+import { REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE } from '../../src/engine/identity-admission';
 import { ProviderBinding } from '../../src/engine/provider';
 import {
   OPENCODE_BIG_PICKLE_CAPTURED_STDOUT, OPENCODE_BIG_PICKLE_OBSERVED,
@@ -390,8 +391,14 @@ describe('v0.2.5 · through a real fake executable, end to end, the smoke says w
       // WHAT IS STILL NOT TRUE, and is not made true by the parser fix: who answered.
       expect(result.reportedModelID).toBe('');
       expect(result.requestedModelID).toBe(REQUESTED);
-      expect(result.identityState).toBe('unverifiable');
       expect(result.verdict).toBe('unverifiable');
+
+      // PASS 7 CHANGED THE STATE, NOT THE VERDICT. This read `unverifiable` when the parser fix landed,
+      // before the governance decision; opencodeCLI is now inside the identity exception, so an accepted
+      // and measured request records `requestAcceptedIdentityUnverifiable` — weaker than unverifiable
+      // rather than stronger. The verdict above is untouched and nothing here is `proven`.
+      expect(result.identityState).toBe(REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE);
+      expect(result.identityState).not.toBe('verified');
 
       // And it is still a metered request, recorded as one rather than as free.
       expect(result.billingBasis).toBe('meteredAPI');

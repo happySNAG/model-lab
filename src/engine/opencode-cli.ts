@@ -241,22 +241,48 @@ export const OPENCODE_LISTING_IS_A_CATALOGUE =
  *                    credential reached this service and something answered it. It is a fact about
  *                    execution, and on its own it is not a fact about identity.
  *   IDENTITY PROVEN  the assistant message carried `providerID` and `modelID`, and they matched what
- *                    was asked for. OpenCode does return these, which is why an OpenCode smoke can
- *                    reach a state a Codex smoke cannot — and it is read from the reply, never
- *                    copied from the request. A reply naming a different model is a substitution and
- *                    is recorded as refused. A reply naming nothing stays unproven.
+ *                    was asked for. It is read from the reply, never copied from the request. A reply
+ *                    naming a different model is a substitution and is recorded as refused.
+ *
+ *                    UNREACHABLE ON THE PATH CERNUM DRIVES, corrected here in Pass 7. This entry used
+ *                    to end "OpenCode does return these, which is why an OpenCode smoke can reach a
+ *                    state a Codex smoke cannot". The generated types do declare those fields on
+ *                    `AssistantMessage` — and `opencode run --format json` never emits an assistant
+ *                    message. `run` reads that event solely in its `format !== "json"` branch, where it
+ *                    prints `> agent · modelID` for a person, and forwards nothing. A live request on
+ *                    2026-09-20 confirmed it: three events, no identity field anywhere. So an OpenCode
+ *                    smoke reaches EXECUTION PROVEN and stops, exactly as a Codex smoke does, and the
+ *                    sentence claiming otherwise was wrong about the layer it was describing. It would
+ *                    become reachable only through a different invocation — the server event stream
+ *                    behind `opencode serve` / `--attach` does carry the message — which is a change of
+ *                    interface, not a concession, and nothing here assumes it.
+ *
+ *   ACCEPTED,        the request was authorized, sent, answered and fully measured, and the reply named
+ *   IDENTITY         nobody. `requestAcceptedIdentityUnverifiable`, granted to opencodeCLI in Pass 7 on
+ *   UNVERIFIABLE     a separate written approval. Such a candidate MAY be measured under a sealed,
+ *                    per-campaign admission record, and is never promotable, never routable, and never
+ *                    `proven`. Discovery still qualifies nothing, and a failed or malformed reply is
+ *                    refused rather than admitted. See `identity-admission.ts`.
  *
  * So an authorized successful request proves execution, and proves identity ONLY to the degree the
- * returned identity evidence supports. Nothing about holding a credential, and nothing about the
- * length of a listing, moves a model between these states.
+ * returned identity evidence supports — which on this interface is not at all. Nothing about holding a
+ * credential, and nothing about the length of a listing, moves a model between these states.
+ *
+ * AND ONE CONSEQUENCE THAT HAS TO BE READ WITH THE REST. Because identity is ABSENT rather than
+ * contradicted, a substituted model would return byte-identical output, so the substitution check
+ * cannot fire on this path. That is a strictly weaker position than Codex's, and it is stated wherever
+ * the admission is — see `IDENTITY_UNNAMEABLE_BECAUSE` in `provider.ts`.
  */
 export const OPENCODE_PROOF_PATH =
   'An OpenCode model becomes selectable only through an AUTHORIZED request that was sent and came back: '
   + '`cernum smoke opencodeCLI --models <id> --pricing <file> --authorize-metered <dollars>`, or with no prices, '
   + '`--authorize-unpriced-metered` for exactly one request. OpenCode is billed per token against your own '
   + 'credential, so that request costs money and is refused without the authorization. A successful request proves '
-  + 'EXECUTION; it proves IDENTITY only as far as the returned `providerID`/`modelID` support, and a reply that names '
-  + 'no model leaves the candidate unproven.';
+  + 'EXECUTION and, on this interface, NOTHING ABOUT IDENTITY: `opencode run --format json` emits no assistant '
+  + 'message, so no reply on this path names the model that answered, and every OpenCode candidate stays unproven. '
+  + 'Such a candidate may be MEASURED under a sealed per-campaign identity admission '
+  + '(`--admit-identity-unverifiable`), which records that the identifier was accepted and something answered; it is '
+  + 'never promotable, never routable, and never proven.';
 
 /**
  * The v0.2.2 sentence, kept verbatim so contaminated rows can be RECOGNISED rather than guessed at.
