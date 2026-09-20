@@ -531,6 +531,181 @@ there is a real sandbox to put it in.
 
 ---
 
+## Workspace-backed cases: measuring work rather than prose about work
+
+A prose case asks a question and reads a string. That measures whether a model can *describe* a fix.
+It cannot measure whether a model can find the defect in an unfamiliar repository, change the right
+files, run the tests, read the failure, recover from a wrong first attempt, avoid breaking something
+else, stay inside the part of the tree it was given, and stop. Those are different capabilities, and
+a benchmark that scores prose about them is a benchmark that rewards fluency.
+
+So there is a second case type, `WorkspaceCase`, and it is **parallel to `BenchmarkCase` rather than
+an extension of it**. Three reasons, and any one of them would be enough:
+
+- `caseDigest` seals the whole `BenchmarkCase` struct. A new optional field moves the digest of every
+  case that does not use it, which breaks `fixtures/parity/store` — where Swift-written records are
+  re-sealed to prove the two encoders agree — and orphans every `comparabilityKey` already on disk.
+- the comparability rule would become **false**. Two workspace results are comparable only when the
+  *fixture*, the *scope*, the *tool policy* and every *verification command* also match. `cwk1:`
+  binds all of them; `mlk1:` has no reason to and should not start.
+- `Observation` is text-shaped. `outputText` plus `toolCallObservationsRaw: string[]` cannot represent
+  a file write, a test run, or a second attempt after a failure.
+
+What the two **share** is everything below the case. `workspacePlannableCaseOf` and
+`workspacePromptRecordOf` project a workspace case into the shapes the existing machinery already
+takes, so the ledger, the planner, the frozen manifest, the lock, the guards, the spend tracker and
+the report need no change at all. `TERMINAL_STATUSES` has carried `patchFailure`, `scopeFailure`,
+`compilationFailure` and `behavioralFailure` since the port from the Python harness, because that
+harness already scored work of this kind — those statuses were waiting for this.
+
+### What a case declares
+
+| | |
+|---|---|
+| identity | id, version, suite, description, capability dimensions |
+| workspace source | fixture directory, **sealed tree digest**, optional pinned commit, setup commands |
+| task | the exact instruction, the allowed paths, the forbidden paths, any briefing |
+| execution | timeout, maximum attempts, tool policy, network policy, environment allow-list, sampling |
+| verification | test/build/typecheck/lint commands, **hidden** checks, file invariants, forbidden changes, patch-cleanliness, change ceilings |
+| scoring | integer weights, in thousandths, over seven named metrics |
+
+`workspaceCaseDigest` (`cwc1:`) seals all of it, and that digest is what a result carries — so a row
+always says exactly which task version produced it. Editing a fixture changes its tree digest, which
+makes the sealed case refuse to run against it, **before** a request is sent. There is deliberately no
+script that refreshes those digests: a digest a script refreshes is a digest that silently follows
+whatever the tree became.
+
+### One attempt, start to finish
+
+```
+<sandbox>/cernum-ws-<case>-<n>-XXXXXX/
+  work/        the tree handed to the agent — a copy of the fixture, made per attempt
+  baseline/    a second copy, made after setup and handed to nothing
+  probe/       a third copy, used for the BEFORE reading, deleted immediately
+  tmp/         the agent's TMPDIR — outside the tree being measured
+```
+
+1. the fixture is **copied in as data** and its digest checked against the case's seal;
+2. setup runs, and the result is copied to `baseline/` — two trees rather than one, because a patch
+   cannot be rendered from a tree that has been overwritten in place;
+3. the visible checks run once against a throwaway copy, giving every check a **before**;
+4. the agent gets `work/`, an allow-listed environment and a scratch directory outside the tree;
+5. `work/` is snapshotted **the moment the agent stops and before verification runs**, so a test
+   runner's caches are never attributed to the model;
+6. `baseline/` is re-digested — nothing is ever handed that directory, so a byte of difference in it
+   is proof that something wrote outside the workspace it was given;
+7. verification runs with **no provider credentials at all**, whatever the agent was given;
+8. everything is deleted, unless the caller asked for a failed attempt to be preserved.
+
+Diffs and patches are computed here, not asked for: content-addressed snapshots, an LCS diff rendered
+to a unified patch with no timestamps, sorted paths, and binary changes named rather than inlined.
+`git` is not required and is never in the path between the filesystem and the record.
+
+### The verdict is never taken from the agent
+
+`WorkspaceAgentResult.completed` means the tool exited under its own steam. It is recorded and it
+decides nothing. A model that announces success and changes nothing scores exactly what a model that
+changes nothing scores — there is a test that says so by name.
+
+Every transcript event carries **provenance**: `engineObserved` (Cernum ran it, or watched the
+filesystem do it) or `agentReported` (the tool's own stream said so). The first is evidence; the
+second is testimony. Nothing downstream counts a reported event toward a verdict.
+
+That split is only worth having if it cannot be claimed, so `ENGINE_ONLY_EVENT_KINDS`
+(`attemptStarted`, `attemptFinished`, `retryStarted`, `verificationRan`, `harnessFault`,
+`boundaryRefusal`) are refused from a driver: the forged event is **dropped** and a `harnessFault`
+recorded in its place. A tool asserting its own test result into the record the scorer reads before
+deciding a regression is the one thing this model exists to refuse.
+
+Two facts are **explicit fields rather than inferences**, because both were recoverable only by
+reading prose before the transcript audit:
+
+- **`finalResponse`** is its own event kind, distinct from the `message` narration around it. A tool
+  that keeps talking after it answers makes "take the last message" wrong, and the transcript was
+  never asserting that it was right.
+- **`terminationReason`** is a closed value on `attemptFinished` — `agentCompleted`, `agentFailed`,
+  `deadlineExceeded`, `cancelled`, `providerDeclined`, `driverUnavailable`, `policyNotExpressible`,
+  `harnessFault`, `workspaceEscape` — mapped by one pure function and carried on the attempt record
+  too. The difference between `deadlineExceeded` and `agentCompleted` is the difference between a
+  measurement and a non-measurement, and it should not need a sentence parsed to find it.
+
+`retryStarted` marks the boundary between an initial attempt and a retry without anybody comparing
+an index to zero, and carries the previous attempt's termination reason and patch digest so a
+retry's transcript reads on its own.
+
+Executables named in commands are collected from **every** `commandExecuted` event, reported ones
+included — a model's shell command runs inside the tool's process, so the only account of it there
+will ever be is the tool's own stream. A tool that does not report its commands cannot be checked
+this way at all, which is why the executable allow-list is a *detection* and the verdict rests on
+the tree.
+
+Statuses are decided in one order, each preempting the ones below it because each describes a reason
+the reading below it would be meaningless:
+
+```
+runtimeError / safetyAbort → envelopeFailure → timeout → scopeFailure
+  → patchFailure → compilationFailure → behavioralFailure → fail / partial / pass
+```
+
+A run that edits the test file and then passes the test is a `scopeFailure`, not a pass.
+
+### Regressions are measured, not assumed
+
+`establishBaseline` runs the visible checks against the untouched tree first, so every check has a
+before and an after. Without it, a failing test after the change is indistinguishable from one that
+was already failing — which on a bug-fix case is the *normal* state at the start, since the
+reproducing test is supposed to fail. A **regression** is a check that passed and now does not, and
+it stops a run being a success however good the rest of it looks.
+
+### Missing numbers are not zeros
+
+Every metric is an integer in thousandths **or** unavailable with a reason, and the composite
+renormalizes over the metrics that exist. A case that declares no change ceiling gets no
+patch-economy score — not a zero, which would rank a model below one that was never asked.
+
+### What the isolation does and does not enforce
+
+**Enforced.** A fresh copy of the fixture per attempt, under a sandbox root that
+`assertSandboxRootIsSafe` refuses to place inside any Git working tree or overlapping the fixture
+root — the obvious wrong value for `sandboxRoot` is the checkout the benchmark was launched from,
+and nothing in the mechanics would otherwise object. Every path the engine opens goes through
+`resolveInside`, which resolves absolute paths, `..` traversal *and symlinks* before checking; a
+write through a symlink an attempt planted itself is refused and the refusal recorded. The pristine
+`baseline/` copy is re-digested after every attempt, which catches a write that left the workspace
+by any route at all. A
+default-deny environment: the child gets the handful of names that only describe the machine, plus
+exactly what the frozen case listed, and nothing else. The agent's scratch directory is outside the
+tree. Verification commands inherit nothing — `replaceEnvironment`, not `extraEnvironment`, so a
+check cannot authenticate to a model to ask whether it passed. A credential-shaped name in a case's
+allow-list is refused **at seal time** by `validateWorkspaceCase` and again when the child
+environment is built; only `HOME` may be unlocked by name, and only because a subscription CLI
+cannot find its own session without it. Unlocking it is bound explicitly into `cwk1:`, so a run with
+`HOME` and a run without it are never merged into one row.
+
+**Not enforced, and said plainly.** This is not an OS sandbox. A case that unlocks `HOME` has unlocked
+a directory that tool can read, and Cernum states that rather than implying otherwise. `networkPolicy`
+is a declaration this engine records and expresses through whatever switches a tool documents; it is
+not a firewall. `codex-cli.ts` already documents, with evidence, that a validly-set switch on one of
+these tools need not hold. So the posture is the one the rest of this engine takes: configure what can
+be configured, **observe** what actually happened, and let the observation decide.
+
+### The agent execution contract
+
+`WorkspaceAgentDriver` is defined before any provider is wired to it, because a contract written to
+fit whichever tool is implemented first becomes that tool's shape wearing a general name. Each driver
+declares a `WorkspaceAgentCapabilities` record, and `driverShortfalls` refuses a case the driver
+cannot honour **before a workspace is made or anything is spent** — a driver that cannot be told which
+directory to work in cannot run a workspace benchmark at all, since it would work wherever it was
+launched.
+
+A driver starts the tool rooted at the workspace, expresses what it can, **reports what it could not
+express**, and emits transcript events. It does not decide success, does not clean up, and does not
+retry: attempts belong to the runner, because each one needs a fresh workspace and a recorded
+boundary. `ScriptedWorkspaceAgent` implements the contract with no provider involved, so every branch
+of the runner is reachable in a test without a request leaving the machine.
+
+---
+
 ## The terminal command
 
 The terminal interface ships **inside the installed application**. It needs no checkout, no Node
@@ -720,7 +895,16 @@ campaign's hold on one.
   final-report.json       both, plus the reconciliation
   review/                 the blinded packet — safe to share
   review-key/             the key that reverses it — not safe to share
+  workspace/              present only on a campaign with workspace-backed cases
+    <caseID>/attempt-<n>/
+      attempt.json        the sealed attempt record: digests, diff, scope, every exit status
+      patch.diff          the unified patch, byte-stable and applyable with `patch -p1`
+      transcript.jsonl    one event per line, each carrying its provenance
 ```
+
+A workspace attempt's *working* tree lives under the benchmark sandbox and is deleted when the attempt
+finishes. It is kept only when the caller asked for a failed attempt to be preserved, and the attempt
+record then says where — a workspace nobody asked to keep is never left on the machine.
 
 ---
 

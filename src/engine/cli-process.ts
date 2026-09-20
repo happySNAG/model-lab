@@ -73,6 +73,18 @@ export interface CLIRunOptions {
   workingDirectory?: string;
   /** Extra variables the tool needs. Merged AFTER credentials are stripped, so this is the only way in. */
   extraEnvironment?: Record<string, string>;
+  /**
+   * The child's WHOLE environment, REPLACING the parent's rather than extending it.
+   *
+   * `extraEnvironment` can only add, which is right for a subscription CLI that needs the machine's
+   * ordinary environment plus one thing. It is wrong for a workspace benchmark, where the question
+   * is what the child does NOT get: a verification command must run with no provider credentials of
+   * any kind, and a deny-list of credential names is always one vendor prefix out of date. So a
+   * caller that has built an allow-list passes it here and nothing else is inherited.
+   *
+   * `extraEnvironment` is still merged on top when both are given, so the two compose the obvious way.
+   */
+  replaceEnvironment?: Record<string, string>;
   /** Called the moment the first stdout byte lands, with its arrival time. */
   onFirstOutput?: (atMilliseconds: number) => void;
   /** Called for every stdout chunk as it arrives, with its arrival time. */
@@ -172,7 +184,10 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
         // Its own process group, so terminate() reaches whatever it spawns.
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...environmentWithoutCredentials(process.env), ...(options.extraEnvironment ?? {}) },
+        env: {
+          ...(options.replaceEnvironment ?? environmentWithoutCredentials(process.env)),
+          ...(options.extraEnvironment ?? {}),
+        },
         windowsHide: true,
       });
     } catch (error) {
