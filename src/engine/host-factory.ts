@@ -164,6 +164,11 @@ export function buildHostForCampaign(configuration: CampaignConfiguration, optio
       adapters: adaptersFor(envelope, options),
       localHost,
       spend,
+      // CARRIED FROM THE CONFIGURATION, NOT DECIDED HERE. Absent means unenforced, which is how a
+      // campaign frozen before the policy existed keeps resuming under the rules it was created
+      // under. This factory's job is to build the host the campaign was FROZEN as, and the cost
+      // policy is no more a property of this invocation than the execution mode is.
+      costPolicy: configuration.costPolicy,
       storeBaseline: configuration.storeBaseline,
       diskPath: options.diskPath,
       now: options.now,

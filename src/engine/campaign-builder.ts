@@ -32,6 +32,10 @@
 // refusal message for a campaign that HAS a record but does not name this candidate says which of
 // those it was, since "unproven" and "not admitted" are different problems with different fixes.
 
+import {
+  CostEligibilityVerdict, CostPolicyOverride, ZeroMarginalCostConfirmation,
+  costEligibilityAgreesWithBillingBasis, costEligibilityFor,
+} from './cost-eligibility';
 import { ThinkingMode } from './execution';
 import { EngineCatalogue, buildEngineCatalogue } from './catalogue';
 import { HardwareIdentity, ManifestCandidate } from './manifest';
@@ -118,6 +122,21 @@ export interface CampaignPlanRequest {
    * `codexCLI`, and only for the campaign whose label it carries.
    */
   identityAdmission?: IdentityAdmission;
+  /**
+   * Confirmations that a METERED candidate costs this account nothing at the margin.
+   *
+   * Absent on almost every campaign, and absence is the safe state: without one, a metered candidate
+   * is `metered` and the cost policy blocks it. A published $0 catalogue price is not one of these —
+   * see `ZeroMarginalCostConfirmation`, which requires the account's own billing record.
+   */
+  costConfirmations?: ZeroMarginalCostConfirmation[];
+  /**
+   * Explicit written overrides permitting a blocked candidate to run anyway.
+   *
+   * Never inferred from a flag or the presence of a pricing file. One per exact configuration, and
+   * an override for `metered` does not cover `unknown_cost`.
+   */
+  costOverrides?: CostPolicyOverride[];
 }
 
 export interface BuiltCampaign {
@@ -136,6 +155,16 @@ export interface BuiltCampaign {
    * than silence. Empty on every campaign that carries no admission record.
    */
   admittedWithoutProvenIdentity: AdmittedCandidateEvidence[];
+  /**
+   * Who pays for each candidate, and what established that.
+   *
+   * Returned beside the bindings rather than stored in them, deliberately. A binding is frozen into
+   * the manifest digest, and cost eligibility is a fact about an ACCOUNT at a moment rather than
+   * about the campaign's identity — freezing it would make a campaign re-verified after a billing
+   * change fail its own digest check for a reason that has nothing to do with what it measured. The
+   * structural `billingBasis` stays in the binding, where it belongs.
+   */
+  costEligibility: { candidate: string; verdict: CostEligibilityVerdict }[];
 }
 
 /**
@@ -199,6 +228,7 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
   const candidates: (PlannableCandidate & ManifestCandidate)[] = [];
   const bindings: ProviderBinding[] = [];
   const admitted: AdmittedCandidateEvidence[] = [];
+  const costEligibility: { candidate: string; verdict: CostEligibilityVerdict }[] = [];
 
   for (const local of request.local) {
     if (names.has(local.name)) throw new CampaignBuildError('duplicateCandidate', `${local.name} is named twice`);
@@ -207,6 +237,13 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
       name: local.name, modelID: local.modelID, runtimeDigest: local.runtimeDigest,
       parameterSize: local.parameterSize, quantization: local.quantization,
     });
+    // Classified even though the answer is never in doubt. A disclosure that listed only the
+    // candidates that COULD cost money would leave a reader to infer the rest, and the whole point
+    // of this table is that who pays is stated for every row rather than inferred for most of them.
+    costEligibility.push({ candidate: local.name, verdict: costEligibilityFor({
+      provider: 'ollama', modelID: local.modelID,
+      confirmations: request.costConfirmations, overrides: request.costOverrides,
+    }) });
     bindings.push(localOllamaBinding({
       candidate: local.name,
       modelID: local.modelID,
@@ -255,6 +292,29 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
 
     const executionClass = executionClassOf(frontier.provider);
     const billingBasis = billingBasisOf(executionClass);
+
+    // COST ELIGIBILITY IS CLASSIFIED HERE AND ENFORCED SOMEWHERE ELSE, ON PURPOSE.
+    //
+    // This function is the PRICING and PREVIEW path as much as it is the build path: `cernum cost`,
+    // the desktop's estimate and the Pass 7 estimate script all reach a campaign plan through it
+    // WITHOUT intending to run one. Refusing a blocked candidate here would mean a cohort you may
+    // not run is also a cohort you cannot see the price of — which is exactly backwards, because the
+    // reason to price an excluded cohort is to decide whether to seek an exception for it.
+    //
+    // So the verdict is computed here, where the provider and the model are both known, and carried
+    // out on `BuiltCampaign`. The refusal lives at the one place a request actually leaves —
+    // `RoutingHost.authorizeAttempt` — beside the spending gate it is a sibling of.
+    const costVerdict = costEligibilityFor({
+      provider: frontier.provider, modelID: frontier.modelID, executionClass,
+      confirmations: request.costConfirmations, overrides: request.costOverrides,
+    });
+    if (!costEligibilityAgreesWithBillingBasis(costVerdict.eligibility, billingBasis)) {
+      throw new CampaignBuildError('costEligibilityMismatch',
+        `${frontier.name}: cost eligibility ${costVerdict.eligibility} cannot be true of a ${billingBasis} `
+        + 'binding. The two describe the same candidate and one of them is wrong.');
+    }
+    costEligibility.push({ candidate: frontier.name, verdict: costVerdict });
+
     if (billingBasis === 'meteredAPI' && !frontier.pricing) {
       throw new CampaignBuildError('noPricing',
         `${frontier.name} is billed per token and no pricing snapshot was supplied. Cernum will not estimate a cost `
@@ -363,5 +423,6 @@ export function buildCampaignPlan(request: CampaignPlanRequest): BuiltCampaign {
     plannedWork: plannedWorkFor(catalogue, candidates.map((candidate) => candidate.name), request.repeatsPerCase),
     frontierOnly,
     admittedWithoutProvenIdentity: admitted,
+    costEligibility,
   };
 }

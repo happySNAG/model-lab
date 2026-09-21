@@ -44,6 +44,7 @@ import { OperationalEnvelope, ProviderBinding, bindingFor, isLocal } from './pro
 import { FrontierAttemptRecord, FrontierCandidateMetrics, aggregateFromRows } from './frontier-metrics';
 import { MIXED_EXECUTION_REASONS } from './provider';
 import { SpendingAuthorization } from './spending';
+import { CostPolicyOverride, ZeroMarginalCostConfirmation } from './cost-eligibility';
 import {
   ADMISSION_STAMP_LONG, AdmittedCandidateEvidence, IdentityAdmission,
   REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance, admissionStamp,
@@ -191,6 +192,25 @@ export interface CampaignConfiguration {
    * campaign that was authorised.
    */
   identityAdmission?: IdentityAdmission;
+  /**
+   * The project cost policy this campaign was created under, and the evidence it may consult.
+   *
+   * PRESENCE IS THE OPT-IN, AND IT IS RECORDED AT CREATE TIME RATHER THAN READ FROM A FLAG. The gate
+   * in `RoutingHost.authorizeAttempt` is unenforced when this is absent, which is what keeps every
+   * campaign already on disk resuming exactly as it did — a frozen campaign whose second half
+   * refused what its first half ran is not the campaign that was authorised. A campaign created
+   * after the policy exists carries it here, so its resume is governed by what it was created under
+   * and not by whatever the surface believes today.
+   *
+   * DELIBERATELY NOT IN THE MANIFEST DIGEST. Cost eligibility is a fact about an ACCOUNT at a moment,
+   * not about what was measured; freezing it would make a campaign re-verified after a billing change
+   * fail its own digest check for a reason that has nothing to do with the benchmark. The structural
+   * `billingBasis` stays in the envelope, where it is frozen and where it belongs.
+   */
+  costPolicy?: {
+    confirmations?: ZeroMarginalCostConfirmation[];
+    overrides?: CostPolicyOverride[];
+  };
 }
 
 export type CampaignState = 'created' | 'running' | 'paused' | 'aborted' | 'complete';

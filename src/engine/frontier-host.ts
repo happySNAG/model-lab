@@ -29,6 +29,9 @@
 // which an unmeasured number is safe to use.
 
 import { CanonicalValue } from './canonical';
+import {
+  AUTHORIZED_COST_ELIGIBILITIES, CostPolicyOverride, ZeroMarginalCostConfirmation, costEligibilityFor,
+} from './cost-eligibility';
 import type { AttemptAuthorization, AttemptOutcome, AttemptRequest, CampaignHost } from './campaign';
 import { EngineCatalogue } from './catalogue';
 import { CatalogueScorer } from './scoring';
@@ -68,6 +71,19 @@ export interface RoutingHostOptions {
   /** Required only when the envelope contains a local candidate. */
   localHost?: CampaignHost;
   spend: SpendTracker;
+  /**
+   * The project cost policy, enforced per attempt beside the spending ceiling.
+   *
+   * ABSENT MEANS UNENFORCED, and that is deliberate rather than an oversight. This gate was added in
+   * Pass 7 to an engine with campaigns already frozen and surfaces already calling this constructor;
+   * defaulting it ON would have changed what an existing campaign does when resumed, which is the
+   * one thing a frozen campaign must never do. The surfaces that create campaigns pass it; a caller
+   * that does not opt in gets exactly the behaviour it had before.
+   */
+  costPolicy?: {
+    confirmations?: ZeroMarginalCostConfirmation[];
+    overrides?: CostPolicyOverride[];
+  };
   /** The model-store baseline, when there are local candidates. Absent for a frontier-only campaign. */
   storeBaseline?: StoreBaseline;
   diskPath?: string;
@@ -274,6 +290,39 @@ export class RoutingHost implements CampaignHost {
    */
   async authorizeAttempt(slot: PlanSlot): Promise<AttemptAuthorization> {
     const binding = this.binding(slot.candidate);
+
+    // THE COST POLICY, BEFORE THE METERED CHECK AND NOT INSIDE IT.
+    //
+    // `isMetered` asks whether the provider bills per token. The cost policy asks who pays, which is
+    // a different question with a fifth answer the billing basis has no room for: `unknown_cost` can
+    // land on a candidate that `isMetered` says nothing about, and putting this check after that
+    // early return would let precisely the unclassifiable candidate through — the one case the gate
+    // exists for. A refusal here aborts before anything is sent, exactly as a spending refusal does.
+    if (this.options.costPolicy !== undefined) {
+      const verdict = costEligibilityFor({
+        provider: binding.provider,
+        modelID: binding.requestedModelID,
+        executionClass: binding.executionClass,
+        confirmations: this.options.costPolicy.confirmations,
+        overrides: this.options.costPolicy.overrides,
+      });
+      if (!verdict.authorized) {
+        return {
+          allowed: false,
+          code: `costPolicy.${verdict.eligibility}`,
+          reason: `${binding.candidate} is ${verdict.eligibility} and this project authorizes only `
+            + `${AUTHORIZED_COST_ELIGIBILITIES.join(', ')} for execution. Nothing was sent. ${verdict.reason}`,
+          detail: {
+            candidate: binding.candidate,
+            provider: binding.provider,
+            costEligibility: verdict.eligibility,
+            billingBasis: binding.billingBasis,
+            authorizedEligibilities: AUTHORIZED_COST_ELIGIBILITIES.join(', '),
+          } as CanonicalValue,
+        };
+      }
+    }
+
     if (!isMetered(binding)) return { allowed: true };
     try {
       this.options.spend.check(binding, worstCaseAttemptMicroUSD(binding));

@@ -44,6 +44,7 @@ import {
   recountWithCorrectedDispositions, buildEngineCatalogue as buildCatalogueForRecount,
   FABLE_SUBSTITUTION_REASON, prepareManifest, renderPreparedManifest,
   applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
+  costPolicyDisclosure,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
@@ -1219,7 +1220,13 @@ async function commandCreate(positional: string[], options: Options): Promise<vo
     throw error;
   }
 
-  const configuration = built.configuration;
+  // THE COST POLICY IS RECORDED ON THE CAMPAIGN, NOT APPLIED TO THE INVOCATION.
+  //
+  // Every campaign created by this command is governed by the project cost policy, so the opt-in is
+  // written into the configuration where `run` and `resume` will read it back. Confirmations and
+  // overrides are the evidence the gate may consult, and there are none by default: a metered or
+  // unclassifiable candidate is blocked, and rescuing one takes a written record rather than a flag.
+  const configuration: CampaignConfiguration = { ...built.configuration, costPolicy: {} };
   const candidates = configuration.candidates;
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, 'configuration.json'), JSON.stringify(configuration, null, 2) + '\n', 'utf8');
@@ -1249,6 +1256,18 @@ async function commandCreate(positional: string[], options: Options): Promise<vo
     say('No candidate runs on this machine, so this campaign takes no Ollama endpoint lease and manages no residency.');
     say('');
   }
+  // WHO PAYS FOR EACH CANDIDATE, stated for every row rather than inferred for most of them. Printed
+  // before the run rather than after it, because the point of the table is to be read while the
+  // cohort can still be changed.
+  // The disclosure indents its own rows to show which reason belongs to which candidate, so the
+  // indent is measured and reapplied to every wrapped fragment. Wrapping that flattened it would
+  // turn a table into a paragraph and lose exactly the thing the table is for.
+  for (const line of costPolicyDisclosure(built.costEligibility)) {
+    if (line.length === 0) { say(''); continue; }
+    const indent = ' '.repeat(2 + (line.length - line.trimStart().length));
+    for (const wrapped of wrap(line.trimStart(), 78 - indent.length)) say(`${indent}${wrapped}`);
+  }
+  say('');
   if (built.envelope.mixed) {
     say('MIXED EXECUTION — task outcomes will be comparable; speed and cost will not:');
     for (const reason of MIXED_EXECUTION_REASONS) for (const line of wrap(reason, 76)) say(`  · ${line}`);

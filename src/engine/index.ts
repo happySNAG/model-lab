@@ -15,6 +15,7 @@ export * from './opencode-adapter';
 export * from './discovery-store';
 export * from './reconciliation';
 export * from './identity-admission';
+export * from './cost-eligibility';
 export * from './identity-smoke';
 export * from './smoke-binding';
 export * from './spending';

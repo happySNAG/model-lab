@@ -84,6 +84,57 @@ export async function swapUsedBytes(): Promise<number> {
  * The store fields are the caller's to fill: a campaign with local candidates reads them from its
  * runtime, and a frontier-only campaign has no store to read and no store guard to satisfy.
  */
+/**
+ * MEMORY THAT IS ACTUALLY AVAILABLE TO A NEW ALLOCATION, which on macOS is not `os.freemem()`.
+ *
+ * THE DEFECT THIS CORRECTS. `os.freemem()` returns Mach's "pages free" and nothing else. On Darwin
+ * that number stays near zero on a healthy machine BY DESIGN: the kernel keeps recently-used pages
+ * on the INACTIVE list rather than returning them to the free pool, and hands them to the next
+ * allocation that asks. A Mac mini with 32 GiB, 16 GiB of it immediately reclaimable and no memory
+ * pressure whatsoever, reports 4.7% free — and a 5% floor then aborts a campaign for a shortage
+ * that does not exist. That is a guard measuring the wrong quantity, not a machine running out.
+ *
+ * THIS DOES NOT LOOSEN THE FLOOR, and the distinction matters. The floor stays exactly where it was
+ * set; what changes is that "free memory" starts meaning, on this platform, what the platform means
+ * by it. A guard whose reading is wrong is not a strict guard — it is a guard that fires on the
+ * wrong events and teaches its operator to route around it, which is the failure mode a safety floor
+ * can least afford.
+ *
+ * WHAT IS SUMMED, AND WHAT IS DELIBERATELY NOT. free + inactive + speculative. Purgeable pages are
+ * NOT added: they are already counted within the active and inactive lists, and adding them would
+ * double-count reclaimable memory and overstate the figure — an error in the dangerous direction for
+ * a floor. Wired and active pages are not available and are never counted.
+ *
+ * EVERY OTHER PLATFORM IS UNTOUCHED. Linux's `MemAvailable` would be the equivalent correction
+ * there; it is not made here because nothing has measured it on Linux, and a correction written from
+ * reasoning rather than observation is how the first defect arrived.
+ */
+export async function availableMemoryBytes(): Promise<number> {
+  if (process.platform !== 'darwin') return os.freemem();
+
+  const out = await run('vm_stat', []);
+  if (out === undefined) return os.freemem();
+
+  // The page size is read from vm_stat's own header rather than assumed to be 4096: Apple Silicon
+  // reports 16384 on some configurations, and a hardcoded 4096 would understate available memory by
+  // a factor of four — which is exactly the direction that causes the spurious abort again.
+  const pageSize = Number(/page size of (\d+) bytes/.exec(out)?.[1] ?? 4096);
+  const pages = (label: string): number | undefined => {
+    const match = new RegExp(`Pages ${label}:\\s+(\\d+)`).exec(out);
+    return match ? Number(match[1]) : undefined;
+  };
+
+  const free = pages('free');
+  const inactive = pages('inactive');
+  const speculative = pages('speculative');
+  // A vm_stat that parsed but did not carry the fields this depends on is not interpreted. Falling
+  // back to `os.freemem()` reports a real, merely narrower, number — the module's posture for a
+  // figure it cannot read, and the conservative direction for a floor.
+  if (free === undefined || inactive === undefined) return os.freemem();
+
+  return (free + inactive + (speculative ?? 0)) * pageSize;
+}
+
 export async function readMachine(diskPath?: string): Promise<{
   freeDiskBytes: number; swapUsedBytes: number; freeMemoryBytes: number; totalMemoryBytes: number;
   listeners: Record<string, number>;
@@ -91,7 +142,7 @@ export async function readMachine(diskPath?: string): Promise<{
   return {
     freeDiskBytes: await freeDiskBytes(diskPath ?? os.tmpdir()),
     swapUsedBytes: await swapUsedBytes(),
-    freeMemoryBytes: os.freemem(),
+    freeMemoryBytes: await availableMemoryBytes(),
     totalMemoryBytes: os.totalmem(),
     listeners: await readListeners(),
   };
