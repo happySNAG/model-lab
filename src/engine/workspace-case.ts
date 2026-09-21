@@ -52,6 +52,13 @@ export class WorkspaceCaseError extends Error {
  * Separate from `CapabilityDimension` in the portable core, which enumerates conversational
  * qualities. A case declares several, because real work exercises several at once, and the ranking
  * counts an outcome under each one it declared rather than picking a winner.
+ *
+ * A DECLARATION OF INTENT, NEVER A MEASUREMENT. A case carrying `recoveryFromError` says it was
+ * built so that recovery COULD be observed on it; whether any run actually recovered from anything
+ * is a fact about the runs, and `workspace-routing-evidence.ts` reports it from the runs. The last
+ * seven were added with `pack.cernum.workspace.discriminator-one@1` and describe the reasoning its
+ * cases are built around. Adding them moved no existing digest: a case seals its OWN list, and no
+ * case that already existed declares any of them.
  */
 export type WorkspaceDimension =
   | 'repositoryComprehension'
@@ -64,12 +71,44 @@ export type WorkspaceDimension =
   | 'regressionAvoidance'
   | 'scopeDiscipline'
   | 'patchCleanliness'
-  | 'autonomousCompletion';
+  | 'autonomousCompletion'
+  /** Applying the transformations that are asked for while leaving everything else exactly as it was. */
+  | 'preservationUnderTransformation'
+  /** Handling data from a newer or foreign writer so that what this code does not understand survives it. */
+  | 'forwardCompatibilityReasoning'
+  /** Not reaching for a catch-all — drop, default, strip, rebuild — where the contract asks for a selective change. */
+  | 'destructiveFallbackAvoidance'
+  /** Satisfying what the repository's contract states when the visible checks would pass without it. */
+  | 'contractOverVisibleTests'
+  /** Changing two components whose invariants must agree, where fixing either alone is not enough. */
+  | 'interactingInvariantReasoning'
+  /** Using the engine's own verification report to repair a failed attempt. Needs a failed attempt to exist. */
+  | 'verificationDrivenRecovery'
+  /** Doing something materially different on a second attempt rather than resampling the first. Needs a second attempt. */
+  | 'secondAttemptAdaptation';
 
 export const ALL_WORKSPACE_DIMENSIONS: WorkspaceDimension[] = [
   'repositoryComprehension', 'fileLocation', 'multiFileEditing', 'toolUse', 'testExecution',
   'failureInterpretation', 'recoveryFromError', 'regressionAvoidance', 'scopeDiscipline',
   'patchCleanliness', 'autonomousCompletion',
+  'preservationUnderTransformation', 'forwardCompatibilityReasoning', 'destructiveFallbackAvoidance',
+  'contractOverVisibleTests', 'interactingInvariantReasoning', 'verificationDrivenRecovery',
+  'secondAttemptAdaptation',
+];
+
+/**
+ * THE DIMENSIONS A PASS CANNOT DEMONSTRATE ON ITS OWN.
+ *
+ * Every other dimension is exercised by any scored run of a case that declares it: the model was
+ * asked to do the thing, and it did or did not. These three are different in kind. Recovery is the
+ * response to a FAILED attempt, so a run whose first attempt passed was never asked to recover —
+ * and a table reporting "recoveryFromError 3/3" over three first-time passes is reporting a case
+ * outcome under a capability's name. That is exactly what the tier matrices printed, and it is why
+ * these are listed: evidence about them exists only where a run actually made a second attempt
+ * after the engine's verification reported a failure.
+ */
+export const WORKSPACE_DIMENSIONS_REQUIRING_A_RETRY: WorkspaceDimension[] = [
+  'recoveryFromError', 'verificationDrivenRecovery', 'secondAttemptAdaptation',
 ];
 
 // MARK: - Commands

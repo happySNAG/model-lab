@@ -328,12 +328,19 @@ function pathArgument(input: Record<string, unknown>): string | undefined {
 /**
  * Split a shell command into the segments a separate executable could run in.
  *
- * CONSERVATIVE BY CONSTRUCTION. It splits on `&&`, `||`, `|`, `;` and newlines that appear OUTSIDE
- * single quotes, double quotes and backslash escapes, and it does nothing else — no variable
- * expansion, no substitution, no understanding of `$(...)`. That is deliberate: a parser that tried
- * to be clever would produce confident wrong answers about what ran, and what this is for is naming
- * the executables that were VISIBLY asked for. Everything it cannot see is covered by
- * `CLAUDE_COMMAND_REPORTING_IS_A_STRING` and by the fact that the verdict comes from the tree.
+ * CONSERVATIVE BY CONSTRUCTION. It splits on `&&`, `||`, `|`, `|&`, `;`, a background `&` and
+ * newlines that appear OUTSIDE single quotes, double quotes and backslash escapes, and it does
+ * nothing else — no variable expansion, no substitution, no understanding of `$(...)`. That is
+ * deliberate: a parser that tried to be clever would produce confident wrong answers about what ran,
+ * and what this is for is naming the executables that were VISIBLY asked for. Everything it cannot
+ * see is covered by `CLAUDE_COMMAND_REPORTING_IS_A_STRING` and by the fact that the verdict comes
+ * from the tree.
+ *
+ * AN `&` INSIDE A REDIRECTION IS NOT A SEPARATOR. `node test/x.js 2>&1` is one command, and treating
+ * its `&` as "run in the background" split it into `node test/x.js 2>` and `1` — so a transcript
+ * reported an executable called `1`. The redirection forms are recognised by their neighbours: an
+ * `&` straight after `>` or `<` duplicates a descriptor (`2>&1`, `>&2`, `<&3`), and an `&` straight
+ * before `>` redirects both streams (`&>file`, `&>>file`). Only an `&` that is neither is a separator.
  */
 export function shellSegments(command: string): string[] {
   const segments: string[] = [];
@@ -351,8 +358,15 @@ export function shellSegments(command: string): string[] {
     }
     if (character === '"' || character === "'") { quote = character; current += character; continue; }
     const pair = command.slice(index, index + 2);
-    if (pair === '&&' || pair === '||') { segments.push(current); current = ''; index += 1; continue; }
-    if (character === ';' || character === '|' || character === '\n' || character === '&') {
+    if (pair === '&&' || pair === '||' || pair === '|&') { segments.push(current); current = ''; index += 1; continue; }
+    if (character === '&') {
+      const previous = current[current.length - 1];
+      const redirection = previous === '>' || previous === '<' || command[index + 1] === '>';
+      if (redirection) { current += character; continue; }
+      segments.push(current); current = '';
+      continue;
+    }
+    if (character === ';' || character === '|' || character === '\n') {
       segments.push(current); current = '';
       continue;
     }

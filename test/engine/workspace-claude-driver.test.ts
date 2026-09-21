@@ -572,6 +572,23 @@ describe('9 · command events are parsed out of the shell string this CLI report
     expect(shellSegments('cat f | wc -l')).toEqual(['cat f', 'wc -l']);
   });
 
+  it('keeps a redirection\'s & inside its command, so 2>&1 names no executable called "1"', () => {
+    // THE REGRESSION. `node test/x.js 2>&1` was split at its `&` into `node test/x.js 2>` and `1`,
+    // and the transcript reported an executable named `1`.
+    expect(shellSegments('node test/stats.test.js 2>&1')).toEqual(['node test/stats.test.js 2>&1']);
+    expect(commandInvocations('node test/stats.test.js 2>&1').map((entry) => entry.executable)).toEqual(['node']);
+    expect(commandInvocations('node test/a.js 2>&1 | tail -5').map((entry) => entry.executable)).toEqual(['node', 'tail']);
+    // Every descriptor-duplicating and both-stream form stays one command.
+    for (const command of ['node a.js >&2', 'cat <&3', 'node a.js &>out.log', 'node a.js &>>out.log', 'node a.js 1>&2 2>&1']) {
+      expect(shellSegments(command), command).toEqual([command]);
+    }
+    // And the separators it must still split on are still split on.
+    expect(shellSegments('sleep 1 & node a.js')).toEqual(['sleep 1', 'node a.js']);
+    expect(shellSegments('node a.js |& grep ok')).toEqual(['node a.js', 'grep ok']);
+    expect(shellSegments('node a.js && node b.js 2>&1 || echo failed')).toEqual(['node a.js', 'node b.js 2>&1', 'echo failed']);
+    expect(shellSegments("echo 'a & b' & ls")).toEqual(["echo 'a & b'", 'ls']);
+  });
+
   it('names the executable of each segment, skipping leading environment assignments', () => {
     expect(commandInvocations('NODE_ENV=test node test/stats.test.js'))
       .toEqual([{ executable: 'node', argv: ['test/stats.test.js'] }]);

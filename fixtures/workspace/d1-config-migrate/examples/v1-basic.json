@@ -1,0 +1,7 @@
+{
+  "name": "billing-api",
+  "region": "eu-west",
+  "timeout": 90,
+  "color": true,
+  "deploy": { "strategy": "rolling", "maxSurge": 1 }
+}

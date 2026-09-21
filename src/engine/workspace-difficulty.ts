@@ -431,46 +431,7 @@ export function validateWorkspaceDifficultyProfile(profile: WorkspaceDifficultyP
       + 'tier is a label, and a label is what this file exists to replace.');
   }
 
-  const counts = { ...profile.measured, ...profile.declared } as Record<string, CanonicalValue | undefined>;
-  for (const [name, value] of Object.entries(counts)) {
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-      refuse('invalidDescriptor', `declares ${name} as ${String(value)}. ${COUNT_FIELDS_MUST_BE_WHOLE_AND_NOT_NEGATIVE}`);
-    }
-  }
-
-  const recomputed = measureWorkspaceCase(c, profile.measured);
-  for (const [name, value] of Object.entries(recomputed)) {
-    if ((profile.measured as Record<string, CanonicalValue | undefined>)[name] !== value) {
-      refuse('measurementDisagrees', `claims ${name} is `
-        + `${String((profile.measured as Record<string, CanonicalValue | undefined>)[name])}, and the sealed case says `
-        + `${String(value)}. The measured half is derived, not asserted.`);
-    }
-  }
-
-  if (profile.declared.architecturalConstraintCount > profile.measured.fileInvariantCount) {
-    refuse('moreConstraintsThanInvariants', `claims ${profile.declared.architecturalConstraintCount} architectural `
-      + `constraints and the case carries ${profile.measured.fileInvariantCount} file invariants. A constraint on the `
-      + 'shape of an answer is something the case enforces, not something a profile asserts.');
-  }
-  if ((profile.declared.hiddenInvariantCount > 0) !== (profile.measured.hiddenCommandCount > 0)) {
-    refuse('hiddenInvariantsDisagree', `claims ${profile.declared.hiddenInvariantCount} hidden invariants and the case `
-      + `carries ${profile.measured.hiddenCommandCount} hidden commands. A hidden invariant with nothing checking it `
-      + 'is not measured, and a hidden check testing nothing the repository states is a trap.');
-  }
-  if (profile.declared.relevantFileCount + profile.declared.irrelevantContextFileCount > profile.measured.fixtureFileCount) {
-    refuse('moreFilesThanThereAre', `accounts for ${profile.declared.relevantFileCount} relevant and `
-      + `${profile.declared.irrelevantContextFileCount} irrelevant files in a tree of ${profile.measured.fixtureFileCount}`);
-  }
-  if (profile.declared.expectedMinimumEditFiles < 1) {
-    refuse('noEdits', 'expects a correct answer to change no files, which would make every no-op a pass');
-  }
-  if (profile.declared.independentDefectCount < 1) {
-    refuse('noDefects', 'declares no defect to fix, so there would be nothing to measure');
-  }
-  if (profile.declared.independentDefectCount > 1 && profile.measured.verificationCommandCount < 2) {
-    refuse('defectsCannotBeSeparated', `claims ${profile.declared.independentDefectCount} independent defects behind a `
-      + 'single verification command, so fixing one of them could never be told apart from fixing both');
-  }
+  validateWorkspaceStructuralDescriptors(profile.measured, profile.declared, c, refuse);
 
   const band = WORKSPACE_TIER_BANDS[profile.tier];
   for (const [axis, floor] of Object.entries(band.minimum)) {
@@ -494,6 +455,62 @@ export function validateWorkspaceDifficultyProfile(profile: WorkspaceDifficultyP
     refuse('notBeyondPreviousTier', `declares ${profile.tier} while going beyond every ${tierBelow(profile.tier)} case `
       + `on only ${beyond.length} axis/axes (${beyond.join(', ') || 'none'}); `
       + `${band.minimumAxesBeyondPreviousTier} are required. A tier is not the tier below with more files in it.`);
+  }
+}
+
+/**
+ * The checks every structural claim about a case must pass, WHATEVER it is used for.
+ *
+ * Shared by the tier profiles above and by the untiered structural profiles in
+ * `workspace-discriminator.ts`, so the two kinds of claim are held to one standard: the measured
+ * half is recomputed from the sealed case, and the declared half is cross-checked wherever the case
+ * gives something to check it against. What a TIER adds on top — floors, ceilings and the
+ * three-axes rule — stays in `validateWorkspaceDifficultyProfile`, because it is a claim about
+ * ordering between cases that an untiered profile does not make.
+ */
+export function validateWorkspaceStructuralDescriptors(
+  measured: WorkspaceMeasuredDifficulty, declared: WorkspaceDeclaredDifficulty, c: WorkspaceCase,
+  refuse: (code: string, message: string) => never,
+): void {
+  const counts = { ...measured, ...declared } as Record<string, CanonicalValue | undefined>;
+  for (const [name, value] of Object.entries(counts)) {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      refuse('invalidDescriptor', `declares ${name} as ${String(value)}. ${COUNT_FIELDS_MUST_BE_WHOLE_AND_NOT_NEGATIVE}`);
+    }
+  }
+
+  const recomputed = measureWorkspaceCase(c, measured);
+  for (const [name, value] of Object.entries(recomputed)) {
+    if ((measured as Record<string, CanonicalValue | undefined>)[name] !== value) {
+      refuse('measurementDisagrees', `claims ${name} is `
+        + `${String((measured as Record<string, CanonicalValue | undefined>)[name])}, and the sealed case says `
+        + `${String(value)}. The measured half is derived, not asserted.`);
+    }
+  }
+
+  if (declared.architecturalConstraintCount > measured.fileInvariantCount) {
+    refuse('moreConstraintsThanInvariants', `claims ${declared.architecturalConstraintCount} architectural `
+      + `constraints and the case carries ${measured.fileInvariantCount} file invariants. A constraint on the `
+      + 'shape of an answer is something the case enforces, not something a profile asserts.');
+  }
+  if ((declared.hiddenInvariantCount > 0) !== (measured.hiddenCommandCount > 0)) {
+    refuse('hiddenInvariantsDisagree', `claims ${declared.hiddenInvariantCount} hidden invariants and the case `
+      + `carries ${measured.hiddenCommandCount} hidden commands. A hidden invariant with nothing checking it `
+      + 'is not measured, and a hidden check testing nothing the repository states is a trap.');
+  }
+  if (declared.relevantFileCount + declared.irrelevantContextFileCount > measured.fixtureFileCount) {
+    refuse('moreFilesThanThereAre', `accounts for ${declared.relevantFileCount} relevant and `
+      + `${declared.irrelevantContextFileCount} irrelevant files in a tree of ${measured.fixtureFileCount}`);
+  }
+  if (declared.expectedMinimumEditFiles < 1) {
+    refuse('noEdits', 'expects a correct answer to change no files, which would make every no-op a pass');
+  }
+  if (declared.independentDefectCount < 1) {
+    refuse('noDefects', 'declares no defect to fix, so there would be nothing to measure');
+  }
+  if (declared.independentDefectCount > 1 && measured.verificationCommandCount < 2) {
+    refuse('defectsCannotBeSeparated', `claims ${declared.independentDefectCount} independent defects behind a `
+      + 'single verification command, so fixing one of them could never be told apart from fixing both');
   }
 }
 

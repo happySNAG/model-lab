@@ -24,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
-  allWorkspaceCases, foundationFourPack, registeredWorkspacePacks, tierThreePack, tierTwoPack,
+  allWorkspaceCases, discriminatorOnePack, foundationFourPack, registeredWorkspacePacks, tierThreePack, tierTwoPack,
   validateWorkspaceCatalog, workspacePackByID,
 } from '../../src/engine/workspace-catalog';
 import { workspaceTierTwoSuite } from '../../src/engine/workspace-catalog-tier-two';
@@ -139,7 +139,10 @@ describe('the pack that has already run is byte-for-byte what it was', () => {
 describe('the tier packs are sealed experiments in their own right', () => {
   it('validates the whole catalogue, difficulty claims included', () => {
     expect(() => validateWorkspaceCatalog()).not.toThrow();
-    expect(registeredWorkspacePacks).toHaveLength(3);
+    // Three tier packs and, since the discriminator pass, one untiered discriminator pack — which is
+    // a different family and is checked in `workspace-discriminator.test.ts`.
+    expect(registeredWorkspacePacks).toHaveLength(4);
+    expect(registeredWorkspacePacks).toContain(discriminatorOnePack);
     expect(workspacePackByID(tierTwoPack.id)).toBe(tierTwoPack);
     expect(workspacePackByID(tierThreePack.id)).toBe(tierThreePack);
   });
@@ -157,13 +160,13 @@ describe('the tier packs are sealed experiments in their own right', () => {
       const once_only = makeWorkspaceBenchmarkPack({ ...pack, repeatsPerCase: 1 });
       expect(workspacePackDigest(once_only, cases)).not.toBe(once);
     }
-    // And the three packs are three different experiments.
+    // And every registered pack is a different experiment.
     const digests = registeredWorkspacePacks.map((pack) => workspacePackDigest(pack, cases));
-    expect(new Set(digests).size).toBe(3);
+    expect(new Set(digests).size).toBe(registeredWorkspacePacks.length);
   });
 
   it('is four cases and three repeats at every tier, so the three tables read alike', () => {
-    for (const pack of registeredWorkspacePacks) {
+    for (const pack of [foundationFourPack, tierTwoPack, tierThreePack]) {
       expect(pack.caseIDs).toHaveLength(4);
       expect(pack.repeatsPerCase).toBe(3);
     }

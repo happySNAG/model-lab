@@ -318,7 +318,7 @@ export function registeredWorkspaceDifficultyProfiles(): WorkspaceDifficultyProf
  * Called by `validateWorkspaceCatalog`, so a preview or a matrix run refuses before anything is sent
  * rather than publishing a tier nobody checked.
  */
-export function validateWorkspaceDifficultyCatalogue(): void {
+export function validateWorkspaceDifficultyCatalogue(describedStructurallyInstead: string[] = []): void {
   const cases = allWorkspaceCases();
   const seen = new Set<string>();
   for (const profile of registeredWorkspaceDifficultyProfiles()) {
@@ -330,11 +330,17 @@ export function validateWorkspaceDifficultyCatalogue(): void {
     if (c === undefined) throw new Error(`difficulty profile for unknown workspace case ${profile.caseID}`);
     validateWorkspaceDifficultyProfile(profile, c);
   }
-  // EVERY case carries one. A catalogue where some cases have a tier and others do not would publish
-  // tables a reader cannot put beside each other, and `workspacePackTier` refuses a half-profiled
-  // pack for the same reason.
+  // EVERY case carries one — or, for the empirical discriminator family, an untiered STRUCTURAL
+  // profile instead (`workspace-discriminator.ts`), and never both. A catalogue where some cases had
+  // no structural claim at all would publish tables a reader cannot put beside each other, and
+  // `workspacePackTier` refuses a half-profiled pack for the same reason.
   for (const c of cases) {
-    if (!seen.has(c.id)) {
+    const structural = describedStructurallyInstead.includes(c.id);
+    if (seen.has(c.id) && structural) {
+      throw new Error(`workspace case ${c.id} carries both a tier and an untiered structural profile. A case is either `
+        + 'banded into a tier or deliberately left out of the tiers; it cannot be both.');
+    }
+    if (!seen.has(c.id) && !structural) {
       throw new Error(`workspace case ${c.id} carries no difficulty profile. Every case declares its tier, or a `
         + 'reader comparing two packs has no way to know whether they asked for comparable work.');
     }

@@ -51,6 +51,10 @@ import {
 } from './workspace-difficulty';
 import { ALWAYS_ALLOWED_ENVIRONMENT_NAMES } from './workspace-agent';
 import {
+  WORKSPACE_STRUCTURE_IS_NOT_DISCRIMINATION, WorkspaceStructuralProfile, describeWorkspaceStructuralProfile,
+  workspacePackStructuralDigest, workspaceStructuralProfileDigest,
+} from './workspace-discriminator';
+import {
   WORKSPACE_REPEAT_IS_NOT_RETRY, WorkspaceBenchmarkPack, WorkspaceRepeat, planWorkspaceRepeats,
   resolveWorkspacePack, validateWorkspaceBenchmarkPack, workspacePackDigest, workspaceRepeatGroupID,
 } from './workspace-pack';
@@ -129,6 +133,11 @@ export interface WorkspaceMatrixRequest {
    * asserting something this build had not checked.
    */
   difficultyProfiles?: WorkspaceDifficultyProfile[];
+  /**
+   * The untiered structural profiles this build carries, for the empirical discriminator family.
+   * Optional and absent-means-absent, exactly like `difficultyProfiles`.
+   */
+  structuralProfiles?: WorkspaceStructuralProfile[];
   /** Injected by the tests, so a matrix can be planned and run without a provider's CLI installed. */
   driverFactory?: (binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>)
   => WorkspaceAgentDriver | undefined;
@@ -179,6 +188,8 @@ export interface WorkspaceMatrixCell {
   difficultyTier?: WorkspaceDifficultyTier;
   /** `cwd1:` of that judgement, so a cell says which difficulty claim it ran under. */
   difficultyDigest?: string;
+  /** `cwx1:` of the untiered structural profile, for a discriminator case. Never alongside a tier. */
+  structuralDigest?: string;
   /** Empty means this cell runs. Non-empty means it is refused, and every reason is named. */
   refusals: string[];
   runnable: boolean;
@@ -268,6 +279,20 @@ export interface WorkspaceMatrixPlan {
   difficultyProfiles: WorkspaceDifficultyProfile[];
   /** Said on the plan rather than left to a reader: a tier describes the task, never a model. */
   difficultyDisclosure: string;
+  /** Each member's untiered structural profile, in the pack's order. Empty for a tiered or unprofiled pack. */
+  structuralProfiles: WorkspaceStructuralProfile[];
+  /** `cwx1:` over every member's structural profile. Separate from `packDigest`, like `packDifficultyDigest`. */
+  packStructuralDigest?: string;
+  /**
+   * Where this matrix COULD observe recovery, computed from the sealed cases and the operator's cap.
+   *
+   * A design figure, not a prediction: a retry happens only where attempt 1 actually fails. A pack
+   * whose `retryCapableRunCount` is zero can never produce recovery evidence however it goes, and a
+   * reader deserves to know that before spending an evening on it.
+   */
+  designedRecovery: WorkspaceDesignedRecovery;
+  /** Structure and discrimination are different questions; said on the plan so neither is mistaken for the other. */
+  structureDisclosure: string;
   /**
    * Whether the run loop will stop this matrix on a provider session throttle.
    *
@@ -276,6 +301,15 @@ export interface WorkspaceMatrixPlan {
    * produce forty-five runs recorded as failures of the models.
    */
   throttleProtectionArmed: boolean;
+}
+
+export interface WorkspaceDesignedRecovery {
+  /** Cases whose effective attempt ceiling in this plan is above one. */
+  retryCapableCaseIDs: string[];
+  /** Runnable runs of those cases: the most runs that could ever produce a recovery opportunity. */
+  retryCapableRunCount: number;
+  /** Attempts beyond the first those runs may use — the part of `maximumProviderAttemptCount` that is retries. */
+  additionalAttemptCeiling: number;
 }
 
 const slug = (value: string): string => value.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
@@ -377,6 +411,17 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
       .map((entry) => workspaceDifficultyProfileFor(request.difficultyProfiles ?? [], entry.id))
       .filter((profile): profile is WorkspaceDifficultyProfile => profile !== undefined),
     difficultyDisclosure: WORKSPACE_TIER_IS_A_PROPERTY_OF_THE_TASK,
+    structuralProfiles: packCases
+      .map((entry) => (request.structuralProfiles ?? []).find((profile) => profile.caseID === entry.id))
+      .filter((profile): profile is WorkspaceStructuralProfile => profile !== undefined),
+    packStructuralDigest: workspacePackStructuralDigest(request.structuralProfiles ?? [], packCases.map((entry) => entry.id)),
+    designedRecovery: {
+      retryCapableCaseIDs: [...new Set(runnable.filter((cell) => cell.effectiveAttemptCeiling > 1)
+        .map((cell) => cell.caseID))],
+      retryCapableRunCount: runnable.filter((cell) => cell.effectiveAttemptCeiling > 1).length,
+      additionalAttemptCeiling: runnable.reduce((sum, cell) => sum + cell.effectiveAttemptCeiling - 1, 0),
+    },
+    structureDisclosure: WORKSPACE_STRUCTURE_IS_NOT_DISCRIMINATION,
     throttleProtectionArmed: true,
   };
 }
@@ -438,6 +483,7 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
 function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, workspaceCase: WorkspaceCase,
                   repeat: WorkspaceRepeat, recordRootPrefix: string): WorkspaceMatrixCell {
   const profile = workspaceDifficultyProfileFor(request.difficultyProfiles ?? [], workspaceCase.id);
+  const structural = (request.structuralProfiles ?? []).find((entry) => entry.caseID === workspaceCase.id);
   const caseAllows = workspaceCase.execution.maximumAttempts;
   const effectiveAttemptCeiling = request.attemptCeiling === undefined
     ? caseAllows : Math.max(1, Math.min(request.attemptCeiling, caseAllows));
@@ -463,6 +509,7 @@ function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, 
     dimensions: [...workspaceCase.dimensions],
     difficultyTier: profile?.tier,
     difficultyDigest: profile === undefined ? undefined : workspaceDifficultyDigest(profile),
+    structuralDigest: structural === undefined ? undefined : workspaceStructuralProfileDigest(structural),
     refusals: model.refusals,
     runnable: model.runnable,
   };
@@ -578,11 +625,16 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   const lines: string[] = [];
   lines.push(`pack            ${plan.packID}@${plan.packVersion}  ${plan.packTitle}`);
   lines.push(`pack digest     ${plan.packDigest}`);
-  lines.push(`difficulty      ${plan.difficultyTier === undefined
-    ? 'NOT JUDGED — this build carries no difficulty profile for these cases, so no tier is claimed'
-    : `${plan.difficultyTier} for every case in this pack`}`);
+  lines.push(`difficulty      ${plan.difficultyTier !== undefined
+    ? `${plan.difficultyTier} for every case in this pack`
+    : plan.structuralProfiles.length > 0
+      ? 'NO TIER — empirical discriminator family: each case carries an untiered structural profile, below'
+      : 'NOT JUDGED — this build carries no difficulty profile for these cases, so no tier is claimed'}`);
   if (plan.packDifficultyDigest !== undefined) {
     lines.push(`difficulty dig. ${plan.packDifficultyDigest}  (separate from the pack digest, by design)`);
+  }
+  if (plan.packStructuralDigest !== undefined) {
+    lines.push(`structure dig.  ${plan.packStructuralDigest}  (separate from the pack digest, by design)`);
   }
   lines.push(`provider        ${plan.provider}${plan.effort === 'none' ? '' : ` · effort ${plan.effort}`}`);
   lines.push(`models          ${plan.modelIDs.length}: ${plan.modelIDs.join(', ')}`);
@@ -598,6 +650,16 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
     + 'workspace.');
   lines.push('                A retry happens only where a case allows one and its verification failed;');
   lines.push('                a matrix that passes everything first time uses the run count above.');
+  lines.push(`recovery design ${plan.designedRecovery.retryCapableRunCount === 0
+    ? 'NONE — no runnable case allows a second attempt, so this matrix cannot produce recovery evidence'
+    : `${plan.designedRecovery.retryCapableCaseIDs.length} case(s) allow a retry: `
+      + `${plan.designedRecovery.retryCapableRunCount} runnable run(s) could each make a second attempt, `
+      + `at most ${plan.designedRecovery.additionalAttemptCeiling} beyond the first.`}`);
+  if (plan.designedRecovery.retryCapableRunCount > 0) {
+    lines.push(`                ${plan.designedRecovery.retryCapableCaseIDs.join(', ')}`);
+    lines.push('                These are OPPORTUNITIES BY DESIGN. Recovery is measured only where an attempt 1');
+    lines.push('                actually fails; a run that passes first time is not recovery evidence.');
+  }
   lines.push('');
 
   lines.push('cases, as sealed:');
@@ -613,8 +675,13 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
         ? ` (operator cap; the case allows ${cell.caseMaximumAttempts})` : ' (the case\'s own ceiling)'}`
       + ` · timeout ${cell.timeoutMilliseconds} ms`);
     const profile = plan.difficultyProfiles.find((entry) => entry.caseID === cell.caseID);
+    const structural = plan.structuralProfiles.find((entry) => entry.caseID === cell.caseID);
     if (profile !== undefined) {
       for (const line of describeWorkspaceDifficulty(profile, cell.dimensions)) {
+        lines.push(`  ${''.padEnd(32)} ${line}`);
+      }
+    } else if (structural !== undefined) {
+      for (const line of describeWorkspaceStructuralProfile(structural, cell.dimensions)) {
         lines.push(`  ${''.padEnd(32)} ${line}`);
       }
     } else {
@@ -681,6 +748,10 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   lines.push(plan.repeatDisclosure);
   lines.push('');
   lines.push(plan.difficultyDisclosure);
+  if (plan.structuralProfiles.length > 0) {
+    lines.push('');
+    lines.push(plan.structureDisclosure);
+  }
   return lines;
 }
 

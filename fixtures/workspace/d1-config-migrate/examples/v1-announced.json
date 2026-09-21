@@ -1,0 +1,8 @@
+{
+  "name": "search-indexer",
+  "region": "us-east",
+  "timeout": "2m",
+  "color": "auto",
+  "deploy": { "strategy": "blue-green", "maxSurge": 2 },
+  "notify": { "slack": "#search-deploys" }
+}

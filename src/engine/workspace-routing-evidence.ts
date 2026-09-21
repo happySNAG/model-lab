@@ -42,7 +42,10 @@ import {
   Quantity, measuredQuantity, sumQuantities, unavailableQuantity,
 } from './frontier-metrics';
 import { NumericSpread, WorkspaceCellAggregate, spreadOf } from './workspace-aggregate';
-import { WorkspaceCase, WorkspaceDimension } from './workspace-case';
+import { WORKSPACE_DIMENSIONS_REQUIRING_A_RETRY, WorkspaceCase, WorkspaceDimension } from './workspace-case';
+import {
+  WORKSPACE_RECOVERY_REQUIRES_A_FAILED_ATTEMPT, WorkspaceRecoveryCounts, recoveryCountsOf,
+} from './workspace-empirical-evidence';
 import {
   WORKSPACE_TIER_IS_A_PROPERTY_OF_THE_TASK, WorkspaceDifficultyProfile, WorkspaceDifficultyTier,
   workspaceDifficultyProfileFor,
@@ -214,6 +217,33 @@ export function workspaceTierEvidence(
 // MARK: - By capability dimension
 
 /**
+ * Whether the runs behind a capability row actually EXERCISED the capability.
+ *
+ * WHY THIS EXISTS. The success count on a capability row is the outcome of the CASES that declared
+ * the dimension, and for most dimensions that is a fair reading — a run of a case built to need
+ * failure interpretation was asked to interpret failures, whether it passed or not. It is not a fair
+ * reading for the dimensions in `WORKSPACE_DIMENSIONS_REQUIRING_A_RETRY`. The Tier 2 and Tier 3
+ * matrices printed `recoveryFromError 3/3` for every candidate, over runs that all passed on attempt
+ * 1: three case outcomes, under a recovery label, with no recovery in them. This block says, per
+ * row, whether the capability was exercised at all and — for the retry dimensions — on how many
+ * actual opportunities, so an outcome can never again be read as a capability it did not test.
+ */
+export interface WorkspaceCapabilityExercise {
+  /** True for the dimensions that only a failed-then-retried run can exercise. */
+  requiresRetry: boolean;
+  /**
+   * Runs that exercised the capability. For most dimensions every scored run does; for the retry
+   * dimensions only a run whose first attempt failed and which made another.
+   */
+  exercisedRunCount: number;
+  /** True when at least one run exercised it. A row with this false is a case outcome and nothing more. */
+  measured: boolean;
+  /** Present on the retry dimensions: opportunities, recoveries, failed recoveries, and the rate over opportunities. */
+  recovery?: WorkspaceRecoveryCounts;
+  statement: string;
+}
+
+/**
  * One candidate on one capability dimension.
  *
  * A CASE COUNTS UNDER EVERY DIMENSION IT DECLARED, and therefore appears in several of these rows.
@@ -221,6 +251,11 @@ export function workspaceTierEvidence(
  * runs, not a partition of them, and adding them up would count a run once per dimension it happened
  * to exercise. `caseIDs` is on the row so a reader can see exactly which runs are behind a number
  * and can tell two dimensions that rest on the same three cases from two that do not.
+ *
+ * TWO THINGS, NAMED APART. `successCount` and `successRateMilli` are the CASE OUTCOME — how the runs
+ * of cases that declared this dimension ended. `exercise` is whether the dimension was actually
+ * exercised by those runs. For every dimension except the retry ones they coincide; for those they
+ * do not, and `exercise.measured` is the field that says whether there is any evidence at all.
  *
  * NOTHING IS MANUFACTURED. A dimension no case in the matrix declared produces no row at all, rather
  * than a row of zeros or a rate over an empty denominator.
@@ -240,6 +275,9 @@ export interface WorkspaceCapabilityEvidence {
   successRateMilli: Quantity;
   casesPassedEveryTime: number;
   casesNeverPassed: number;
+
+  /** Whether the capability itself was exercised, as opposed to the cases that declare it being run. */
+  exercise: WorkspaceCapabilityExercise;
 
   evidenceDisclosure: string;
 }
@@ -288,9 +326,39 @@ export function workspaceCapabilityEvidence(
       casesPassedEveryTime: withAScoredRun.filter((cell) => cell.quality.successCount === cell.quality.scoredRunCount).length,
       casesNeverPassed: withAScoredRun.filter((cell) => cell.quality.successCount === 0).length,
 
+      exercise: capabilityExerciseOf(dimension, group, scoredRunCount),
+
       evidenceDisclosure: WORKSPACE_TIER_EVIDENCE_IS_NOT_A_SCORE,
     };
   });
+}
+
+function capabilityExerciseOf(
+  dimension: WorkspaceDimension, group: WorkspaceCellAggregate[], scoredRunCount: number,
+): WorkspaceCapabilityExercise {
+  if (!WORKSPACE_DIMENSIONS_REQUIRING_A_RETRY.includes(dimension)) {
+    return {
+      requiresRetry: false,
+      exercisedRunCount: scoredRunCount,
+      measured: scoredRunCount > 0,
+      statement: scoredRunCount > 0
+        ? `every scored run of a case declaring ${dimension} exercised it, so the case outcome is the evidence`
+        : `no run of a case declaring ${dimension} produced a scorable outcome`,
+    };
+  }
+  const recovery = recoveryCountsOf(group,
+    `no run of a case declaring ${dimension} failed its first attempt and then made another, so ${dimension} was `
+    + 'never exercised. A pass on the first attempt is a case outcome, not recovery evidence.');
+  return {
+    requiresRetry: true,
+    exercisedRunCount: recovery.opportunityCount,
+    measured: recovery.measured,
+    recovery,
+    statement: recovery.measured
+      ? `${recovery.recoveredCount} of ${recovery.opportunityCount} failed first attempt(s) recovered on a later attempt`
+      : `NOT MEASURED — ${recovery.retryCapableScoredRunCount} retry-capable run(s), `
+        + `${recovery.firstAttemptSuccessCount} passed on attempt 1, 0 opportunities. ${WORKSPACE_RECOVERY_REQUIRES_A_FAILED_ATTEMPT}`,
+  };
 }
 
 // MARK: - Asking a threshold question, without answering a routing question
@@ -366,14 +434,27 @@ export function describeWorkspaceTierEvidence(evidence: WorkspaceTierEvidence): 
   ].join('  ').trimEnd();
 }
 
-/** One line per candidate per capability dimension. */
+/**
+ * One line per candidate per capability dimension.
+ *
+ * The case outcome is always labelled as one. For a retry dimension the line then says what the
+ * capability evidence actually is — opportunities and recoveries, or UNAVAILABLE — so a row of
+ * first-time passes can never read as a recovery rate.
+ */
 export function describeWorkspaceCapabilityEvidence(evidence: WorkspaceCapabilityEvidence): string {
   const rate = evidence.successRateMilli.value;
+  const recovery = evidence.exercise.recovery;
+  const recoveryRate = recovery?.recoveryRateMilli.value;
   return [
     evidence.candidate.padEnd(30),
-    evidence.dimension.padEnd(26),
-    `${evidence.successCount}/${evidence.scoredRunCount}`.padStart(7),
-    (rate === undefined ? 'no rate' : `${(rate / 10).toFixed(1)}%`).padStart(8),
+    evidence.dimension.padEnd(32),
+    `case outcome ${`${evidence.successCount}/${evidence.scoredRunCount}`.padStart(5)}`,
+    (rate === undefined ? 'no rate' : `${(rate / 10).toFixed(1)}%`).padStart(7),
+    recovery === undefined ? ''
+      : recovery.measured
+        ? `recovery ${recovery.recoveredCount}/${recovery.opportunityCount} opportunities`
+          + `${recoveryRate === undefined ? '' : ` (${(recoveryRate / 10).toFixed(1)}%)`}`
+        : `recovery UNAVAILABLE — 0 opportunities in ${recovery.retryCapableScoredRunCount} retry-capable run(s)`,
     `over ${evidence.caseIDs.length} case(s) at ${evidence.tiers.join('+') || 'no tier'}`,
-  ].join('  ').trimEnd();
+  ].filter((part) => part.length > 0).join('  ').trimEnd();
 }

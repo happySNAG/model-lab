@@ -47,6 +47,9 @@ import {
   validateWorkspaceCatalog, workspaceDifficultyProfileFor,
   workspaceCapabilityEvidence, workspaceInstructionText, workspaceTierEvidence,
   describeWorkspaceCapabilityEvidence, describeWorkspaceTierEvidence,
+  registeredWorkspaceStructuralProfiles, workspaceStructuralProfileFor, describeWorkspaceStructuralProfile,
+  workspaceRecoveryEvidence, describeWorkspaceRecoveryEvidence, workspaceEmpiricalDiscrimination,
+  describeWorkspaceEmpiricalDiscrimination, WORKSPACE_RECOVERY_REQUIRES_A_FAILED_ATTEMPT,
   workspacePromptRecordOf, workspaceRecordPaths, workspaceRecordRoot, workspaceTimeoutFor,
   CLAUDE_CLI_VERSION_VERIFIED_AGAINST,
   // The comparative matrix: one sealed pack, several models, several independent samples of each.
@@ -1657,11 +1660,14 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   // WHAT THIS CASE DEMANDS, from the sealed difficulty profile rather than from an adjective. A case
   // this build has not judged prints that it has not been judged; nothing here infers a tier.
   const caseProfile = workspaceDifficultyProfileFor(registeredWorkspaceDifficultyProfiles(), workspaceCase.id);
-  if (caseProfile === undefined) {
+  const structuralProfile = workspaceStructuralProfileFor(registeredWorkspaceStructuralProfiles(), workspaceCase.id);
+  if (caseProfile !== undefined) {
+    for (const line of describeWorkspaceDifficulty(caseProfile, workspaceCase.dimensions)) say(`  ${line}`);
+  } else if (structuralProfile !== undefined) {
+    for (const line of describeWorkspaceStructuralProfile(structuralProfile, workspaceCase.dimensions)) say(`  ${line}`);
+  } else {
     say(`  dimensions      ${workspaceCase.dimensions.join(', ')}`);
     say('  tier            not judged by this build');
-  } else {
-    for (const line of describeWorkspaceDifficulty(caseProfile, workspaceCase.dimensions)) say(`  ${line}`);
   }
   say('');
   for (const line of describePreRunIdentity(identity)) say(`  ${line}`);
@@ -1859,10 +1865,15 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   validateWorkspaceCatalog();
 
   // 1. THE PACK. Named by the person; there is no default and there will not be one.
+  // Packs are listed as `id@version` because that is what a pack IS — the id alone names a family
+  // of experiments — and `workspacePackByID` accepts either spelling, so a name copied out of this
+  // list is always one the command will take.
+  const packList = `Packs (name one by id, or by id@version): ${registeredWorkspacePacks
+    .map((entry) => `${entry.id}@${entry.version}`).join(', ')}`;
   if (positional.length === 0) {
     fail('no benchmark pack named, and this command has no default.\n'
       + `Name one: ${TERMINAL_COMMAND} workspace-benchmark <pack-id> --provider <id> --models <a,b> --dry-run\n`
-      + `Packs: ${registeredWorkspacePacks.map((entry) => `${entry.id}@${entry.version}`).join(', ')}`, 2);
+      + packList, 2);
   }
   if (positional.length > 1) {
     fail(`one benchmark pack at a time, but ${positional.length} were named: ${positional.join(', ')}.`, 2);
@@ -1870,7 +1881,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   const pack = workspacePackByID(positional[0]);
   if (!pack) {
     fail(`'${positional[0]}' is not a benchmark pack this build knows.\n`
-      + `Packs: ${registeredWorkspacePacks.map((entry) => `${entry.id}@${entry.version}`).join(', ')}\n`
+      + `${packList}\n`
       + 'A pack is sealed data in this repository; nothing here composes one at run time.', 2);
   }
 
@@ -1936,6 +1947,9 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       // and every cell carries the `cwd1:` it ran under. `validateWorkspaceCatalog` above has
       // already refused any profile that does not hold up against its case.
       difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
+      // AND THE UNTIERED STRUCTURAL PROFILES, for the empirical discriminator family. A pack is
+      // described by one kind or the other; `validateWorkspaceCatalog` refuses a case carrying both.
+      structuralProfiles: registeredWorkspaceStructuralProfiles(),
       now: () => now,
     });
   } catch (error) {
@@ -2060,21 +2074,44 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   // 6. THE SAME RUNS, READ BY DIFFICULTY AND BY CAPABILITY. Two more views of the table above, not
   //    two more measurements: no composite is averaged across cases, nothing is ranked, and a rate
   //    with an empty denominator stays unavailable. See `workspace-routing-evidence.ts`.
+  //
+  //    The capability view is printed whether or not the pack has a tier: it was nested under the
+  //    tier view, so an untiered pack printed no capability evidence at all.
   const profiles = registeredWorkspaceDifficultyProfiles();
   const tierRows = workspaceTierEvidence(cells, profiles);
+  const capabilityRows = workspaceCapabilityEvidence(cells, allWorkspaceCases(), profiles);
+  const recoveryRows = workspaceRecoveryEvidence(cells);
+  const packRuns = collectWorkspaceRunRows(root).filter((run) => run.row.packID === pack.id);
+  const discrimination = workspaceEmpiricalDiscrimination(cells, packRuns);
   if (tierRows.length > 0) {
     say('by difficulty tier:');
     say('candidate                       tier      pass      rate        cases clean        unanimous       time'
       + '           allowance');
     for (const row of tierRows) say(describeWorkspaceTierEvidence(row));
     say('');
-    const capabilityRows = workspaceCapabilityEvidence(cells, allWorkspaceCases(), profiles);
-    say('by capability dimension (a case counts under every dimension it declared, so these rows overlap):');
+    say(`  ${tierRows[0].tierDisclosure}`);
+    say('');
+  }
+  if (capabilityRows.length > 0) {
+    say('by capability dimension (a case counts under every dimension it declared, so these rows overlap; the case');
+    say('outcome is how those cases ended, and a recovery dimension is evidence only where a retry happened):');
     for (const row of capabilityRows) say(describeWorkspaceCapabilityEvidence(row));
     say('');
-    say(`  ${tierRows[0].evidenceDisclosure}`);
+    say(`  ${capabilityRows[0].evidenceDisclosure}`);
     say('');
-    say(`  ${tierRows[0].tierDisclosure}`);
+  }
+  if (recoveryRows.length > 0) {
+    say('recovery, wherever it actually happened (every retry-capable case, whatever it is tagged):');
+    for (const row of recoveryRows) say(describeWorkspaceRecoveryEvidence(row));
+    say('');
+    say(`  ${WORKSPACE_RECOVERY_REQUIRES_A_FAILED_ATTEMPT}`);
+    say('');
+  }
+  if (discrimination.cases.length > 0) {
+    say('empirical discrimination (relative to the candidates in this matrix; no case is ranked and no candidate is):');
+    for (const line of describeWorkspaceEmpiricalDiscrimination(discrimination)) say(`  ${line}`);
+    say('');
+    say(`  ${discrimination.disclosure}`);
     say('');
   }
 
@@ -2097,8 +2134,15 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       difficultyTier: plan.difficultyTier,
       packDifficultyDigest: plan.packDifficultyDigest,
       difficultyProfiles: plan.difficultyProfiles,
-      byTier: workspaceTierEvidence(cells, registeredWorkspaceDifficultyProfiles()),
-      byCapability: workspaceCapabilityEvidence(cells, allWorkspaceCases(), registeredWorkspaceDifficultyProfiles()),
+      byTier: tierRows,
+      byCapability: capabilityRows,
+      // RECOVERY WHERE IT HAPPENED, and DISCRIMINATION RELATIVE TO THIS SET. Both passive readings of
+      // the same records; see `workspace-empirical-evidence.ts`.
+      byRecovery: recoveryRows,
+      discrimination,
+      packStructuralDigest: plan.packStructuralDigest,
+      structuralProfiles: plan.structuralProfiles,
+      designedRecovery: plan.designedRecovery,
       packDigest: plan.packDigest,
       repeatDisclosure: plan.repeatDisclosure,
       // WHAT WAS PLANNED, BESIDE WHAT RAN. A reader handed only the cells cannot tell a matrix that

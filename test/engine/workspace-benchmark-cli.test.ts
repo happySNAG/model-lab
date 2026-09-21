@@ -17,7 +17,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { allWorkspaceCases, foundationFourPack } from '../../src/engine/workspace-catalog';
+import { allWorkspaceCases, discriminatorOnePack, foundationFourPack } from '../../src/engine/workspace-catalog';
 import { resolveWorkspacePack, workspacePackDigest } from '../../src/engine/workspace-pack';
 import { workspaceCaseDigest } from '../../src/engine/workspace-case';
 import { discoveryStorePath } from '../../src/engine/discovery-store';
@@ -216,6 +216,61 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expect(result.output).toContain('allowance     NOT KNOWN');
     expect(result.output).toContain('no remaining-allowance figure');
     expectNoModelRequest();
+  }, 120_000);
+});
+
+describe('the discriminator pack previews as 72 runs and sends nothing', () => {
+  const DISCRIMINATOR = discriminatorOnePack.id;
+
+  it('prints the pack, every case, the untiered structure, the recovery design and the two counts', () => {
+    proveLineup(CLAUDE_LINEUP.split(','));
+    const result = cernum('workspace-benchmark', DISCRIMINATOR, '--provider', 'claudeCLI',
+      '--models', CLAUDE_LINEUP, '--dry-run');
+    expect(result.status).toBe(0);
+    expect(result.output).toContain(`${DISCRIMINATOR}@1`);
+    expect(result.output).toContain(workspacePackDigest(discriminatorOnePack, allWorkspaceCases()));
+    for (const workspaceCase of resolveWorkspacePack(discriminatorOnePack, allWorkspaceCases())) {
+      expect(result.output).toContain(`${workspaceCase.id}@${workspaceCase.version}`);
+      expect(result.output).toContain(workspaceCaseDigest(workspaceCase));
+      expect(result.output).toContain(workspaceCase.source.expectedTreeDigest!);
+    }
+    // SIX CASES, THREE REPEATS, FOUR MODELS: 72 runs. Four one-attempt cases and two two-attempt
+    // cases: 4 x 3 x 8 = 96 attempts at most — which the plan summed from the sealed cases.
+    expect(result.output).toContain('4 models x 6 cases x 3 repeats = 72 independent runs');
+    expect(result.output).toMatch(/runnable\s+72/);
+    expect(result.output).toMatch(/max attempts\s+96/);
+    expect(result.output).toContain('recovery design 2 case(s) allow a retry: 24 runnable run(s)');
+    // NO TIER, AND WHY. Structure is described, not banded.
+    expect(result.output).toContain('NO TIER — empirical discriminator family');
+    expect(result.output).toContain('structure dig.  cwx1:');
+    expect(result.output).toContain('declared intent, not evidence');
+    // THE SAFETY LINES AN OPERATOR NEEDS BEFORE SEVENTY-TWO RUNS.
+    expect(result.output).toContain('throttle guard  ARMED');
+    expect(result.output).toContain('allowance     NOT KNOWN');
+    expect(result.output).toContain('a TRUE zero');
+    // NOT ONE MODEL REQUEST. The session credential read is the only process it started.
+    expectNoModelRequest();
+    expect(invocations()).toEqual(['auth status --json']);
+    expect(fs.existsSync(path.join(campaigns, 'workspace'))).toBe(false);
+  }, 120_000);
+
+  it('accepts a pack named the way the refusal message lists it, as id@version', () => {
+    proveLineup(['claude-haiku-4-5']);
+    const result = cernum('workspace-benchmark', `${DISCRIMINATOR}@1`, '--provider', 'claudeCLI',
+      '--models', 'claude-haiku-4-5', '--dry-run');
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('1 models x 6 cases x 3 repeats = 18 independent runs');
+    expectNoModelRequest();
+  }, 120_000);
+
+  it('refuses a version this build does not carry, and says both spellings are accepted', () => {
+    const result = cernum('workspace-benchmark', `${DISCRIMINATOR}@9`, '--provider', 'claudeCLI',
+      '--models', 'claude-haiku-4-5', '--dry-run');
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('is not a benchmark pack this build knows');
+    expect(result.output).toContain('name one by id, or by id@version');
+    expect(result.output).toContain(`${DISCRIMINATOR}@1`);
+    expect(invocations()).toEqual([]);
   }, 120_000);
 });
 

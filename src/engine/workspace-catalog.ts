@@ -21,7 +21,11 @@ import {
 import { hiddenScript } from './workspace-hidden-script';
 import { workspaceTierTwoSuite } from './workspace-catalog-tier-two';
 import { workspaceTierThreeSuite } from './workspace-catalog-tier-three';
+import { workspaceDiscriminatorSuite } from './workspace-catalog-discriminator';
 import { validateWorkspaceDifficultyCatalogue } from './workspace-difficulty-catalog';
+import {
+  registeredWorkspaceStructuralProfiles, validateWorkspaceStructuralCatalogue,
+} from './workspace-discriminator-catalog';
 
 export const WORKSPACE_SUITE_FOUNDATION = 'suite.cernum.workspace.foundation';
 export const WORKSPACE_SUITE_FOUNDATION_VERSION = '1';
@@ -399,7 +403,7 @@ export const workspaceFoundationSuite: WorkspaceSuite = makeWorkspaceSuite(
 );
 
 export const registeredWorkspaceSuites: WorkspaceSuite[] = [
-  workspaceFoundationSuite, workspaceTierTwoSuite, workspaceTierThreeSuite,
+  workspaceFoundationSuite, workspaceTierTwoSuite, workspaceTierThreeSuite, workspaceDiscriminatorSuite,
 ];
 
 // MARK: - Packs
@@ -505,11 +509,57 @@ export const tierThreePack: WorkspaceBenchmarkPack = makeWorkspaceBenchmarkPack(
   repeatsPerCase: 3,
 });
 
+/**
+ * THE FIRST EMPIRICAL DISCRIMINATOR PACK — a new family, deliberately not "Tier 4".
+ *
+ * WHY NOT A TIER. The tiers describe structure faithfully and did not predict who would fail:
+ * Tier 3 was 48/48, and the only case that separated the strongest candidates from the rest was a
+ * one-file Tier 2 fix. This pack is chosen from that evidence instead of from the counts — six cases
+ * that isolate the reasoning which has actually separated candidates (keep what you do not
+ * recognise, three times over in unrelated domains), one that isolates two invariants having to
+ * agree, and two built so that recovery is OBSERVABLE, which no retry-capable case in any tier was.
+ * `workspace-catalog-discriminator.ts` says what each case is for; `workspace-discriminator.ts` says
+ * why the family carries a structural profile and no tier.
+ *
+ * SIX CASES, THREE REPEATS. Four candidates is 4 x 6 x 3 = 72 independent runs. Four cases allow
+ * one attempt and two allow two, so the provider ceiling is 4 x 3 x (1+1+1+1+2+2) = 96 attempts —
+ * computed by the plan from the sealed cases, never from this sentence.
+ */
+export const WORKSPACE_PACK_DISCRIMINATOR_ONE = 'pack.cernum.workspace.discriminator-one';
+
+export const discriminatorOnePack: WorkspaceBenchmarkPack = makeWorkspaceBenchmarkPack({
+  id: WORKSPACE_PACK_DISCRIMINATOR_ONE,
+  version: '1',
+  title: 'Discriminator one',
+  description: 'Six sealed workspace cases chosen for empirical discrimination rather than structural tier — three '
+    + 'that preserve what they do not recognise, one pair of interacting invariants, and two recovery cases whose '
+    + 'second attempt is observable — sampled three times each.',
+  caseIDs: [
+    'ws.d1.config-migrate.upgrade', 'ws.d1.asset-container.retitle', 'ws.d1.log-redact.mask',
+    'ws.d1.catalog-paging.walk', 'ws.d1.query-codec.nest', 'ws.d1.task-board.reassign',
+  ],
+  repeatsPerCase: 3,
+});
+
 export const registeredWorkspacePacks: WorkspaceBenchmarkPack[] = [
-  foundationFourPack, tierTwoPack, tierThreePack,
+  foundationFourPack, tierTwoPack, tierThreePack, discriminatorOnePack,
 ];
 
+/**
+ * A pack by its id, or by `id@version` — the form every listing of packs prints.
+ *
+ * Both are accepted because the refusal message has always listed packs as `id@version`, and a person
+ * who copied a name out of it was then refused for having done so. A version that does not match the
+ * pack this build carries is refused rather than ignored: asking for `@2` and silently getting `@1`
+ * would run a different experiment from the one named.
+ */
 export function workspacePackByID(id: string): WorkspaceBenchmarkPack | undefined {
+  const at = id.lastIndexOf('@');
+  if (at > 0) {
+    const bare = id.slice(0, at);
+    const version = id.slice(at + 1);
+    return registeredWorkspacePacks.find((pack) => pack.id === bare && pack.version === version);
+  }
   return registeredWorkspacePacks.find((pack) => pack.id === id);
 }
 
@@ -532,5 +582,6 @@ export function validateWorkspaceCatalog(): void {
   for (const suite of registeredWorkspaceSuites) validateWorkspaceSuite(suite);
   const cases = allWorkspaceCases();
   for (const pack of registeredWorkspacePacks) validateWorkspaceBenchmarkPack(pack, cases);
-  validateWorkspaceDifficultyCatalogue();
+  validateWorkspaceStructuralCatalogue();
+  validateWorkspaceDifficultyCatalogue(registeredWorkspaceStructuralProfiles().map((profile) => profile.caseID));
 }
