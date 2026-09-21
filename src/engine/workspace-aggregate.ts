@@ -36,6 +36,7 @@
 // a convenience derived from the row and says so; the row carries the verification outcomes, the
 // per-metric readings and the scope assessment that half the columns below are computed from.
 
+import { ADMISSION_STAMP_SHORT } from './identity-admission';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CanonicalValue } from './canonical';
@@ -315,6 +316,26 @@ export const UNPRODUCTIVE_SPEND_DEFINITION =
   + 'disjoint, so no token appears in both and their sum is a real total. A run that was never executed contributes '
   + 'nothing to either: no resources were spent on it.';
 
+/** Identity confidence for one cell. Counted, never folded into a score. */
+export interface WorkspaceCellIdentityProvenance {
+  /** Runs whose pre-run identity was admitted as requestAcceptedIdentityUnverifiable rather than established. */
+  admittedUnverifiableRunCount: number;
+  /** `workspaceMatrix` for a matrix admission; absent entries for a single-record admission. */
+  admissionScopes: string[];
+  matrixAdmissionDigests: string[];
+  matrixAdmissionEntryDigests: string[];
+  /** Each per-record admission seal, one per admitted run. */
+  recordAdmissionDigests: string[];
+  /** How many runs ended with each execution identity verdict: unverifiable, substituted, verified… */
+  executionIdentityVerdicts: Record<string, number>;
+  /** Runs whose own execution reported another model (a Codex reroute). Each failed. */
+  substitutedRunCount: number;
+  /** The models those runs reported, distinct. Never a claim about which model answered the others. */
+  reportedSubstitutes: string[];
+  identityLimitation?: string;
+  disclosure: string;
+}
+
 /** One `provider:model` × case cell of a comparative matrix. */
 export interface WorkspaceCellAggregate {
   candidate: string;
@@ -324,6 +345,14 @@ export interface WorkspaceCellAggregate {
   billingBasis: string;
   /** The weakest identity state any run of this cell carried. An aggregate is only as attributable as its worst row. */
   bindingIdentityState: string;
+  /**
+   * How attributable this cell's runs are, beside — never inside — its quality figures.
+   *
+   * PRESENT ONLY WHEN THERE IS SOMETHING TO SAY: a run admitted under an identity admission, or a run
+   * whose own execution reported a different model. A cell of verified runs carries no such field, so
+   * every aggregate that existed before admissions reads exactly as it did.
+   */
+  identityProvenance?: WorkspaceCellIdentityProvenance;
 
   caseID: string;
   caseVersion: string;
@@ -653,6 +682,7 @@ export function aggregateWorkspaceCell(runs: WorkspaceRunRow[]): WorkspaceCellAg
     bindingIdentityState: rows.some((row) => text(row, 'bindingIdentityState') !== 'verified')
       ? (rows.map((row) => text(row, 'bindingIdentityState')).find((state) => state !== 'verified') ?? 'verified')
       : 'verified',
+    ...identityProvenanceOf(rows),
 
     caseID: text(first, 'caseID') ?? '',
     caseVersion: text(first, 'caseVersion') ?? '',
@@ -682,6 +712,42 @@ export function aggregateWorkspaceCell(runs: WorkspaceRunRow[]): WorkspaceCellAg
   };
 }
 
+const distinct = (values: (string | undefined)[]): string[] =>
+  [...new Set(values.filter((value): value is string => value !== undefined && value.length > 0))].sort();
+
+/**
+ * The identity-confidence block of a cell, or nothing when every run is attributable.
+ *
+ * Deliberately touches no quality figure: an admitted run is scored exactly as any other, and a
+ * substituted one is already a failed row. This only COUNTS what the rows say about attribution.
+ */
+function identityProvenanceOf(rows: Record<string, unknown>[]): { identityProvenance?: WorkspaceCellIdentityProvenance } {
+  const admitted = rows.filter((row) => text(row, 'identityAdmissionDigest') !== undefined);
+  const substituted = rows.filter((row) => text(row, 'executionIdentityVerdict') === 'substituted');
+  if (admitted.length === 0 && substituted.length === 0) return {};
+  const verdicts: Record<string, number> = {};
+  for (const row of rows) {
+    const verdict = text(row, 'executionIdentityVerdict') ?? 'notEstablished';
+    verdicts[verdict] = (verdicts[verdict] ?? 0) + 1;
+  }
+  return {
+    identityProvenance: {
+      admittedUnverifiableRunCount: admitted
+        .filter((row) => text(row, 'bindingIdentityState') === 'requestAcceptedIdentityUnverifiable').length,
+      admissionScopes: distinct(admitted.map((row) => text(row, 'identityAdmissionScope') ?? 'singleRecord')),
+      matrixAdmissionDigests: distinct(admitted.map((row) => text(row, 'matrixAdmissionDigest'))),
+      matrixAdmissionEntryDigests: distinct(admitted.map((row) => text(row, 'matrixAdmissionEntryDigest'))),
+      recordAdmissionDigests: admitted.map((row) => text(row, 'identityAdmissionDigest') ?? ''),
+      executionIdentityVerdicts: verdicts,
+      substitutedRunCount: substituted.length,
+      reportedSubstitutes: distinct(substituted.map((row) => text(row, 'reportedModelID'))),
+      identityLimitation: distinct(admitted.map((row) => text(row, 'identityLimitation')))[0],
+      disclosure: 'Identity confidence, not quality: these runs are scored exactly like verified ones. An admitted run '
+        + 'means "what answered when this identifier was requested", not "this model answered".',
+    },
+  };
+}
+
 /**
  * One line per cell, for a terminal table.
  *
@@ -706,6 +772,11 @@ export function describeWorkspaceCell(cell: WorkspaceCellAggregate): string {
       : (cell.metrics.costPerRunMicroUSD.value === undefined ? 'cost unknown'
         : `$${(cell.metrics.costPerRunMicroUSD.value / 1_000_000).toFixed(4)}`)).padStart(18),
     cell.measurementQuality,
+    // THE STAMP, on the same line as the numbers, so no copy of this row loses it. Absent on every
+    // verified cell, whose line is unchanged.
+    (cell.identityProvenance?.admittedUnverifiableRunCount ?? 0) > 0 ? `[${ADMISSION_STAMP_SHORT}]` : '',
+    (cell.identityProvenance?.substitutedRunCount ?? 0) > 0
+      ? `[${cell.identityProvenance?.substitutedRunCount} run(s) reported another model]` : '',
   ].join('  ').trimEnd();
 }
 

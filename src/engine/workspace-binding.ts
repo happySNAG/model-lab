@@ -176,8 +176,9 @@ export function buildWorkspaceBinding(request: WorkspaceBindingRequest): Provide
       `${request.modelID} on ${request.provider} has not been proven callable by this account, so it cannot be run `
       + `against a workspace case. ${request.identity.evidence} A model identifier is a plan, not a capability: `
       + `prove it once with an identity smoke test and the proof is then read from the discovery store. A route whose `
-      + 'tool can never name its model (codexCLI) can instead be admitted for ONE run by a sealed identity admission, '
-      + 'which records it as requestAcceptedIdentityUnverifiable and never as verified.');
+      + 'tool can never name its model (codexCLI) can instead be admitted by a sealed identity admission — for ONE run '
+      + '(`workspace`), or per exact route across ONE sealed matrix (`workspace-benchmark`) — which records it as '
+      + 'requestAcceptedIdentityUnverifiable and never as verified.');
   }
 
   const executionClass = executionClassOf(request.provider);

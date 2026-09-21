@@ -29,12 +29,21 @@
 // naming that method. A cell with no prior evidence estimates nothing and says why.
 
 import * as path from 'node:path';
-import { DiscoveryEvidence } from './discovery-store';
+import { DiscoveryEvidence, acceptedRequestEvidenceFor } from './discovery-store';
 import {
   Quantity, estimatedQuantity, measuredQuantity, sumQuantities, unavailableQuantity,
 } from './frontier-metrics';
 import { buildWorkspaceDriver } from './host-factory';
-import { EffortLevel, ProviderBinding, ProviderBindingError, ProviderID, isMetered } from './provider';
+import {
+  EffortLevel, ProviderBinding, ProviderBindingError, ProviderID, billingBasisOf, executionClassOf, isMetered,
+} from './provider';
+import {
+  ADMISSIBLE_PROVIDERS, IdentityAdmission, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance,
+} from './identity-admission';
+import {
+  WorkspaceMatrixAdmissionEntry, WorkspaceMatrixIdentityAdmission, describeWorkspaceMatrixAdmission,
+  matrixAdmissionFor, matrixAdmissionSealIsIntact, matrixCandidateName, recordAdmissionFromMatrix,
+} from './workspace-matrix-admission';
 import { WorkspaceAgentDriver } from './workspace-agent';
 import {
   PreRunIdentity, WorkspaceBindingError, buildWorkspaceBinding, resolvePreRunIdentity, workspaceTimeoutFor,
@@ -61,8 +70,8 @@ import {
 import { HardwareIdentity } from './manifest';
 import { WorkspaceOutcome } from './workspace-host';
 import {
-  ProviderThrottleSignal, THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS, describeProviderThrottle,
-  describeThrottleDeferral, detectProviderThrottle, throttleBlocks,
+  ProviderThrottleScopeDecision, ProviderThrottleSignal, THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS,
+  describeProviderThrottle, describeThrottleDeferral, detectProviderThrottle, providerThrottleScopeFor, throttleBlocks,
 } from './workspace-throttle';
 
 /**
@@ -125,6 +134,14 @@ export interface WorkspaceMatrixRequest {
   /** Prior sealed runs on this machine, used ONLY to estimate allowance. Never to score anything. */
   priorRuns?: WorkspaceRunRow[];
   /**
+   * The operator's sealed MATRIX identity admission, when one was given with --admit-identity-unverifiable.
+   *
+   * ABSENT MEANS REFUSAL for every route whose identity cannot be established — never "admit by
+   * default". There is no environment variable and no configuration key that supplies one; the only
+   * way in is an explicit flag, read and sealed to this matrix's label and pack by the invocation.
+   */
+  identityAdmission?: WorkspaceMatrixIdentityAdmission;
+  /**
    * The difficulty claims this build makes, so a preview can print the tier it is about to run.
    *
    * OPTIONAL, AND ABSENT MEANS ABSENT. A plan built without them prints no tier rather than a
@@ -161,6 +178,29 @@ export interface WorkspaceMatrixModel {
   /** Empty means this model runs. Non-empty means every one of its cells is refused, and why. */
   refusals: string[];
   runnable: boolean;
+  /** Whether this route needs an identity admission, whether one was given, and whether it admitted this route. */
+  admission: WorkspaceMatrixModelAdmission;
+  /** What this matrix will and will not record about the effort the tool actually APPLIED. Never an identity. */
+  appliedEffortEvidence: string;
+}
+
+/**
+ * One model's identity-admission position, stated in every state rather than only when it applies.
+ *
+ * `required` is true exactly for a route this exception exists for: an admissible provider (codexCLI)
+ * whose identity this machine has not verified. A verified route never requires one — which is why a
+ * Claude matrix is planned exactly as it was before this existed.
+ */
+export interface WorkspaceMatrixModelAdmission {
+  required: boolean;
+  present: boolean;
+  admitted: boolean;
+  /** The sealed entry that admitted this route, when one did. */
+  entry?: WorkspaceMatrixAdmissionEntry;
+  /** Why, in each state. */
+  reason: string;
+  /** For a route that needs an admission: whether an identity smoke shows the provider accepted this route. */
+  acceptedRequestEvidence?: string;
 }
 
 /** One planned run: one model, one case, one repeat. The unit the matrix counts in. */
@@ -174,6 +214,13 @@ export interface WorkspaceMatrixCell {
   repeat: WorkspaceRepeat;
   /** Filesystem-safe, unique within the matrix, and readable: model, case and which sample. */
   recordName: string;
+  /** The label this run's record is frozen under. Decided here, so a per-record admission can be sealed to it. */
+  recordLabel: string;
+  /**
+   * The Pass 6 admission THIS record will freeze, derived from the matrix admission and sealed to
+   * `recordLabel`. Present exactly on an admitted route's cells; derived once, here, and executed as is.
+   */
+  identityAdmission?: IdentityAdmission;
   recordRoot: string;
   fixturePath: string;
   fixtureExpectedTreeDigest?: string;
@@ -301,6 +348,15 @@ export interface WorkspaceMatrixPlan {
    * produce forty-five runs recorded as failures of the models.
    */
   throttleProtectionArmed: boolean;
+  /**
+   * How far a throttle from this provider would reach, and whether that was ESTABLISHED or is the
+   * conservative fallback. `codexCLI` has no observed usage limit yet, so its scope is undeclared.
+   */
+  throttleScope: ProviderThrottleScopeDecision;
+  /** The sealed matrix identity admission this plan was built under, verbatim. Absent when none was given. */
+  identityAdmission?: WorkspaceMatrixIdentityAdmission;
+  /** Runnable runs whose identity is admitted rather than established. Counted, never folded into quality. */
+  admittedUnverifiableRunCount: number;
 }
 
 export interface WorkspaceDesignedRecovery {
@@ -347,9 +403,11 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
 
   const environmentSource = request.environmentSource ?? process.env;
   const recordRootPrefix = workspaceRecordRoot(request.campaignRoot);
+  assertAdmissionScope(request, packDigest);
 
   const models: WorkspaceMatrixModel[] = request.modelIDs.map((modelID) =>
-    planModel(request, modelID, packCases));
+    planModel(request, modelID, packCases, packDigest));
+  assertEveryAdmissionEntryIsUsed(request, models);
 
   const cells: WorkspaceMatrixCell[] = [];
   // MODEL → REPEAT → CASE. The middle term is why a spread column means anything; see the header.
@@ -363,7 +421,7 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
           comparabilityKey: workspaceComparabilityKey(workspaceCase),
         });
         const repeat = planWorkspaceRepeats(repeatsPerCase, groupID)[repeatIndex - 1];
-        cells.push(planCell(request, model, workspaceCase, repeat, recordRootPrefix));
+        cells.push(planCell(request, model, workspaceCase, repeat, recordRootPrefix, packDigest));
       }
     }
   }
@@ -423,12 +481,79 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
     },
     structureDisclosure: WORKSPACE_STRUCTURE_IS_NOT_DISCRIMINATION,
     throttleProtectionArmed: true,
+    throttleScope: providerThrottleScopeFor(request.provider),
+    identityAdmission: request.identityAdmission,
+    admittedUnverifiableRunCount: runnable.filter((cell) => cell.identityAdmission !== undefined).length,
   };
 }
 
-function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: WorkspaceCase[]): WorkspaceMatrixModel {
-  const candidate = `${request.provider}:${modelID}${request.effort === 'none' ? '' : `@${request.effort}`}`;
-  const identity = resolvePreRunIdentity(request.discovery, request.provider, modelID, request.now?.() ?? new Date());
+/**
+ * Refuse a matrix admission sealed to another matrix or another pack, before any route is looked at.
+ *
+ * `matrixAdmissionFor` checks the same things per route; this says it once, as the whole-admission
+ * error it is, rather than as the same refusal printed under every model.
+ */
+function assertAdmissionScope(request: WorkspaceMatrixRequest, packDigest: string): void {
+  const admission = request.identityAdmission;
+  if (admission === undefined) return;
+  if (!matrixAdmissionSealIsIntact(admission)) {
+    throw new WorkspaceMatrixError('matrixAdmissionSealBroken',
+      'the matrix identity admission\'s seal does not match its contents, so what was authorised is not what is being '
+      + 'asked for. Nothing was planned.');
+  }
+  if (admission.matrixLabel !== request.runLabel) {
+    throw new WorkspaceMatrixError('matrixAdmissionScopeMismatch',
+      `the matrix identity admission was sealed to matrix '${admission.matrixLabel}', not '${request.runLabel}'. An `
+      + 'admission is granted to one matrix and is never carried forward.');
+  }
+  if (admission.packID !== request.pack.id || admission.packVersion !== request.pack.version
+    || admission.packDigest !== packDigest) {
+    throw new WorkspaceMatrixError('matrixAdmissionScopeMismatch',
+      `the matrix identity admission names pack ${admission.packID}@${admission.packVersion} (${admission.packDigest}), `
+      + `and this matrix runs ${request.pack.id}@${request.pack.version} (${packDigest}). An admission for one sealed `
+      + 'pack authorises no other; write the digest this dry run prints into the admission file.');
+  }
+}
+
+/**
+ * Refuse an admission entry this matrix would not use.
+ *
+ * An entry for a model this matrix does not run, or for an effort it does not request, is an
+ * authorization for something other than what is about to happen. Sealing it into this matrix would
+ * make the record claim a wider exception than was exercised — so the operator writes one admission
+ * per matrix, naming exactly its routes.
+ */
+function assertEveryAdmissionEntryIsUsed(request: WorkspaceMatrixRequest, models: WorkspaceMatrixModel[]): void {
+  const admission = request.identityAdmission;
+  if (admission === undefined) return;
+  const unused = admission.entries.filter((entry) => !models.some((model) => model.admission.entry?.entryDigest === entry.entryDigest
+    || (entry.provider === request.provider && entry.requestedModelID === model.modelID
+      && entry.requestedEffort === request.effort)));
+  if (unused.length > 0) {
+    throw new WorkspaceMatrixError('matrixAdmissionEntryUnused',
+      `the matrix identity admission names ${unused.map((entry) => entry.candidate).join(', ')}, which this matrix does not `
+      + `run (it runs ${models.map((model) => model.candidate).join(', ')}). An admission names exactly the routes of the `
+      + 'matrix it is sealed to; a route at another effort or on another model needs its own matrix and its own admission.');
+  }
+}
+
+/** What this matrix will record about the effort the tool actually applied. Stated per route, never inferred. */
+function appliedEffortEvidenceOf(request: WorkspaceMatrixRequest, disclosure: WorkspaceDriverDisclosure | undefined): string {
+  if (request.effort === 'none') return 'no effort requested';
+  if (request.provider === 'codexCLI') {
+    const collecting = (disclosure?.invocation ?? []).some((argument) => argument.startsWith('otel'));
+    return collecting
+      ? `requested ${request.effort}; APPLIED effort is measured from the CLI's own OTLP telemetry on each run`
+      : `requested ${request.effort} (sent as -c model_reasoning_effort); APPLIED effort is NOT MEASURED by this matrix — `
+        + 'no OTLP collector is attached, so what the tool applied is unobserved rather than assumed';
+  }
+  return `requested ${request.effort}; this matrix records no separate applied-effort evidence for ${request.provider}`;
+}
+
+function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: WorkspaceCase[],
+                   packDigest: string): WorkspaceMatrixModel {
+  const candidate = matrixCandidateName(request.provider, modelID, request.effort);
+  const known = resolvePreRunIdentity(request.discovery, request.provider, modelID, request.now?.() ?? new Date());
   const refusals: string[] = [];
 
   const factory = request.driverFactory ?? buildWorkspaceDriver;
@@ -436,6 +561,27 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
   if (driver === undefined) {
     refusals.push(`workspace driver unavailable: ${request.provider} has no workspace driver in this build, so a `
       + 'repository cannot be handed to it. Cernum does not fall back to prose execution for a workspace case.');
+  }
+
+  // The disclosure is per (driver, case) because a capability shortfall is a statement about a case;
+  // the union over the pack is what decides whether this MODEL can run the pack at all.
+  let disclosure: WorkspaceDriverDisclosure | undefined;
+  if (driver !== undefined) {
+    disclosure = discloseWorkspaceDriver(driver, packCases[0]);
+    const shortfalls = new Set<string>();
+    for (const entry of packCases) for (const s of discloseWorkspaceDriver(driver, entry).capabilityShortfalls) shortfalls.add(s);
+    disclosure = { ...disclosure, capabilityShortfalls: [...shortfalls].sort() };
+  }
+
+  // IDENTITY ADMISSION, decided before the binding, because the binding refuses an unproven route and an
+  // admitted one is exactly the route it would otherwise refuse. Admission never touches a verified route.
+  const { identity, admission } = admitRoute(request, {
+    modelID, candidate, known, packDigest,
+    driverID: driver?.driverID ?? '',
+    cliVersion: disclosure?.cliVersionVerifiedAgainst ?? '',
+  });
+  if (admission.required && !admission.admitted) {
+    refusals.push(`identityAdmissionRequired: ${admission.reason}`);
   }
 
   let binding: ProviderBinding | undefined;
@@ -455,17 +601,13 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
       throw error;
     }
   }
-
-  // The disclosure is per (driver, case) because a capability shortfall is a statement about a case;
-  // the union over the pack is what decides whether this MODEL can run the pack at all.
-  let disclosure: WorkspaceDriverDisclosure | undefined;
-  if (driver !== undefined) {
-    disclosure = discloseWorkspaceDriver(driver, packCases[0]);
-    const shortfalls = new Set<string>();
-    for (const entry of packCases) for (const s of discloseWorkspaceDriver(driver, entry).capabilityShortfalls) shortfalls.add(s);
-    disclosure = { ...disclosure, capabilityShortfalls: [...shortfalls].sort() };
-    refusals.push(...disclosure.capabilityShortfalls);
+  // BELT AND BRACES: the admission was checked against the billing basis the provider implies; the
+  // binding that was actually built must agree with it, or the admission covered some other route.
+  if (binding !== undefined && admission.entry !== undefined && binding.billingBasis !== admission.entry.billingBasis) {
+    refusals.push(`identityAdmissionMismatch: the binding bills as ${binding.billingBasis} and the admission covers `
+      + `${admission.entry.billingBasis}.`);
   }
+  if (disclosure !== undefined) refusals.push(...disclosure.capabilityShortfalls);
 
   return {
     modelID,
@@ -477,11 +619,85 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
     executionClass: binding?.executionClass,
     refusals,
     runnable: refusals.length === 0 && binding !== undefined && driver !== undefined,
+    admission,
+    appliedEffortEvidence: appliedEffortEvidenceOf(request, disclosure),
+  };
+}
+
+/**
+ * Decide one route's admission position, and the pre-run identity it runs under.
+ *
+ * STRONGER EVIDENCE WINS: a verified route is returned untouched and needs nothing. Otherwise, for the
+ * one admissible provider, the route runs only if the sealed matrix admission names it EXACTLY and this
+ * machine holds unexpired evidence that the provider accepted the request (the identity smoke's row in
+ * the discovery store). An admission never makes a route nobody has ever sent a request on runnable.
+ */
+function admitRoute(request: WorkspaceMatrixRequest, route: {
+  modelID: string; candidate: string; known: PreRunIdentity; packDigest: string; driverID: string; cliVersion: string;
+}): { identity: PreRunIdentity; admission: WorkspaceMatrixModelAdmission } {
+  const present = request.identityAdmission !== undefined;
+  if (route.known.state === 'verified') {
+    return { identity: route.known, admission: { required: false, present, admitted: false,
+      reason: 'not required — this route\'s identity is verified by the discovery store' } };
+  }
+  if (!ADMISSIBLE_PROVIDERS.includes(request.provider)) {
+    return { identity: route.known, admission: { required: false, present, admitted: false,
+      reason: `not applicable — ${request.provider} is not a provider this exception can admit; an unproven route on it `
+        + 'is refused as unproven' } };
+  }
+  const executionClass = executionClassOf(request.provider);
+  const decision = matrixAdmissionFor(request.identityAdmission, {
+    matrixLabel: request.runLabel,
+    provider: request.provider,
+    modelID: route.modelID,
+    effort: request.effort,
+    candidate: route.candidate,
+    packID: request.pack.id,
+    packVersion: request.pack.version,
+    packDigest: route.packDigest,
+    driverID: route.driverID,
+    cliVersion: route.cliVersion,
+    executionClass,
+    billingBasis: billingBasisOf(executionClass),
+  });
+  if (!decision.admitted || decision.entry === undefined) {
+    return { identity: route.known, admission: { required: true, present, admitted: false, reason: decision.reason,
+      acceptedRequestEvidence: acceptedRequestEvidenceFor(request.discovery, request.provider, route.modelID,
+        request.effort, request.now?.() ?? new Date()).reason } };
+  }
+  const accepted = acceptedRequestEvidenceFor(request.discovery, request.provider, route.modelID, request.effort,
+    request.now?.() ?? new Date());
+  if (!accepted.accepted) {
+    return { identity: route.known, admission: { required: true, present, admitted: false, entry: decision.entry,
+      acceptedRequestEvidence: accepted.reason,
+      reason: `the admission names ${route.candidate}, and this machine holds no unexpired evidence that the provider has `
+        + `ever accepted a request for it at this effort: ${accepted.reason} An admission accepts an unverifiable identity; `
+        + 'it does not stand in for a request nobody has sent. Run an identity smoke for this route first.' } };
+  }
+  const entry = decision.entry;
+  return {
+    identity: {
+      state: REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
+      // EMPTY, and it stays empty. The requested identifier is never copied into a verified field.
+      verifiedModelID: '',
+      evidence: [
+        `admitted for this matrix by ${request.identityAdmission?.matrixAdmissionDigest} entry ${entry.entryDigest}`,
+        ...admissionProvenance({
+          provider: entry.provider, requestedModelID: entry.requestedModelID, requestedEffort: entry.requestedEffort,
+          cliVersion: entry.cliVersion, authenticationBasis: entry.authenticationBasis, evidenceDigest: entry.evidenceDigest,
+          evidenceCapturedAt: entry.evidenceCapturedAt, returnedModelID: '', state: REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
+        }).slice(0, 8),
+        `accepted-request evidence on this machine: ${accepted.reason}`,
+      ].join(' · '),
+      resolvedFrom: 'identityAdmission',
+    },
+    admission: { required: true, present, admitted: true, entry, acceptedRequestEvidence: accepted.reason,
+      reason: 'admitted by the sealed matrix admission — identity REMAINS requestAcceptedIdentityUnverifiable' },
   };
 }
 
 function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, workspaceCase: WorkspaceCase,
-                  repeat: WorkspaceRepeat, recordRootPrefix: string): WorkspaceMatrixCell {
+                  repeat: WorkspaceRepeat, recordRootPrefix: string, packDigest: string): WorkspaceMatrixCell {
   const profile = workspaceDifficultyProfileFor(request.difficultyProfiles ?? [], workspaceCase.id);
   const structural = (request.structuralProfiles ?? []).find((entry) => entry.caseID === workspaceCase.id);
   const caseAllows = workspaceCase.execution.maximumAttempts;
@@ -490,6 +706,14 @@ function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, 
   const recordName = [
     slug(request.runLabel), slug(model.modelID), slug(workspaceCase.id), `r${repeat.repeatIndex}`,
   ].filter((part) => part.length > 0).join('-');
+  // THE SAME LABEL THE RECORD IS FROZEN UNDER, decided here so the per-record admission can be sealed
+  // to it in the plan — and so the dry run shows the seal the live record will carry.
+  const recordLabel = `${request.pack.id}@${request.pack.version} · ${workspaceCase.id}@${workspaceCase.version} · `
+    + `${model.candidate} · repeat ${repeat.repeatIndex}/${repeat.repeatsPlanned}`;
+  const identityAdmission = model.runnable && model.admission.admitted && model.admission.entry !== undefined
+    && request.identityAdmission !== undefined && request.identityAdmission.packDigest === packDigest
+    ? recordAdmissionFromMatrix(request.identityAdmission, model.admission.entry, recordLabel)
+    : undefined;
 
   return {
     candidate: model.candidate,
@@ -500,6 +724,8 @@ function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, 
     comparabilityKey: workspaceComparabilityKey(workspaceCase),
     repeat,
     recordName,
+    recordLabel,
+    identityAdmission,
     recordRoot: path.join(recordRootPrefix, recordName),
     fixturePath: workspaceCase.source.fixturePath,
     fixtureExpectedTreeDigest: workspaceCase.source.expectedTreeDigest,
@@ -637,6 +863,15 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
     lines.push(`structure dig.  ${plan.packStructuralDigest}  (separate from the pack digest, by design)`);
   }
   lines.push(`provider        ${plan.provider}${plan.effort === 'none' ? '' : ` · effort ${plan.effort}`}`);
+  const admissionRequired = plan.models.filter((model) => model.admission.required);
+  if (plan.identityAdmission !== undefined) {
+    lines.push(`identity adm.   PRESENT ${plan.identityAdmission.matrixAdmissionDigest} — `
+      + `${plan.models.filter((model) => model.admission.admitted).length} route(s) admitted, `
+      + `${plan.admittedUnverifiableRunCount} runnable run(s) will be identity-UNVERIFIABLE (details below)`);
+  } else if (admissionRequired.length > 0) {
+    lines.push(`identity adm.   ABSENT — ${admissionRequired.length} route(s) need one and are REFUSED: `
+      + `${admissionRequired.map((model) => model.candidate).join(', ')}`);
+  }
   lines.push(`models          ${plan.modelIDs.length}: ${plan.modelIDs.join(', ')}`);
   lines.push(`cases           ${plan.caseIDs.length}: ${plan.caseIDs.join(', ')}`);
   lines.push(`repeats         ${plan.repeatsPerCase} per case `
@@ -698,8 +933,14 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
       + `${model.identity.verifiedModelID.length > 0 ? ` as ${model.identity.verifiedModelID}` : ''}`
       + ` · resolved from ${model.identity.resolvedFrom}`
       + `${model.identity.provenAt === undefined ? '' : `, proven ${model.identity.provenAt}`}`);
+    lines.push(`    requested     ${model.modelID}${plan.effort === 'none' ? '' : ` · effort ${plan.effort}`}`);
+    lines.push(`    effort        ${model.appliedEffortEvidence}`);
     lines.push(`    billing       ${model.billingBasis ?? 'not bound'}`
       + `${model.executionClass === undefined ? '' : ` (${model.executionClass})`}`);
+    lines.push(`    admission     ${describeModelAdmission(model)}`);
+    if (model.admission.acceptedRequestEvidence !== undefined) {
+      lines.push(`    smoke         ${model.admission.acceptedRequestEvidence}`);
+    }
     lines.push(`    driver        ${model.driver?.driverID ?? 'NONE'}`
       + ` · ${model.driver?.executablePath ?? 'NOT FOUND ON PATH'}`);
     if (model.driver?.invocation !== undefined) {
@@ -744,6 +985,13 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
     ? 'ARMED — a provider session throttle stops the matrix at the run that established it, and every cell after '
       + 'it is recorded as deferred rather than as a failure of the model'
     : 'NOT ARMED'}`);
+  lines.push(`throttle scope  ${plan.throttleScope.scope}${plan.throttleScope.declared
+    ? ' (declared)' : ' — UNDECLARED: no throttle has been observed for this provider, so the conservative fallback applies'}`);
+  lines.push(`                ${plan.throttleScope.note}`);
+  if (plan.identityAdmission !== undefined) {
+    lines.push('');
+    for (const line of describeWorkspaceMatrixAdmission(plan.identityAdmission)) lines.push(line);
+  }
   lines.push('');
   lines.push(plan.repeatDisclosure);
   lines.push('');
@@ -753,6 +1001,18 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
     lines.push(plan.structureDisclosure);
   }
   return lines;
+}
+
+/** One model's admission position, in one line. Every state is named; none is left blank. */
+export function describeModelAdmission(model: WorkspaceMatrixModel): string {
+  const { admission } = model;
+  if (!admission.required) return admission.reason;
+  if (admission.admitted && admission.entry !== undefined) {
+    return `REQUIRED — PRESENT, admitted by entry ${admission.entry.entryDigest}; identity state `
+      + `${model.identity.state} (NOT verified; returned model: none)`;
+  }
+  return `REQUIRED — ${admission.present ? 'PRESENT BUT DOES NOT ADMIT THIS ROUTE' : 'ABSENT'}; live execution refused. `
+    + admission.reason;
 }
 
 // MARK: - Execution
@@ -814,6 +1074,23 @@ export interface WorkspaceMatrixRunResult {
   notExecutedBecauseThrottledCount: number;
   /** Runs never attempted for any other reason — refused in the plan, cancelled, or faulted. */
   notExecutedForOtherReasonCount: number;
+  /**
+   * Runs whose own execution reported a DIFFERENT model than the one requested — for Codex, a
+   * `model rerouted: A -> B` report. Each is a sealed, failed record. The matrix does not stop for
+   * one, and nothing about it changes the pre-run identity of any later run: a reroute proves a
+   * substitution happened once, never which model answers next time.
+   */
+  identitySubstitutions: WorkspaceIdentitySubstitution[];
+}
+
+export interface WorkspaceIdentitySubstitution {
+  candidate: string;
+  caseID: string;
+  repeatIndex: number;
+  recordRoot: string;
+  requestedModelID: string;
+  reportedModelID: string;
+  detail: string;
 }
 
 /**
@@ -850,6 +1127,7 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
   // replaced: the first decline is the one with the evidence closest to the cause, and a later
   // identical decline would only restate it.
   let throttle: ProviderThrottleSignal | undefined;
+  const substitutions: WorkspaceIdentitySubstitution[] = [];
 
   for (const cell of plan.cells) {
     // FIRST, because a cell the breaker has already excluded must not even be looked up: no driver
@@ -892,11 +1170,13 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
     try {
       const campaign = WorkspaceCampaign.create({
         root: cell.recordRoot,
-        label: `${plan.packID}@${plan.packVersion} · ${cell.caseID}@${cell.caseVersion} · ${cell.candidate} · `
-          + `repeat ${cell.repeat.repeatIndex}/${cell.repeat.repeatsPlanned}`,
+        label: cell.recordLabel,
         case: workspaceCase,
         binding: model.binding,
         identity: model.identity,
+        // THE PER-RECORD ADMISSION THE PLAN DERIVED, verbatim. `WorkspaceCampaign.create` re-checks that
+        // it admits this label and this route, and that its matrix scope matches this pack and driver.
+        identityAdmission: cell.identityAdmission,
         driver,
         hardware: options.hardware,
         runtimeVersion: options.runtimeVersion,
@@ -915,6 +1195,20 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
       //    its own provider-decline evidence, exactly as it was before this breaker existed. The
       //    breaker changes what happens NEXT, never what this record says.
       completed.push({ cell, recordRoot: cell.recordRoot, status: outcome.scorecard.status });
+      if (outcome.frontier.executionIdentityVerdict === 'substituted') {
+        // RECORDED, NOT ACTED ON. The record is already sealed as failed with the served model named;
+        // this list is how the result says so. It is not a reason to stop, and not evidence about any
+        // other run's identity.
+        substitutions.push({
+          candidate: cell.candidate,
+          caseID: cell.caseID,
+          repeatIndex: cell.repeat.repeatIndex,
+          recordRoot: cell.recordRoot,
+          requestedModelID: cell.modelID,
+          reportedModelID: outcome.frontier.reportedModelID ?? '',
+          detail: outcome.frontier.executionIdentityDetail ?? '',
+        });
+      }
       options.onCellFinished?.(cell, outcome);
 
       // 2. THEN ASK WHETHER CONTINUING IS FUTILE. `providerThrottled` is set by the scorecard for
@@ -955,6 +1249,7 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
     executedRunCount: completed.length,
     notExecutedBecauseThrottledCount: throttled.length,
     notExecutedForOtherReasonCount: skipped.length - throttled.length,
+    identitySubstitutions: substitutions,
   };
 }
 
@@ -970,6 +1265,19 @@ export function describeWorkspaceMatrixRunResult(result: WorkspaceMatrixRunResul
   lines.push(`executed runs   ${result.executedRunCount} (sealed, whatever their status)`);
   lines.push(`not executed    ${result.notExecutedBecauseThrottledCount} because the PROVIDER throttled`
     + ` · ${result.notExecutedForOtherReasonCount} for other reasons`);
+  if (result.plan.admittedUnverifiableRunCount > 0) {
+    lines.push(`identity        ${result.completed.filter((entry) => entry.cell.identityAdmission !== undefined).length} executed `
+      + `run(s) ran under the matrix admission ${result.plan.identityAdmission?.matrixAdmissionDigest ?? ''} — identity `
+      + 'UNVERIFIABLE, not verified');
+  }
+  if (result.identitySubstitutions.length > 0) {
+    lines.push(`substitutions   ${result.identitySubstitutions.length} run(s) reported a DIFFERENT model than requested, and `
+      + 'each failed:');
+    for (const entry of result.identitySubstitutions) {
+      lines.push(`  ${entry.candidate} · ${entry.caseID} · repeat ${entry.repeatIndex}: requested ${entry.requestedModelID}, `
+        + `reported ${entry.reportedModelID || '(unnamed)'}`);
+    }
+  }
   if (result.throttle !== undefined) {
     lines.push('');
     for (const line of describeProviderThrottle(result.throttle)) lines.push(line);
@@ -977,4 +1285,92 @@ export function describeWorkspaceMatrixRunResult(result: WorkspaceMatrixRunResul
     lines.push(THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS);
   }
   return lines;
+}
+
+/**
+ * The identity provenance of one matrix, for its aggregate file.
+ *
+ * KEPT APART FROM QUALITY ON PURPOSE. Nothing here changes a score, a pass count or a rate: an admitted
+ * run is scored exactly like any other, and how confidently its answer can be ATTRIBUTED is a separate
+ * column a reader weighs for themselves. `rows` should be this matrix's own runs.
+ */
+export interface WorkspaceMatrixIdentityProvenance {
+  matrixAdmission?: WorkspaceMatrixIdentityAdmission;
+  candidates: {
+    candidate: string;
+    provider: ProviderID;
+    requestedModelID: string;
+    effort: EffortLevel;
+    identityState: string;
+    identityResolvedFrom: string;
+    admissionRequired: boolean;
+    admissionPresent: boolean;
+    admitted: boolean;
+    admissionEntryDigest?: string;
+  }[];
+  admittedUnverifiableRunCount: number;
+  /** Runs whose own execution reported another model — a Codex reroute, or a substitution on any provider. */
+  substitutionFailures: {
+    candidate: string; caseID: string; repeatIndex?: number; recordRoot: string;
+    requestedModelID: string; reportedModelID: string; detail: string;
+  }[];
+  /** Runs that began VERIFIED and whose own execution did not confirm it. Admitted runs are never counted here. */
+  identityVerificationFailures: {
+    candidate: string; caseID: string; repeatIndex?: number; recordRoot: string; executionIdentityVerdict: string;
+  }[];
+  disclosure: string;
+}
+
+export const IDENTITY_CONFIDENCE_IS_NOT_QUALITY =
+  'Identity confidence and task quality are separate. A run admitted as requestAcceptedIdentityUnverifiable is '
+  + 'scored exactly like a verified one, with no penalty and no bonus; what differs is how confidently the result can '
+  + 'be attributed to the requested model, and that is stated beside the score rather than subtracted from it.';
+
+export function workspaceMatrixIdentityProvenance(plan: WorkspaceMatrixPlan,
+                                                  rows: WorkspaceRunRow[]): WorkspaceMatrixIdentityProvenance {
+  const text = (row: Record<string, unknown>, key: string): string =>
+    (typeof row[key] === 'string' ? row[key] as string : '');
+  const repeatOf = (row: Record<string, unknown>): number | undefined =>
+    (typeof row.repeatIndex === 'number' ? row.repeatIndex : undefined);
+  return {
+    matrixAdmission: plan.identityAdmission,
+    candidates: plan.models.map((model) => ({
+      candidate: model.candidate,
+      provider: plan.provider,
+      requestedModelID: model.modelID,
+      effort: plan.effort,
+      identityState: model.identity.state,
+      identityResolvedFrom: model.identity.resolvedFrom,
+      admissionRequired: model.admission.required,
+      admissionPresent: model.admission.present,
+      admitted: model.admission.admitted,
+      admissionEntryDigest: model.admission.entry?.entryDigest,
+    })),
+    admittedUnverifiableRunCount: rows.filter(({ row }) =>
+      text(row, 'bindingIdentityState') === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
+      && plan.identityAdmission !== undefined
+      && text(row, 'matrixAdmissionDigest') === plan.identityAdmission.matrixAdmissionDigest).length,
+    substitutionFailures: rows
+      .filter(({ row }) => text(row, 'executionIdentityVerdict') === 'substituted')
+      .map(({ row, recordRoot }) => ({
+        candidate: text(row, 'candidate'),
+        caseID: text(row, 'caseID'),
+        repeatIndex: repeatOf(row),
+        recordRoot,
+        requestedModelID: text(row, 'requestedModelID'),
+        reportedModelID: text(row, 'reportedModelID'),
+        detail: text(row, 'executionIdentityDetail'),
+      })),
+    identityVerificationFailures: rows
+      .filter(({ row }) => text(row, 'bindingIdentityState') === 'verified'
+        && text(row, 'executionIdentityVerdict') !== 'verified' && text(row, 'executionIdentityVerdict') !== '')
+      .map(({ row, recordRoot }) => ({
+        candidate: text(row, 'candidate'),
+        caseID: text(row, 'caseID'),
+        repeatIndex: repeatOf(row),
+        recordRoot,
+        executionIdentityVerdict: text(row, 'executionIdentityVerdict'),
+      })),
+    disclosure: IDENTITY_CONFIDENCE_IS_NOT_QUALITY,
+  };
 }

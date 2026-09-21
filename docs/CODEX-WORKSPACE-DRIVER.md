@@ -59,6 +59,7 @@ A Codex route therefore reaches a workspace run only through the existing Pass 6
 (`--admit-identity-unverifiable <file>`). That admission is a person's written authorization, sealed into
 the record's manifest and bound to that record's label. It is recorded as
 `requestAcceptedIdentityUnverifiable`, and it is never routable or promotable (`identity-admission.ts`).
+A matrix uses a **matrix admission** instead, sealed per route to one matrix and one pack; see §10.
 The OpenAI **API** identity proofs (sol, luna, terra, astra) belong to a different route (`openaiAPI`)
 and are not borrowed here.
 
@@ -221,11 +222,84 @@ in a table beside the Claude results as though identity were equally established
 
 ## 9. Not done in this pass
 
-- **Matrix admission.** `workspace-benchmark` still refuses Codex routes (`unprovenRoute`), because an
-  admission is sealed to one record label and a matrix creates many. How a pack-level admission binds to
-  its records is a design decision for the next pass.
+- **Matrix admission.** Done in the following pass; see §10.
 - **Throttle scope.** `codexCLI` has no declared scope in `DECLARED_PROVIDER_THROTTLE_SCOPE`. It falls back
   to the default until a Codex usage limit has been observed.
 - **Exact identity.** The only route to server-attested identity on the subscription path would be a
   loopback proxy observing the `openai-model` header. That means intercepting OAuth-bearing traffic,
   which this engine's own OTLP design explicitly rules out. It is not done without an explicit decision.
+
+## 10. Matrix admission (`workspace-benchmark`)
+
+Source: `src/engine/workspace-matrix-admission.ts`. Tests: `test/engine/workspace-matrix-admission.test.ts`.
+
+A single-record admission is sealed to one record's label, so it cannot authorise a matrix. A matrix gets
+its own admission, read only from `cernum workspace-benchmark … --admit-identity-unverifiable <file>`.
+There is no environment variable and no configuration default for it. The file declares
+`"admissionScope": "workspaceMatrix"`; the single-record reader refuses such a file, and the matrix
+reader refuses a single-record file.
+
+**What it binds.** The invocation seals the file (`cma1:`) to this matrix's `--label` and to the pack's
+id, version and `cwp1:` digest. The operator copies the digest from the dry run. Each admitted route is
+its own sealed entry (`cme1:`) naming the provider, requested model, requested effort, driver id, the CLI
+version the driver's flags were verified against, the execution class, the billing basis, the
+authentication basis, and the smoke evidence it rests on. The file also records who authorised it, the
+reason, the intent, and the file's SHA-256. The identity limitation is written by the engine, not by the
+operator.
+
+**The gate** is `matrixAdmissionFor`. It refuses in each of these cases, and names the mismatch:
+
+- the seal is broken;
+- the admission belongs to another matrix, pack or pack digest;
+- no entry names the exact `provider:model@effort`;
+- an entry names the route but disagrees on the driver, CLI version, execution class or billing basis.
+
+`claudeCLI` and `openaiAPI` entries cannot be sealed at all. The planner also refuses an admission with an
+entry the matrix would not use, such as a `@max` entry in a `medium` matrix. So each matrix needs one
+admission naming exactly its routes. An admitted route also needs an **unexpired identity smoke** in the
+discovery store showing the provider accepted that model **at that effort**
+(`acceptedRequestEvidenceFor`). That row stays `unproven` and never becomes selectable. An admission accepts
+an unverifiable identity. It does not stand in for a request nobody sent.
+
+**Per record.** For every cell, the plan derives an ordinary Pass 6 `IdentityAdmission` sealed to that
+record's own label, admitting exactly that one route, and carrying a `matrixAdmission` reference. That
+reference holds both digests, plus the pack, driver, billing and limitation. The manifest freezes it by the
+existing path. `WorkspaceCampaign.create` re-checks two things. First, the admission admits this label and
+this binding's route. Second, its matrix reference matches this record's pack, driver, execution class and
+billing basis. Each row carries:
+
+- `bindingIdentityState: requestAcceptedIdentityUnverifiable`
+- `bindingIdentityResolvedFrom: identityAdmission`
+- `executionIdentityVerdict` (`unverifiable`, or `substituted` on a reroute)
+- `identityAdmissionDigest` (per record)
+- `identityAdmissionScope: workspaceMatrix`
+- `matrixAdmissionDigest`, `matrixAdmissionEntryDigest`
+- `identityLimitation`
+
+Nothing writes `verified`. A single-record admission gets no `matrixAdmission` key, so its digest does not
+change. The sealed proof's admission still seals to `eee8a935…`, and a test holds it there.
+
+**Reroute.** A `model rerouted: A -> B` still fails that attempt as `policyNotExpressible`. The row records
+verdict `substituted` and `reportedModelID: B`. The run result lists the run under `identitySubstitutions`.
+The matrix carries on, because a reroute is a failed run, not a throttle, and the plan is never edited. A
+later cell of the same route is still `requestAcceptedIdentityUnverifiable` and is checked independently.
+An admission for A never admits B.
+
+**Aggregate.** Cells with an admitted or substituted run carry `identityProvenance`: admitted counts,
+digests, verdict counts and substitutes. The `--aggregate` file carries `identity`, which holds:
+
+- the sealed matrix admission;
+- the mapping from each candidate to its admission;
+- the admitted-unverifiable run count;
+- substitution failures;
+- identity-verification failures, meaning runs that started verified and were not confirmed.
+
+Quality figures are computed exactly as before. A test shows that the same rows, with the admission fields
+removed, produce identical quality.
+
+**Throttle scope** for `codexCLI` stays **undeclared**, because no Codex usage limit has been observed. The
+breaker uses the conservative `provider` fallback, and the dry run labels it UNDECLARED.
+
+**Applied effort** is not measured in a matrix. `workspace-benchmark` attaches no OTLP collector, so the
+dry run says the requested effort is sent and the applied effort is not observed.
+

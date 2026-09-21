@@ -178,6 +178,31 @@ export interface AdmittedCandidateEvidence {
   state: IdentityAdmissionState;
 }
 
+/**
+ * Where a per-record admission came from, when a MATRIX admission produced it.
+ *
+ * ABSENT ON EVERY SINGLE-RECORD ADMISSION, and `canonicalJSON` drops an absent key, so every admission
+ * sealed before matrix admissions existed — including the sealed Codex proof's — keeps its digest.
+ * Present, it names the matrix admission (`cma1:`) and the entry (`cme1:`) that authorised this one
+ * record, and repeats the pack, driver and billing route they were sealed to, so a record read on its
+ * own says what it was admitted for. See `workspace-matrix-admission.ts`.
+ */
+export interface MatrixAdmissionReference {
+  admissionScope: 'workspaceMatrix';
+  matrixAdmissionDigest: string;
+  entryDigest: string;
+  matrixLabel: string;
+  packID: string;
+  packVersion: string;
+  packDigest: string;
+  driverID: string;
+  executionClass: string;
+  billingBasis: string;
+  reason: string;
+  intent: string;
+  identityLimitation: string;
+}
+
 /** A campaign-manifest authorization for the exception. Sealed, and bound to one campaign. */
 export interface IdentityAdmission {
   admissionFormatVersion: number;
@@ -188,6 +213,8 @@ export interface IdentityAdmission {
   authorizedBy: string;
   /** The exact configurations admitted. Not a provider-wide switch. */
   admitted: AdmittedCandidateEvidence[];
+  /** Present only when a matrix admission produced this record's admission. Sealed with everything else. */
+  matrixAdmission?: MatrixAdmissionReference;
   /** Seals campaign, time, authorizer and every admitted candidate together. */
   admissionDigest: string;
 }
@@ -209,6 +236,8 @@ export interface AuthorizeAdmissionOptions {
   authorizedAt: string;
   authorizedBy: string;
   admitted: AdmittedCandidateEvidence[];
+  /** Only for a record admission derived from a matrix admission. Exactly one candidate, then. */
+  matrixAdmission?: MatrixAdmissionReference;
 }
 
 /**
@@ -258,12 +287,22 @@ export function authorizeIdentityAdmission(options: AuthorizeAdmissionOptions): 
     }
   }
 
+  if (options.matrixAdmission !== undefined && options.admitted.length !== 1) {
+    // A record derived from a matrix admission runs ONE route. Admitting more on it would let one
+    // record's seal carry routes the matrix never bound to that record.
+    throw new IdentityAdmissionError('admissionMismatch',
+      `a record admission derived from a matrix admission admits exactly one route, not ${options.admitted.length}.`);
+  }
+
   const body = {
     admissionFormatVersion: ADMISSION_FORMAT_VERSION,
     campaignLabel: options.campaignLabel,
     authorizedAt: options.authorizedAt,
     authorizedBy: options.authorizedBy,
     admitted: options.admitted,
+    // Spread only when present: a single-record admission's body, and therefore its digest, is
+    // exactly what it was before matrix admissions existed.
+    ...(options.matrixAdmission === undefined ? {} : { matrixAdmission: options.matrixAdmission }),
   };
   return { ...body, admissionDigest: digestObject(body as unknown as CanonicalValue) };
 }

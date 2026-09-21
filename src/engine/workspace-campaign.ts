@@ -42,7 +42,7 @@ import { Ledger, PlannableCatalog, atomicWriteJSON, slotKey } from './ledger';
 import { OperationalEnvelope, ProviderBinding, buildOperationalEnvelope, isMetered } from './provider';
 import { SpendTracker, SpendingAuthorization } from './spending';
 import { PreRunIdentity } from './workspace-binding';
-import { IdentityAdmission, admissionStamp } from './identity-admission';
+import { IdentityAdmission, admissionFor, admissionStamp } from './identity-admission';
 import { WORKSPACE_REPEAT_IS_NOT_RETRY, WorkspaceRepeat } from './workspace-pack';
 import {
   WorkspaceCase, workspaceCaseDigest, workspaceComparabilityKey, workspaceInstructionText,
@@ -351,6 +351,15 @@ export interface WorkspaceDurableRecord extends Record<string, CanonicalValue | 
   identityAdmissionDigest?: string;
   /** The one-line stamp every surface prints beside an admitted candidate. See `admissionStamp`. */
   identityAdmissionStamp?: string;
+  /**
+   * Present exactly when a MATRIX admission produced this run's admission: `workspaceMatrix`, the
+   * matrix admission's `cma1:` digest, the authorising entry's `cme1:` digest, and the identity
+   * limitation the operator accepted. Absent on a single-record admission, so those rows are unchanged.
+   */
+  identityAdmissionScope?: string;
+  matrixAdmissionDigest?: string;
+  matrixAdmissionEntryDigest?: string;
+  identityLimitation?: string;
   /** WHAT THIS EXECUTION ESTABLISHED. Written after; never written over the three fields above. */
   executionIdentityVerdict?: string;
   executionIdentityDetail?: string;
@@ -443,6 +452,13 @@ export class WorkspaceCampaign {
             + 'An exception that is not in the manifest is an exception nobody can audit.'
           : 'an identity admission was given, and this run\'s identity was not resolved from it. Freezing an '
             + 'authorization that authorised nothing would make the manifest claim an exception this run did not use.');
+    }
+
+    // AND THE ADMISSION MUST ADMIT THIS RUN — this record's label, this binding's exact route — through
+    // the same gate a prose campaign uses. An admission sealed for another record, another model or
+    // another effort is refused here even if a caller hands it over.
+    if (inputs.identityAdmission !== undefined) {
+      assertAdmissionAdmitsThisRun(inputs);
     }
 
     const workspaceCase = inputs.case;
@@ -878,11 +894,61 @@ export function isMeteredWorkspaceRun(binding: ProviderBinding): boolean {
  * The admission fields a row and a record carry, or none. Empty on every run that was not admitted,
  * so a record written before admissions existed and one written after without one are byte-identical.
  */
-function admissionFieldsOf(admission: IdentityAdmission | undefined):
-  { identityAdmissionDigest?: string; identityAdmissionStamp?: string } {
+function admissionFieldsOf(admission: IdentityAdmission | undefined): {
+  identityAdmissionDigest?: string; identityAdmissionStamp?: string; identityAdmissionScope?: string;
+  matrixAdmissionDigest?: string; matrixAdmissionEntryDigest?: string; identityLimitation?: string;
+} {
   if (admission === undefined) return {};
-  return {
+  const fields = {
     identityAdmissionDigest: admission.admissionDigest,
     identityAdmissionStamp: admission.admitted.map(admissionStamp).join(' · '),
   };
+  if (admission.matrixAdmission === undefined) return fields;
+  return {
+    ...fields,
+    identityAdmissionScope: admission.matrixAdmission.admissionScope,
+    matrixAdmissionDigest: admission.matrixAdmission.matrixAdmissionDigest,
+    matrixAdmissionEntryDigest: admission.matrixAdmission.entryDigest,
+    identityLimitation: admission.matrixAdmission.identityLimitation,
+  };
+}
+
+/**
+ * Refuse an admission that does not admit THIS run.
+ *
+ * The existing gate first: this record's label, this binding's provider, model and effort. Then, for a
+ * record admission a matrix produced, every fact the matrix admission was sealed to must be the fact
+ * this record is about to freeze — the pack, the driver, the execution class and the billing basis. A
+ * matrix admission for one route can therefore never be carried onto a record of another.
+ */
+function assertAdmissionAdmitsThisRun(inputs: WorkspaceCampaignInputs): void {
+  const admission = inputs.identityAdmission;
+  if (admission === undefined) return;
+  const decision = admissionFor({
+    provider: inputs.binding.provider,
+    modelID: inputs.binding.requestedModelID,
+    effort: inputs.binding.effort,
+    campaignLabel: inputs.label,
+    admission,
+  });
+  if (!decision.admitted) {
+    throw new WorkspaceCampaignError('identityAdmissionMismatch',
+      `the identity admission given does not admit this run: ${decision.reason}`);
+  }
+  const reference = admission.matrixAdmission;
+  if (reference === undefined) return;
+  const mismatches = ([
+    ['pack id', reference.packID, inputs.pack?.id],
+    ['pack version', reference.packVersion, inputs.pack?.version],
+    ['pack digest', reference.packDigest, inputs.pack?.digest],
+    ['driver', reference.driverID, inputs.driver.driverID],
+    ['execution class', reference.executionClass, inputs.binding.executionClass],
+    ['billing basis', reference.billingBasis, inputs.binding.billingBasis],
+  ] as const).filter(([, admitted, bound]) => admitted !== bound);
+  if (mismatches.length > 0) {
+    throw new WorkspaceCampaignError('identityAdmissionMismatch',
+      `this run's matrix admission (${reference.matrixAdmissionDigest}) was sealed to a different `
+      + `${mismatches.map(([name, admitted, bound]) => `${name} (admitted ${admitted}, bound ${bound ?? 'none'})`).join('; ')}. `
+      + 'A matrix admission covers the exact route, pack, driver and billing basis it names, and nothing else.');
+  }
 }

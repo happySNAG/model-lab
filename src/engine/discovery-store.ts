@@ -20,7 +20,7 @@ import { IdentitySmokeResult } from './identity-smoke';
 import {
   OPENCODE_LISTING_IS_A_CATALOGUE, OPENCODE_PROOF_PATH, OPENCODE_SUPERSEDED_NO_PROOF_PATH_FRAGMENT,
 } from './opencode-cli';
-import { ProviderID } from './provider';
+import { EffortLevel, ProviderID, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE } from './provider';
 
 /**
  * How long a proof is good for.
@@ -163,6 +163,40 @@ export function describeExpiry(model: DiscoveredFrontierModel, now = new Date())
     + `${days === undefined ? 'undated' : `${days} day(s) old`} and has expired. It is not selectable until an `
     + 'identity smoke test proves it again — a lineup can change, and a stale proof spends a campaign\'s allowance '
     + 'discovering that it has.';
+}
+
+/**
+ * Unexpired evidence that the provider ACCEPTED a request for this exact route, without naming a model.
+ *
+ * This is not a proof and makes nothing selectable: `selectableFromStore` still ignores these rows. It
+ * is read by exactly one thing — the matrix identity admission — which refuses to admit a route nobody
+ * has ever sent a request on. The row it recognises is the one `modelsFromSmokes` below writes for an
+ * `unverifiable` smoke verdict: `unproven`, evidence opening with the smoke's own words and naming the
+ * accepted-request state, and `desiredEfforts` listing the efforts that were smoked. The effort must be
+ * among them: a smoke at `max` is not evidence that `medium` was accepted. A row the pessimistic merge
+ * turned `refused` (one effort substituted) is not accepted evidence for any effort.
+ */
+export function acceptedRequestEvidenceFor(evidence: DiscoveryEvidence, provider: ProviderID, modelID: string,
+                                           effort: EffortLevel, now = new Date()):
+  { accepted: boolean; model?: DiscoveredFrontierModel; reason: string } {
+  const model = evidence.models.find((entry) => entry.provider === provider && entry.modelID === modelID);
+  const smoked = model !== undefined && model.availability === 'unproven'
+    && model.evidence.startsWith('identity smoke test at ')
+    && model.evidence.includes(`identity state ${REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE})`);
+  if (model === undefined || !smoked) {
+    return { accepted: false, model, reason: `the discovery store holds no identity smoke showing ${provider} accepted a `
+      + `request for ${modelID}${model === undefined ? '' : ` (its row is ${model.availability}: ${model.evidence.slice(0, 120)}…)`}.` };
+  }
+  if (isEvidenceExpired(model, now)) {
+    return { accepted: false, model, reason: `the identity smoke showing ${provider} accepted ${modelID} was taken at `
+      + `${model.discoveredAt} and has expired.` };
+  }
+  if (!(model.desiredEfforts ?? []).includes(effort)) {
+    return { accepted: false, model, reason: `the identity smoke for ${modelID} covered effort(s) `
+      + `${(model.desiredEfforts ?? []).join(', ') || '(none)'}, not ${effort}.` };
+  }
+  return { accepted: true, model, reason: `identity smoke at ${model.discoveredAt} accepted ${modelID} on ${provider} at `
+    + `effort(s) ${(model.desiredEfforts ?? []).join(', ')}; identity unverifiable` };
 }
 
 /**

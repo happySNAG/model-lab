@@ -55,6 +55,9 @@ import {
   WorkspaceMatrixError, aggregateWorkspaceRuns, buildWorkspaceMatrixPlan, collectWorkspaceRunRows,
   describeWorkspaceCell, describeWorkspaceMatrixPlan, registeredWorkspacePacks, runWorkspaceMatrix,
   workspacePackByID,
+  // The matrix-wide identity admission: sealed per route, to one matrix and one pack.
+  WORKSPACE_MATRIX_ADMISSION_SCOPE, WorkspaceMatrixAdmissionError, WorkspaceMatrixIdentityAdmission,
+  parseWorkspaceMatrixAdmissionFile, sealWorkspaceMatrixAdmission, workspaceMatrixIdentityProvenance,
   // The provider-throttle circuit breaker, and the non-model session preflight beside it.
   describeUnproductiveSpend, describeWorkspaceMatrixRunResult, readProviderSessionStatus,
   describeProviderSessionStatus, sessionPreflightRefusal, describeProviderThrottle,
@@ -1080,11 +1083,18 @@ export function parseFrontierSpec(spec: string, thinkingMode: ThinkingMode, pric
 function readIdentityAdmission(options: Options, campaignLabel: string): IdentityAdmission | undefined {
   const file = options['admit-identity-unverifiable'];
   if (file === undefined || file === true) return undefined;
-  let parsed: { authorizedBy?: unknown; admitted?: unknown };
+  let parsed: { authorizedBy?: unknown; admitted?: unknown; admissionScope?: unknown };
   try {
     parsed = JSON.parse(fs.readFileSync(String(file), 'utf8')) as typeof parsed;
   } catch (error) {
     return fail(`could not read the identity admission at ${String(file)}: ${error instanceof Error ? error.message : String(error)}`, 2);
+  }
+  if (parsed.admissionScope !== undefined) {
+    // A MATRIX admission names a pack and a matrix; it is not an authorization for a one-off record or a
+    // prose campaign, and reading it here would silently drop the scope it was written for.
+    return fail(`the identity admission at ${String(file)} declares admissionScope '${String(parsed.admissionScope)}'. `
+      + `A ${WORKSPACE_MATRIX_ADMISSION_SCOPE} admission is read only by \`${TERMINAL_COMMAND} workspace-benchmark\`; `
+      + 'this command takes a single-record admission, which declares no scope.', 2);
   }
   if (typeof parsed.authorizedBy !== 'string' || parsed.authorizedBy.trim().length === 0) {
     return fail('an identity admission must name who authorised it, in their own words. A record with no author is '
@@ -1893,6 +1903,36 @@ async function commandWorkspace(positional: string[], options: Options): Promise
 }
 
 /**
+ * Read an operator's MATRIX identity admission and seal it to this matrix, or refuse.
+ *
+ * Only ever from `--admit-identity-unverifiable <file>`. A single-record admission file (no
+ * `admissionScope`) is refused here, as a matrix file is refused by `readIdentityAdmission`: an
+ * authorization written for one run is never widened to a matrix, and one written for a matrix is
+ * never narrowed into something else.
+ */
+function readWorkspaceMatrixAdmission(options: Options, runLabel: string, now: Date): WorkspaceMatrixIdentityAdmission | undefined {
+  const file = options['admit-identity-unverifiable'];
+  if (file === undefined) return undefined;
+  if (file === true) fail('--admit-identity-unverifiable needs the path of a written matrix admission file.', 2);
+  let text: string;
+  try {
+    text = fs.readFileSync(String(file), 'utf8');
+  } catch (error) {
+    return fail(`could not read the matrix identity admission at ${String(file)}: `
+      + `${error instanceof Error ? error.message : String(error)}`, 2);
+  }
+  try {
+    return sealWorkspaceMatrixAdmission(parseWorkspaceMatrixAdmissionFile(text), {
+      matrixLabel: runLabel,
+      authorizedAt: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceMatrixAdmissionError) return fail(`${error.code}: ${error.message}\nNothing was sent.`, 2);
+    throw error;
+  }
+}
+
+/**
  * Run a sealed benchmark PACK across several models, with repeats: the comparative matrix.
  *
  * WHY THIS IS A SECOND COMMAND AND NOT A FLAG ON `workspace`. `cernum workspace <case>` answers
@@ -1973,10 +2013,16 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       + 'this matrix is named from it.', 2);
   }
 
+  // 2a. THE MATRIX IDENTITY ADMISSION, when — and only when — the operator passes the flag. There is no
+  //     environment variable and no configuration default for it, and nothing is carried forward from an
+  //     earlier matrix: the file is read now and sealed now, to THIS matrix's label and pack.
+  const identityAdmission = readWorkspaceMatrixAdmission(options, runLabel, now);
+
   // 3. THE PLAN. Every binding, every disclosure and every refusal, decided before anything is sent.
   let plan;
   try {
     plan = buildWorkspaceMatrixPlan({
+      identityAdmission,
       pack,
       cases: allWorkspaceCases(),
       provider,
@@ -2040,7 +2086,14 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   if (dryRun) {
     say('No request was sent, no manifest was frozen and no directory was made.');
     say(`Re-run without --dry-run (and with --yes) to run it: ${TERMINAL_COMMAND} workspace-benchmark ${pack.id} `
-      + `--provider ${provider} --models ${modelIDs.join(',')} --yes`);
+      + `--provider ${provider} --models ${modelIDs.join(',')}${effort === 'none' ? '' : ` --effort ${effort}`}`
+      + `${options.label === undefined ? '' : ` --label ${runLabel}`}`
+      + `${identityAdmission === undefined ? '' : ` --admit-identity-unverifiable ${String(options['admit-identity-unverifiable'])}`}`
+      + ' --yes');
+    if (plan.models.some((model) => model.admission.required && !model.admission.admitted)) {
+      say('A route above needs an identity admission and has none that admits it, so a live run would refuse it.');
+      say(`Write one naming this pack's digest and each route exactly: ${TERMINAL_COMMAND} help workspace-benchmark`);
+    }
     return;
   }
 
@@ -2059,6 +2112,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
 
   // 4. EXECUTION. One durable record per run, sealed as it finishes.
   const result = await runWorkspaceMatrix(plan, {
+    identityAdmission,
     pack,
     cases: allWorkspaceCases(),
     provider,
@@ -2195,6 +2249,11 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       designedRecovery: plan.designedRecovery,
       packDigest: plan.packDigest,
       repeatDisclosure: plan.repeatDisclosure,
+      // WHO THE ROWS CAN BE ATTRIBUTED TO, kept beside the quality figures and never folded into them:
+      // the sealed matrix admission, which candidate each entry admitted, how many runs are
+      // identity-unverifiable, and every run that reported a different model.
+      identity: workspaceMatrixIdentityProvenance(plan, collectWorkspaceRunRows(root)
+        .filter((run) => result.completed.some((entry) => entry.recordRoot === run.recordRoot))),
       // WHAT WAS PLANNED, BESIDE WHAT RAN. A reader handed only the cells cannot tell a matrix that
       // finished from one the provider stopped, and they mean opposite things about the models.
       execution: {

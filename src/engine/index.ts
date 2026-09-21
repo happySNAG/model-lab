@@ -58,6 +58,7 @@ export * from './workspace-routing-evidence';
 export * from './workspace-empirical-evidence';
 export * from './workspace-throttle';
 export * from './workspace-matrix';
+export * from './workspace-matrix-admission';
 export * from './provider-session-status';
 export * from './workspace-claude-driver';
 export * from './workspace-codex-driver';
