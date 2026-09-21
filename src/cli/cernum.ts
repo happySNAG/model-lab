@@ -19,7 +19,7 @@ import {
   Campaign, CampaignBuildError, CampaignConfiguration, CampaignError, CampaignLockError, CampaignStatus,
   DEFAULT_EXECUTION_POLICY, DiscoveredFrontierModel, EffortLevel, ExecutionPolicy, FrontierCandidateRequest,
   Ledger, LiveHost, MIXED_EXECUTION_REASONS, NONCANONICAL_REASONS, PRICING_FILE_NOTE, PROVIDER_LABELS, PricingSnapshot,
-  DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, ProviderID, ProviderStatus, REQUESTED_COHORT, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
+  DESIRED_CANDIDATE_LADDER, EFFORT_LEVELS, IdentitySmokeResult, PROVIDER_IDS, ProviderID, ProviderStatus, REQUESTED_COHORT, RuntimeLeaseError, SYNTHETIC_HARDWARE, SYNTHETIC_STORE_BASELINE, SpendingError, SyntheticHost,
   configurationKey, ladderConfigurations, reconcileCohort,
   DIVERGENCE_MEANS, FinalRankings, OTLPObserver, OTLPTurnSource,
   ThinkingMode, allCredentialStatuses, allRankableSuiteIDs, authorizationDisclosure, authorizeSpending,
@@ -2034,6 +2034,62 @@ async function commandReinterpret(positional: string[], options: Options): Promi
   say(`written: ${path.resolve(out!)} — the sealed ledgers are unchanged`);
 }
 
+/**
+ * ONE frontier spec, parsed strictly, for the commands that accept exactly one.
+ *
+ * THE DEFECT THIS CORRECTS. `prepare` destructured `spec.split(':')` into three names and checked
+ * only that the first two were non-empty. Every part after the third was silently dropped, and
+ * because `prepare` — unlike `create` — never splits on commas, a comma-separated list did not fail:
+ * it was absorbed. `--frontier codexCLI:gpt-5.6-luna:max,codexCLI:gpt-5.6-terra:medium,...` prepared
+ * ONE candidate whose effort was the string `max,codexCLI`, and wrote that into a document a person
+ * is meant to approve. Nothing downstream validated the effort, so the invalid value survived into
+ * the artefact and into its rendered table.
+ *
+ * WHY THIS REFUSES RATHER THAN SPLITTING. `create` takes a cohort and splits `--frontier` on commas;
+ * `prepare` takes one candidate and its whole output — the name, the candidate block, the attempt
+ * count — is shaped for one. Teaching it to accept a list here would be inventing a contract rather
+ * than enforcing the one that exists, and it would quietly change what `prepare` means. So a list is
+ * an explicit refusal that names `create` as the command that wants one.
+ *
+ * WHAT IS REJECTED, AND WHY EACH. A comma (a list, addressed above); anything other than two or
+ * three colon-separated parts (a fourth part is text with nowhere to go, and silently dropping it is
+ * the original defect); an empty or whitespace-only provider, model or effort (a blank field is not
+ * a value); a provider that is not one Cernum has (a document about a provider that does not exist
+ * describes nothing); and an effort outside the canonical set (the check that was missing entirely).
+ *
+ * Throws rather than calling `fail`, so the rule is testable in-process. The caller converts.
+ */
+export function parseSoleFrontierSpec(spec: string): { provider: ProviderID; requestedModelID: string; effort: EffortLevel } {
+  const shape = "must read provider:model[:effort], for example 'codexCLI:gpt-6-astra:max'";
+  if (spec.includes(',')) {
+    throw new Error(`--frontier '${spec}' names more than one candidate. \`prepare\` writes ONE candidate down: `
+      + `its name, its candidate block and its attempt count are all shaped for one, so a list has nowhere to go. `
+      + `Prepare them one at a time, or use \`create --frontier a,b,c\`, which takes a cohort.`);
+  }
+  const parts = spec.split(':');
+  if (parts.length < 2 || parts.length > 3) {
+    throw new Error(`--frontier '${spec}' ${shape}. It has ${parts.length} colon-separated part(s). `
+      + 'Nothing here is dropped silently: extra text is refused rather than folded into the effort.');
+  }
+  const [provider, requestedModelID, effortText] = parts;
+  for (const [field, value] of [['provider', provider], ['model', requestedModelID]] as [string, string][]) {
+    if (value.trim().length === 0) throw new Error(`--frontier '${spec}' has an empty ${field}. It ${shape}.`);
+    if (value.trim() !== value) throw new Error(`--frontier '${spec}' has whitespace around the ${field}. It ${shape}.`);
+  }
+  if (!PROVIDER_IDS.includes(provider as ProviderID)) {
+    throw new Error(`'${provider}' is not a provider Cernum has. Use one of ${PROVIDER_IDS.join(', ')}.`);
+  }
+  if (effortText !== undefined && (effortText.trim().length === 0 || effortText.trim() !== effortText)) {
+    throw new Error(`--frontier '${spec}' has an empty or padded effort. Omit the third part, or name a level: `
+      + `${EFFORT_LEVELS.join(', ')}.`);
+  }
+  const effort = (effortText ?? 'none') as EffortLevel;
+  if (!EFFORT_LEVELS.includes(effort)) {
+    throw new Error(`'${effortText}' is not an effort level. Use ${EFFORT_LEVELS.join(', ')}.`);
+  }
+  return { provider: provider as ProviderID, requestedModelID, effort };
+}
+
 /** Write down a campaign without freezing it, binding it, or sending anything. */
 async function commandPrepare(positional: string[], options: Options): Promise<void> {
   const [name] = positional;
@@ -2042,14 +2098,20 @@ async function commandPrepare(positional: string[], options: Options): Promise<v
   if (!spec) fail('--frontier provider:model[:effort] is required');
   const out = typeof options.out === 'string' ? options.out : undefined;
   if (!out) fail('--out <dir> is required');
-  const [provider, requestedModelID, effort] = spec!.split(':');
-  if (!provider || !requestedModelID) fail(`--frontier '${spec}' must read provider:model[:effort]`);
+  let provider: ProviderID;
+  let requestedModelID: string;
+  let effort: EffortLevel;
+  try {
+    ({ provider, requestedModelID, effort } = parseSoleFrontierSpec(spec!));
+  } catch (error: unknown) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 
   const suiteIDs = options.suites ? String(options.suites).split(',') : allRankableSuiteIDs();
   const excludeSuiteIDs = options['exclude-suites'] ? String(options['exclude-suites']).split(',') : [];
   const manifest = prepareManifest({
     name,
-    candidate: { name: `${provider}:${requestedModelID}${effort ? '@' + effort : ''}`, provider, requestedModelID, effort: effort ?? 'none' },
+    candidate: { name: `${provider}:${requestedModelID}${effort === 'none' ? '' : '@' + effort}`, provider, requestedModelID, effort },
     suiteIDs,
     excludeSuiteIDs,
     exclusionReason: typeof options.reason === 'string' ? options.reason : FABLE_SUBSTITUTION_REASON,
