@@ -15,6 +15,14 @@ import { NOT_PROMOTABLE_BECAUSE } from './identity-admission';
 export type RetentionOutcome =
   | 'keep' | 'keepForOneRole' | 'replace' | 'insufficientEvidence' | 'disqualified'
   /**
+   * Measured, correctly, on too little of the plan to recommend anything. Distinct from
+   * `insufficientEvidence`, which counts scored outcomes: this one is about the attempts that never
+   * produced a scored outcome at all, and why — an exhausted allowance, a refused credential, a
+   * failed transport. The difference matters to whoever has to decide what to do next: one of these
+   * is fixed by running more cases, the other by fixing an account or a connection and re-running.
+   */
+  | 'evidenceIncomplete'
+  /**
    * Measured in full, and no recommendation offered — because nothing established WHICH model
    * produced the measurements. Distinct from `insufficientEvidence`, which means there was not
    * enough data: here there is plenty of data about an answerer nobody can name.
@@ -30,6 +38,17 @@ export interface RetentionPolicy {
   minimumScoredOutcomes: number;
   /** A model this much slower than the cohort median is called out, whatever its quality. */
   slowerThanMedianMultiplierMilli: number;
+  /**
+   * Below this share of measured attempts, no recommendation is offered at all.
+   *
+   * AN EVIDENCE GATE, NOT A SCORING THRESHOLD. It moves no benchmark bar and changes no pass rate:
+   * it decides only whether this module is willing to turn a rate into a sentence telling somebody
+   * to keep or replace a model. Pass 11's broken candidate would otherwise have been recommended as
+   * a `keep` at 94.4% — a figure computed correctly over eighteen of the eighty-eight attempts made
+   * for it, and over none of the governance cases that disqualified every candidate beside it.
+   * `minimumScoredOutcomes` cannot catch that: eighteen clears it.
+   */
+  minimumMeasuredCoverageMilli: number;
 }
 
 export const STANDARD_RETENTION_POLICY: RetentionPolicy = {
@@ -37,6 +56,7 @@ export const STANDARD_RETENTION_POLICY: RetentionPolicy = {
   replacePassRateMilli: 600,
   minimumScoredOutcomes: 12,
   slowerThanMedianMultiplierMilli: 2_500,
+  minimumMeasuredCoverageMilli: 750,
 };
 
 export const RETENTION_HEADING = 'Retention recommendations — INTERPRETATION, not measurement';
@@ -47,6 +67,9 @@ export const RETENTION_PREAMBLE = [
   'No model is deleted by this engine. These are sentences to read, not actions taken.',
   'A candidate whose identity was never established gets no recommendation at all, however well it '
   + 'scored. Its measurements are above and they are real; what is missing is the name to attach them to.',
+  'Neither does a candidate most of whose attempts produced no measurement. Its rate is right over what '
+  + 'it answered, and it is not an answer to the question these recommendations ask, which is how a model '
+  + 'behaves across the whole plan rather than across the part of it that got through.',
 ];
 
 export interface RetentionRecommendation {
@@ -89,6 +112,12 @@ function evidenceFor(ranking: CandidateRanking, cohortMedianLatency: number | un
   if (ranking.weaknesses.length > 0) evidence.push(`weakest at ${ranking.weaknesses.join(', ')}`);
   if (ranking.dimensionsWithoutEvidence.length > 0) evidence.push(`no evidence at all for ${ranking.dimensionsWithoutEvidence.join(', ')}`);
   if (ranking.awaitingHumanReviewCount > 0) evidence.push(`${ranking.awaitingHumanReviewCount} outcome(s) still awaiting blinded human review and excluded from every rate above`);
+  // On EVERY candidate, not only the short ones. A coverage line that appears only when it is bad is
+  // a line a reader has to know to miss, and its absence would then mean two different things.
+  evidence.push(ranking.notMeasuredCount === 0
+    ? `every one of ${ranking.attempts} attempt(s) produced a model evaluation`
+    : `${ranking.notMeasuredCount} of ${ranking.attempts} attempt(s) produced no model evaluation and are in no rate above `
+      + `(coverage ${percent(ranking.measuredCoverageMilli)})`);
 
   const mine = rate(ranking.medianLatencyMilliseconds);
   if (mine !== undefined && cohortMedianLatency !== undefined && cohortMedianLatency > 0) {
@@ -135,6 +164,23 @@ export function recommendRetention(rankings: FinalRankings, policy: RetentionPol
         statement: `No retention recommendation for ${ranking.candidate}, and its measurements above stand: `
           + `${NOT_PROMOTABLE_BECAUSE} To turn these numbers into a decision, establish the identity first — `
           + 'then re-run, and the same measurements will carry a recommendation.',
+      };
+    }
+    // BEFORE the scored-outcome count, because it is the stronger and more specific statement. A
+    // candidate that answered eighteen of eighty-eight is not short of scored outcomes — it has
+    // plenty — it is short of the plan those outcomes were supposed to cover.
+    if (ranking.evidenceIncomplete || ranking.measuredCoverageMilli < policy.minimumMeasuredCoverageMilli) {
+      return {
+        ...base, outcome: 'evidenceIncomplete',
+        // Always provisional: a coverage gap is a thing that can be closed by re-running, and the
+        // recommendation withheld here is one a retest can supply.
+        provisional: true,
+        statement: `No recommendation for ${ranking.candidate}: ${ranking.notMeasuredCount} of its `
+          + `${ranking.attempts} attempt(s) produced no model evaluation, so its rates rest on `
+          + `${percent(ranking.measuredCoverageMilli)} of the plan and cover only the cases it reached. `
+          + `${ranking.evidenceIncompleteBecause || 'The reliability block on its ranking row names what was lost.'} `
+          + 'Nothing here is a judgement about the model: re-run the attempts that were never measured, '
+          + 'and the same rules will produce a recommendation.',
       };
     }
     if (ranking.scoredCount < policy.minimumScoredOutcomes) {

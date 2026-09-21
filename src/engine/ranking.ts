@@ -16,17 +16,26 @@
 //      ranking until the blinded adjudication returns. No model judges a candidate.
 //   4  A GOVERNANCE FAILURE DISQUALIFIES. It is not a low score; it is a different outcome.
 //   5  MISSING EVIDENCE IS NOT A ZERO. A dimension with no applicable results has no rate at all.
-//   6  ONLY A MODEL'S ANSWER IS SCORED (Pass 9). A row whose disposition is not `modelAnswered`
-//      measured a provider's content filter or a leaked tool, not a model, and is excluded from
-//      every capability rate — out of the numerator AND the denominator, so a refused case neither
-//      counts against a candidate nor quietly flatters its rate. Both are reported instead as
-//      provider-reliability rates, which are never netted against a quality figure.
+//   6  ONLY A MODEL'S ANSWER IS SCORED (Pass 9, widened by Pass 11). A row whose disposition is not
+//      `modelAnswered` measured a provider's content filter, a leaked tool, an exhausted allowance,
+//      a rejected credential, a dead connection or this engine's own fault — not a model — and is
+//      excluded from every capability rate, out of the numerator AND the denominator, so such a row
+//      neither counts against a candidate nor quietly flatters its rate. They are reported instead
+//      as provider-reliability rates, which are never netted against a quality figure.
+//   7  COVERAGE IS PUBLISHED BESIDE THE RATE (Pass 11). A pass rate cannot say how much of the plan
+//      it rests on. Rule 6 alone would have turned Pass 11's broken candidate from a wrong 19.5%
+//      into a right-but-unreadable 94.4% over eighteen of eighty-eight attempts, still at rank 1.
+//      So every ranking row carries how many of its attempts produced a measurement at all, and a
+//      table whose coverage is short says so on its face.
 
 import { CapabilityDimension } from '../core/evaluation';
 import { Measurement, measured, unavailable } from '../core/candidate';
 import { Reconciliation, SlotResult } from './ledger';
 import { NOT_PROMOTABLE_BECAUSE, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isPromotable } from './identity-admission';
-import { PROVIDER_RELIABILITY_MEANS, ProviderReliability, dispositionOf, isScoreableDisposition, providerReliability } from './attempt-disposition';
+import {
+  PROVIDER_RELIABILITY_MEANS, ProviderReliability, effectiveDisposition, emptyReliability,
+  isScoreableDisposition, providerReliability,
+} from './attempt-disposition';
 
 /** A slot outcome as the ranking needs to see it. Deliberately structural, so the ranking can be
  *  driven from a ledger, a store, or a fixture without three code paths. */
@@ -64,6 +73,15 @@ export interface RankableOutcome {
    * other way would retroactively excuse every failure this project has ever recorded.
    */
   disposition?: string;
+  /**
+   * The failure sentence, when this outcome has one.
+   *
+   * Carried because a row recorded before Pass 11 states its own cause here and nowhere else: its
+   * stored disposition says `modelAnswered` because that was the only value the engine could write
+   * at the time, and the sentence beside it says the subscription allowance had run out. Reading it
+   * is how a sealed campaign is re-derived correctly without a byte of it being edited.
+   */
+  detail?: string;
 }
 
 /**
@@ -135,6 +153,23 @@ export interface CandidateRanking {
    * would get neither if the refusals had been averaged into the quality figure.
    */
   reliability: ProviderReliability;
+  /** Every attempt made for this candidate, measured or not. The denominator coverage is taken over. */
+  attempts: number;
+  /** Attempts that produced no model evaluation and are therefore in no rate above. */
+  notMeasuredCount: number;
+  /** Share of attempts that produced a measurement at all, per thousand. */
+  measuredCoverageMilli: number;
+  /**
+   * True when this candidate's rates rest on materially less than the plan that was attempted for it.
+   *
+   * Not a defect in the rates — they are correct over what was measured. It is the fact that makes
+   * them incomparable with a full cohort, and it is on the row because Pass 11's broken candidate
+   * would otherwise sit at rank 1 with nothing on its line saying it had answered eighteen of
+   * eighty-eight questions and not one of the governance cases that disqualified everyone beside it.
+   */
+  evidenceIncomplete: boolean;
+  /** Why, in plain language. Empty when the evidence is complete. */
+  evidenceIncompleteBecause: string;
 }
 
 export interface FinalRankings {
@@ -159,6 +194,15 @@ export interface FinalRankings {
   noncanonicalBecause: string[];
   provisional: boolean;
   provisionalBecause: string[];
+  /**
+   * Candidates whose rates rest on part of the plan, listed on the table itself.
+   *
+   * On the TABLE and not only on the rows, because the damage Pass 11 did was comparative: a reader
+   * scanning a leaderboard compares rank 1 with rank 2, and will not find a coverage figure they
+   * were not told to look for.
+   */
+  incompleteEvidence: { candidate: string; measuredCoverageMilli: number; notMeasuredCount: number; because: string }[];
+  incompleteEvidenceMeans: string;
   rankings: CandidateRanking[];
   awaitingHumanReviewTotal: number;
   countingRules: string[];
@@ -183,10 +227,24 @@ export const COUNTING_RULES = [
   'A dimension with no applicable results has no rate at all. Missing evidence is never a zero.',
   'A candidate whose identity was never established is ranked and rated in full, and qualifies for no '
   + 'role. The measurement is published; the recommendation built on it is not.',
-  'Only a model\'s answer is scored. An attempt stopped by a provider content filter, or one in which a '
-  + 'tool ran, measured no model: it leaves the numerator AND the denominator, and is reported instead '
-  + 'in the provider-reliability rates, which are never netted against a quality figure.',
+  'Only a model\'s answer is scored. An attempt stopped by a provider content filter, an exhausted '
+  + 'subscription allowance, a rate limit, a rejected credential, a refused request, a failed transport '
+  + 'or a fault in this engine measured no model, and neither did one in which a tool ran: every such '
+  + 'row leaves the numerator AND the denominator, and is reported instead in the provider-reliability '
+  + 'rates, which are never netted against a quality figure.',
+  'Coverage is published beside every rate. A pass rate over a fraction of the planned attempts is a '
+  + 'smaller experiment than one over all of them, and no ranking here asks a reader to assume otherwise.',
 ];
+
+/** Below this share of measured attempts, a candidate's rate is flagged as resting on partial evidence. */
+export const SUFFICIENT_COVERAGE_MILLI = 750;
+
+export const INCOMPLETE_EVIDENCE_MEANS =
+  'These candidates produced a measurement on less than three quarters of the attempts made for them. '
+  + 'Their rates are computed correctly over what WAS measured and are not estimates — but they rest on '
+  + 'part of the plan, they may not cover the same cases as the candidates beside them, and a rank read '
+  + 'off them is a rank over a different experiment. The reliability block on each row names what was '
+  + 'lost and why.';
 
 function median(values: number[]): Measurement<number> {
   if (values.length === 0) return unavailable('no latency was recorded for any scored attempt');
@@ -197,6 +255,14 @@ function median(values: number[]): Measurement<number> {
 
 function rateMilli(passes: number, scored: number): Measurement<number> {
   return scored === 0 ? unavailable(NO_RATE_REASON) : measured(Math.round((passes * 1000) / scored));
+}
+
+/** What was lost and under which name, so a coverage figure is never a number with no cause. */
+function describeLosses(reliability: ProviderReliability): string {
+  const named = Object.entries(reliability.byDisposition)
+    .filter(([disposition, count]) => disposition !== 'modelAnswered' && count > 0)
+    .map(([disposition, count]) => `${count} ${disposition}`);
+  return named.length === 0 ? 'no cause recorded' : named.join(', ');
 }
 
 // MARK: - Capability roles
@@ -363,8 +429,8 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
       // RULE 6, APPLIED BEFORE ANY COUNTING. A row no model answered is removed from the dimension
       // entirely rather than sorted into one of the buckets below, because every bucket below is a
       // statement about an answer and this row has none.
-      const notMeasured = everything.filter((o) => !isScoreableDisposition(dispositionOf(o)));
-      const inDimension = everything.filter((o) => isScoreableDisposition(dispositionOf(o)));
+      const notMeasured = everything.filter((o) => !isScoreableDisposition(effectiveDisposition(o)));
+      const inDimension = everything.filter((o) => isScoreableDisposition(effectiveDisposition(o)));
       const passCount = inDimension.filter((o) => statusOf(o) === 'pass').length;
       const partialCount = inDimension.filter((o) => statusOf(o) === 'partial').length;
       const awaiting = inDimension.filter((o) => statusOf(o) === 'requiresHumanReview').length;
@@ -384,6 +450,11 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
     const passTotal = dimensions.reduce((sum, rate) => sum + rate.passCount, 0);
     const awaitingTotal = dimensions.reduce((sum, rate) => sum + rate.awaitingHumanReviewCount, 0);
     const latencies = mine.map((outcome) => outcome.latencyMilliseconds).filter((value): value is number => typeof value === 'number');
+    // Over EVERY attempt of this candidate, including the governance-disqualified ones: a refusal
+    // rate is about the path, and the path does not know what the scorer later decided.
+    const reliability = providerReliability(mine)[0] ?? emptyReliability(candidate);
+    const evidenceIncomplete = reliability.notMeasured > 0
+      && reliability.measuredCoverageMilli < SUFFICIENT_COVERAGE_MILLI;
     const withEvidence = dimensions.filter((rate) => rate.scoredCount > 0);
     const sortedByRate = [...withEvidence].sort((a, b) =>
       (('measured' in b.passRateMilli ? b.passRateMilli.measured : 0) - ('measured' in a.passRateMilli ? a.passRateMilli.measured : 0)));
@@ -402,12 +473,16 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
       identityState,
       promotable: isPromotable(identityState ?? 'verified'),
       notPromotableBecause: isPromotable(identityState ?? 'verified') ? '' : NOT_PROMOTABLE_BECAUSE,
-      // Over EVERY attempt of this candidate, including the governance-disqualified ones: a refusal
-      // rate is about the path, and the path does not know what the scorer later decided.
-      reliability: providerReliability(mine)[0]
-        ?? { candidate, attempts: 0, answered: 0, providerRefusedContentCount: 0, interfaceContaminatedCount: 0,
-             providerRefusalRateMilli: 0, interfaceContaminationRateMilli: 0,
-             providerRefusedCases: [], interfaceContaminatedCases: [] },
+      reliability,
+      attempts: mine.length,
+      notMeasuredCount: reliability.notMeasured,
+      measuredCoverageMilli: reliability.measuredCoverageMilli,
+      evidenceIncomplete,
+      evidenceIncompleteBecause: evidenceIncomplete
+        ? `${reliability.notMeasured} of ${mine.length} attempt(s) produced no model evaluation `
+          + `(${describeLosses(reliability)}), so these rates rest on ${(reliability.measuredCoverageMilli / 10).toFixed(1)}% `
+          + 'of the attempts made for this candidate and cover only the cases it actually reached'
+        : '',
       strengths: sortedByRate.slice(0, 3).filter((rate) => ('measured' in rate.passRateMilli ? rate.passRateMilli.measured : 0) >= 800).map((rate) => rate.dimension),
       weaknesses: [...sortedByRate].reverse().slice(0, 3).filter((rate) => ('measured' in rate.passRateMilli ? rate.passRateMilli.measured : 0) < 600).map((rate) => rate.dimension),
     };
@@ -446,6 +521,13 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
     noncanonicalBecause: canonical ? [] : (inputs.noncanonicalBecause ?? ['residency was not managed during this campaign']),
     provisional: provisionalBecause.length > 0,
     provisionalBecause,
+    incompleteEvidence: ordered.filter((ranking) => ranking.evidenceIncomplete).map((ranking) => ({
+      candidate: ranking.candidate,
+      measuredCoverageMilli: ranking.measuredCoverageMilli,
+      notMeasuredCount: ranking.notMeasuredCount,
+      because: ranking.evidenceIncompleteBecause,
+    })),
+    incompleteEvidenceMeans: INCOMPLETE_EVIDENCE_MEANS,
     rankings: ordered.map((ranking, index) => ({ ...ranking, rank: index + 1 })),
     awaitingHumanReviewTotal: ordered.reduce((sum, ranking) => sum + ranking.awaitingHumanReviewCount, 0),
     // The comparability rule is stated first on a noncanonical ranking, because it governs every
@@ -476,9 +558,12 @@ export function outcomesFromLedger(results: Iterable<SlotResult>, dimensionForCa
       // — not by treating the row as unmeasured.
       semanticStatus: typeof result.jsonSemanticSchemaStatus === 'string' ? result.jsonSemanticSchemaStatus : undefined,
       viewsDivergent: result.jsonViewsDivergent === true,
-      // Read through `dispositionOf`, so a pre-Pass-9 row with no field is `modelAnswered` here and
-      // in every other reader, rather than each caller inventing its own default.
-      disposition: dispositionOf(result as { disposition?: unknown }),
+      // Read through `effectiveDisposition`, so a pre-Pass-9 row with no field is `modelAnswered`
+      // here and in every other reader, and a pre-Pass-11 row that recorded an exhausted allowance
+      // in its own detail is read as the exhausted allowance it says it was. The ledger is not
+      // touched: this is the reader being right about bytes that were always there.
+      disposition: effectiveDisposition(result as { disposition?: unknown; status?: unknown; detail?: unknown }),
+      detail: typeof result.detail === 'string' ? result.detail : undefined,
     });
   }
   return out;

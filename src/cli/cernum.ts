@@ -42,10 +42,12 @@ import {
   auditAdjudicationPacket, buildAdjudicationPacket, caseMaterialFor, readResultsJSONL,
   referredRows, reinterpretDispositions, renderAdjudicationBatches, writeArtefact, writeText,
   recountWithCorrectedDispositions, buildEngineCatalogue as buildCatalogueForRecount,
+  INCOMPLETE_EVIDENCE_MEANS, SlotResult, outcomesFromLedger, rankCandidates, recommendRetention,
   FABLE_SUBSTITUTION_REASON, prepareManifest, renderPreparedManifest,
   applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
   costPolicyDisclosure,
 } from '../engine/index';
+import { CapabilityDimension } from '../core/evaluation';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
@@ -1560,6 +1562,19 @@ async function commandFinalize(positional: string[], options: Options): Promise<
     for (const reason of report.rankings.provisionalBecause) say(`  · ${reason}`);
     say('');
   }
+  // BEFORE THE TABLES, like the divergence list and for the same reason. A reader who reaches a
+  // leaderboard without having been told that its top row rests on a fifth of the attempts has
+  // already drawn the conclusion Pass 11 published.
+  if (report.rankings.incompleteEvidence.length > 0) {
+    say(`*** ${report.rankings.incompleteEvidence.length} CANDIDATE(S) BELOW REST ON PART OF THE PLAN ***`);
+    for (const line of wrap(report.rankings.incompleteEvidenceMeans, 76)) say(`  ${line}`);
+    say('');
+    for (const entry of report.rankings.incompleteEvidence) {
+      say(`  · ${entry.candidate}: coverage ${(entry.measuredCoverageMilli / 10).toFixed(1)}%`);
+      for (const line of wrap(entry.because, 72)) say(`      ${line}`);
+    }
+    say('');
+  }
   // TWO TABLES, IN THIS ORDER, ALWAYS BOTH.
   //
   // The divergence list comes FIRST, before either leaderboard. A reader who reaches a table showing
@@ -2007,6 +2022,25 @@ async function commandAdjudicate(positional: string[], options: Options): Promis
   if (!audit.clean) fail('the packet is not blinded; it has not been handed over and must be rebuilt');
 }
 
+/**
+ * The rankings and retention notes a sealed campaign yields when its own rows are read correctly.
+ *
+ * NOTHING IS RE-RUN AND NOTHING IS WRITTEN BACK. The campaign's own `rankings.json` stays exactly as
+ * it was published; this is a second, dated table written into the `--out` artefact beside it, so a
+ * reader can hold the published result and the corrected one at the same time and see which rows
+ * moved. Producing it through `rankCandidates` rather than by hand is the point: a re-derivation
+ * computed by different code from the code that produces results is a third opinion, not a check.
+ */
+function rederiveRankings(rows: { slotKey: string; status: string; [key: string]: unknown }[], producedAt: string) {
+  const catalogue = buildCatalogueForRecount(allRankableSuiteIDs(), 1);
+  const outcomes = outcomesFromLedger(rows as unknown as SlotResult[],
+    (caseID) => catalogue.cases.get(caseID)?.category as CapabilityDimension | undefined);
+  // No reconciliation is supplied and the table says so on its face: this is a re-reading of an
+  // evidence file, not a finalization of a live campaign, and it must not pass itself off as one.
+  const rankings = rankCandidates({ outcomes, derivedAt: producedAt });
+  return { rankings, retention: recommendRetention(rankings) };
+}
+
 /** The corrected reading of a sealed campaign, written beside it and never over it. */
 async function commandReinterpret(positional: string[], options: Options): Promise<void> {
   if (positional.length === 0) fail('name at least one results.jsonl to reinterpret');
@@ -2021,6 +2055,12 @@ async function commandReinterpret(positional: string[], options: Options): Promi
   const reports = all.map((entry) => ({
     ...reinterpretDispositions(entry.rows, entry.file, producedAt),
     recount: recountWithCorrectedDispositions(entry.rows, dimensionForCase),
+    // THE RE-DERIVED TABLE, not just the re-derived rates. A recount answers "what does this
+    // candidate's number become"; a campaign is decided by rank, role and retention, and Pass 11's
+    // defect moved all three. Derived by the shipped ranking, from the sealed rows, with the
+    // corrected reading of their own recorded detail — so this is the production code path applied
+    // to the evidence file, not a second opinion written for the occasion.
+    rederived: rederiveRankings(entry.rows, producedAt),
   }));
   writeArtefact(path.resolve(out!), { producedAt, sources: positional, reports });
   for (const report of reports) {
@@ -2029,6 +2069,15 @@ async function commandReinterpret(positional: string[], options: Options): Promi
     for (const line of report.recount.filter((entry) => entry.deltaMilli !== null && entry.deltaMilli !== 0)) {
       say(`    ${line.candidate}: ${(line.sealedPassRateMilli ?? 0) / 10}% sealed -> `
         + `${(line.correctedPassRateMilli ?? 0) / 10}% corrected (n ${line.sealedScoredCount} -> ${line.correctedScoredCount})`);
+    }
+    for (const ranking of report.rederived.rankings.rankings) {
+      const rate = 'measured' in ranking.overallPassRateMilli ? `${(ranking.overallPassRateMilli.measured / 10).toFixed(1)}%` : 'no rate';
+      say(`    ${String(ranking.rank).padStart(2)}. ${ranking.candidate.padEnd(30)} ${rate.padStart(8)}`
+        + `  coverage ${(ranking.measuredCoverageMilli / 10).toFixed(1)}%`
+        + `${ranking.disqualified ? '  DISQUALIFIED' : ''}${ranking.evidenceIncomplete ? '  ** PARTIAL EVIDENCE **' : ''}`);
+    }
+    if (report.rederived.rankings.incompleteEvidence.length > 0) {
+      for (const line of wrap(INCOMPLETE_EVIDENCE_MEANS, 74)) say(`    ${line}`);
     }
   }
   say(`written: ${path.resolve(out!)} — the sealed ledgers are unchanged`);

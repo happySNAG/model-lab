@@ -193,7 +193,11 @@ describe('a mixed campaign keeps its halves independent', () => {
     const local = [...campaign.ledger.results.values()].filter((row) => row.candidate === 'alpha:1b');
     const frontier = [...campaign.ledger.results.values()].filter((row) => row.candidate === 'claudeCLI:sonnet');
     expect(local.every((row) => row.status !== 'runtimeError')).toBe(true);
-    expect(frontier.every((row) => row.status === 'runtimeError')).toBe(true);
+    // The claim here is INDEPENDENCE: the frontier half failed on every slot and the local half did
+    // not. Since Pass 11 a dead provider is `envelopeFailure` + `transportFailed` rather than
+    // `runtimeError`, because no model answered it — see `attempt-disposition.ts`.
+    expect(frontier.every((row) => row.status === 'envelopeFailure')).toBe(true);
+    expect(frontier.every((row) => row.disposition === 'transportFailed')).toBe(true);
     // And the local candidate's residency was still proved, whatever the provider did.
     expect(campaign.ledger.events().some((event) => event.kind === 'residencyVerified' && event.candidate === 'alpha:1b')).toBe(true);
   });

@@ -534,8 +534,15 @@ export interface FrontierMetricsRow {
   executionClass: string;
   billingBasis: string;
   attemptCount: number;
+  /** Attempts on which a model answered. The only denominator a quality figure may use. */
+  measuredAttemptCount: number;
+  /** Attempts that produced no model evaluation — a spent allowance, a dead connection, a filter. */
+  notMeasuredAttemptCount: number;
   successfulTaskCount: number;
+  /** Over EVERY attempt: an end-to-end figure, and never on its own. See `scoredTaskRateMilli`. */
   successfulTaskRateMilli?: number;
+  /** Over the attempts a model answered: the quality figure, and the comparable one. */
+  scoredTaskRateMilli?: number;
   /** EVERY input token the provider processed, cached and fresh. Absent is not zero. */
   inputTokens?: number;
   /** The fresh remainder alone — what Pass 6 mistakenly published as the input count. */

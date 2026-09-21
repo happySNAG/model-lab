@@ -48,14 +48,25 @@ import { Provenance, Quantity, estimatedQuantity, measuredQuantity, reportedQuan
 import { redactError, redactSecrets } from './redaction';
 import { requireCredential, CredentialLookupOptions } from './credentials';
 import { OTLPTurnObservation, OTLPTurnSource } from './otlp-observer';
-import { isContentFilterRefusal } from './attempt-disposition';
+import { isAllowanceExhaustion, isContentFilterRefusal, isPlanExhausted } from './attempt-disposition';
 
-export type FrontierFailureKind =
-  | 'notInstalled' | 'notAuthenticated' | 'timeout' | 'cancelled' | 'rateLimited'
-  | 'refused' | 'transport' | 'malformedResponse' | 'modelMismatch' | 'budgetRefused'
+/**
+ * Every way an attempt can fail short of an answer.
+ *
+ * A runtime array rather than a bare union, so `attempt-disposition.ts`'s map from kind to
+ * disposition can be PROVEN total by a test. Pass 9 and Pass 11 were both a kind that nothing
+ * downstream had decided what to do with; a kind added here with no disposition beside it is now a
+ * failing test rather than a leaderboard entry.
+ */
+export const FRONTIER_FAILURE_KINDS = [
+  'notInstalled', 'notAuthenticated', 'timeout', 'cancelled', 'rateLimited',
+  'refused', 'transport', 'malformedResponse', 'modelMismatch', 'budgetRefused',
   // Pass 9. Both were `transport` and `malformedResponse` respectively, and both were wrong in a
   // way that reached the leaderboard — see `attempt-disposition.ts`.
-  | 'contentFiltered' | 'toolContaminated';
+  'contentFiltered', 'toolContaminated',
+] as const;
+
+export type FrontierFailureKind = (typeof FRONTIER_FAILURE_KINDS)[number];
 
 /**
  * Which failures a retry could plausibly fix. A refusal and a mismatch are not among them.
@@ -218,6 +229,16 @@ export async function withRetry(binding: ProviderBinding, attempt: () => Promise
     }
     wasted += usedTokens;
     if (!RETRYABLE_FAILURES.includes(response.failure.kind)) break;
+    // A SPENT PLAN IS NOT A TRANSIENT FAULT, whatever kind it arrived under. Pass 11's sixty-nine
+    // usage-limit rows each carry `retryCount: 2`, so the engine sent 207 requests to be told the
+    // same thing 207 times, against an allowance that had already run out. A limit that names the
+    // hour it resets is a schedule, not a flake; the campaign's throttle abort is what handles it,
+    // and re-asking here only delays that.
+    //
+    // A BURST LIMIT IS STILL RETRIED, which is why this tests the narrow predicate and not the
+    // broad one. Waiting out a per-minute 429 is exactly what the backoff is for; refusing to
+    // retry it would trade one defect for a smaller one in the opposite direction.
+    if (isPlanExhausted(response.failure.detail)) break;
     if (shouldCancel?.()) break;
     if (index === binding.retry.maxRetries) break;
     retries += 1;
@@ -607,11 +628,15 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         // Same order and same reason as the Codex path: a service content filter is recognised from
         // its message before any status-based branch can call it a transport fault. This provider
         // emitted none in Pass 8; the classification is here so that the first one is not a fail.
-        const kind: FrontierFailureKind = isContentFilterRefusal(message) ? 'contentFiltered'
-          : status === 404 || status === 403 ? 'refused'
-            : status === 401 ? 'notAuthenticated'
-              : status === 429 ? 'rateLimited'
-                : 'transport';
+        // An exhausted allowance is read from the MESSAGE too, and before the status branches, for
+        // exactly the reason the content filter is: Pass 11 proved this provider class can announce
+        // a spent subscription inside a failed-turn envelope carrying no HTTP status at all.
+        const kind: FrontierFailureKind = isAllowanceExhaustion(message) ? 'rateLimited'
+          : isContentFilterRefusal(message) ? 'contentFiltered'
+            : status === 404 || status === 403 ? 'refused'
+              : status === 401 ? 'notAuthenticated'
+                : status === 429 ? 'rateLimited'
+                  : 'transport';
         return {
           ...empty(kind, `the CLI reported a failed turn (${errored.terminalReason ?? 'no terminal reason'}`
             + `${status === undefined ? '' : `, HTTP ${status}`}): ${message.slice(0, 400)}`),
@@ -627,7 +652,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
     if (result.failure) {
       const unauthenticated = /not (?:logged|signed) in|unauthenticated|please (?:log|sign) in|no active session/i
         .test(`${result.stdout}\n${result.stderr}`);
-      const rateLimited = /rate.?limit|too many requests|429|quota|usage limit/i.test(`${result.stdout}\n${result.stderr}`);
+      // One marker list, shared with the classifier that decides what the row MEANS. Two private
+      // regexes that agree today are two regexes that disagree after the next provider reword.
+      const rateLimited = isAllowanceExhaustion(`${result.stdout}\n${result.stderr}`);
       const kind: FrontierFailureKind = result.failure.kind === 'timeout' ? 'timeout'
         : result.failure.kind === 'cancelled' ? 'cancelled'
           : result.failure.kind === 'notInstalled' ? 'notInstalled'
@@ -757,11 +784,17 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         // all, so every status-based branch below falls through to `transport` — which is how Pass 8
         // recorded a service's policy decision as a network fault, retried it twice, and then scored
         // the silence as the model's failure.
-        const kind: FrontierFailureKind = isContentFilterRefusal(message) ? 'contentFiltered'
-          : status === 400 || status === 403 || status === 404 ? 'refused'
-            : status === 401 ? 'notAuthenticated'
-              : status === 429 ? 'rateLimited'
-                : 'transport';
+        // AN EXHAUSTED ALLOWANCE IS TESTED FIRST, AND ON THE MESSAGE. This is the Pass 11 defect
+        // verbatim: `turn.failed` carrying "You've hit your usage limit ... try again at Sep 21st,
+        // 2026 1:55 AM" and NO HTTP STATUS, so every status branch below fell through to
+        // `transport` — which the campaign does not treat as a throttle, so sixty-nine attempts were
+        // recorded terminal and counted as sixty-nine failures of the model.
+        const kind: FrontierFailureKind = isAllowanceExhaustion(message) ? 'rateLimited'
+          : isContentFilterRefusal(message) ? 'contentFiltered'
+            : status === 400 || status === 403 || status === 404 ? 'refused'
+              : status === 401 ? 'notAuthenticated'
+                : status === 429 ? 'rateLimited'
+                  : 'transport';
         return {
           ...empty(kind, `the CLI reported a failed turn (${parsed.terminalReason ?? 'no terminal reason'}`
             + `${status === undefined ? '' : `, HTTP ${status}`}): ${message.slice(0, 400)}`),
@@ -771,9 +804,16 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       }
 
       if (result.failure) {
+        // The same sniff the Claude path has done since Pass 6. A tool that dies without writing an
+        // envelope still prints why on its stderr, and "usage limit" there means the same thing it
+        // means inside an envelope: the account is out of capacity, and no model was asked anything.
+        const streams = `${result.stdout}\n${result.stderr}`;
+        const unauthenticated = /not (?:logged|signed) in|unauthenticated|please (?:log|sign) in|no active session/i.test(streams);
         const kind: FrontierFailureKind = result.failure.kind === 'timeout' ? 'timeout'
           : result.failure.kind === 'cancelled' ? 'cancelled'
-            : result.failure.kind === 'notInstalled' ? 'notInstalled' : 'transport';
+            : result.failure.kind === 'notInstalled' ? 'notInstalled'
+              : isAllowanceExhaustion(streams) ? 'rateLimited'
+                : unauthenticated ? 'notAuthenticated' : 'transport';
         return {
           ...empty(kind, `${redactSecrets(result.failure.detail)}`
             + `${result.stderr ? ` — ${redactSecrets(result.stderr).slice(0, 500)}` : ''}`),

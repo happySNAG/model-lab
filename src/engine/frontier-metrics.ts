@@ -28,6 +28,7 @@
 import {
   ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
 } from './identity-admission';
+import { effectiveDisposition, isScoreableDisposition } from './attempt-disposition';
 import { CanonicalValue } from './canonical';
 
 /** How a number was obtained. Ordered worst-to-best; aggregation keeps the worst. */
@@ -466,6 +467,14 @@ export interface FrontierAttemptMetrics {
 
   /** The single worst provenance across this attempt's figures — the honest quality of the row. */
   measurementQuality: Provenance;
+  /**
+   * What this attempt measured — see `attempt-disposition.ts`.
+   *
+   * Carried here so this module's success rates can be partitioned the same way the ranking's are.
+   * Two modules that disagree about which attempts a model answered would publish two success
+   * rates for the same campaign, and a reader would have no way to tell which one to believe.
+   */
+  disposition: string;
 }
 
 /** Everything one candidate produced across a campaign. */
@@ -490,9 +499,26 @@ export interface FrontierCandidateMetrics {
   identityDisclosureRequired: boolean;
 
   attemptCount: number;
+  /** Attempts on which a model answered. The denominator a capability claim may rest on. */
+  measuredAttemptCount: number;
+  /** Attempts that produced no model evaluation: an exhausted allowance, a dead connection, a filter. */
+  notMeasuredAttemptCount: number;
   successfulTaskCount: number;
-  /** Successes per thousand attempts. Unavailable — never zero — when nothing was attempted. */
+  /**
+   * Successes per thousand ATTEMPTS — an end-to-end figure, and deliberately not a quality one.
+   *
+   * It answers "how often did asking for this produce a correct answer, all causes included", which
+   * a person choosing a path genuinely needs. It is depressed by a spent subscription and a dead
+   * socket, BECAUSE THOSE ARE PART OF WHAT IT MEASURES. It must never be read as the model's score:
+   * `scoredTaskRateMilli` below is that, and the two are published together for that reason. Pass 11
+   * is what happens when the difference is left to a reader to infer.
+   */
   successfulTaskRateMilli: Quantity;
+  /**
+   * Successes per thousand attempts A MODEL ANSWERED. The quality figure, and the one comparable
+   * with another candidate's. Unavailable — never zero — when no attempt was ever measured.
+   */
+  scoredTaskRateMilli: Quantity;
 
   inputTokens: Quantity;
   /** The campaign's fresh-input total, beside the real one. The gap between them is the cache. */
@@ -536,6 +562,10 @@ export interface FrontierCandidateMetrics {
 }
 
 const NO_ATTEMPTS = 'this candidate recorded no attempts, so there is nothing to average';
+const NOTHING_WAS_MEASURED =
+  'no attempt produced a model evaluation, so there is no quality rate — every one of them was ended by '
+  + 'the provider, the account or the transport. Missing evidence is not a score of zero, and the '
+  + 'end-to-end rate beside this is the figure that describes what happened.';
 const NO_SUCCESSES = 'this candidate completed no task successfully. Cost per successful task is undefined rather than '
   + 'infinite or zero: a rate with no successes in its denominator is not a number to compare models on';
 
@@ -587,6 +617,10 @@ export const IDENTITY_UNVERIFIABLE_CAVEAT =
 export function aggregateCandidateMetrics(candidate: string, attempts: FrontierAttemptMetrics[],
                                           successfulTaskCount: number): FrontierCandidateMetrics {
   const first = attempts[0];
+  // The denominator a quality figure is allowed to use. Counted from the same disposition the
+  // ranking counts from, so the two can never disagree about how many questions were answered.
+  const measured = attempts.filter((attempt) => isScoreableDisposition(
+    attempt.disposition as never)).length;
   const provider = first?.provider ?? 'unknown';
   const executionClass = first?.executionClass ?? 'unknown';
   const billingBasis = first?.billingBasis ?? 'unknown';
@@ -667,10 +701,15 @@ export function aggregateCandidateMetrics(candidate: string, attempts: FrontierA
     identityDisclosure: identityDisclosureFor(identityState, requestedModelID),
     identityDisclosureRequired: identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
     attemptCount: attempts.length,
+    measuredAttemptCount: measured,
+    notMeasuredAttemptCount: attempts.length - measured,
     successfulTaskCount,
     successfulTaskRateMilli: attempts.length === 0
       ? unavailableQuantity(NO_ATTEMPTS)
       : measuredQuantity(Math.round((successfulTaskCount * 1000) / attempts.length)),
+    scoredTaskRateMilli: measured === 0
+      ? unavailableQuantity(attempts.length === 0 ? NO_ATTEMPTS : NOTHING_WAS_MEASURED)
+      : measuredQuantity(Math.round((successfulTaskCount * 1000) / measured)),
     inputTokens,
     freshInputTokens,
     cacheCreationInputTokens,
@@ -706,7 +745,8 @@ export function aggregateCandidateMetrics(candidate: string, attempts: FrontierA
 
 /** One line per candidate, for a terminal table. Prints the provenance rather than hiding it. */
 export function describeCandidateMetrics(metrics: FrontierCandidateMetrics): string {
-  const rate = quantityValue(metrics.successfulTaskRateMilli);
+  const rate = quantityValue(metrics.scoredTaskRateMilli);
+  const endToEnd = quantityValue(metrics.successfulTaskRateMilli);
   const cost = quantityValue(metrics.costPerSuccessfulTaskMicroUSD);
   // A subscription candidate shows its ALLOWANCE here, never a $0 charge: the charge is genuinely
   // zero and saying so alone is what tells a reader the plan is free.
@@ -717,7 +757,11 @@ export function describeCandidateMetrics(metrics: FrontierCandidateMetrics): str
   return [
     metrics.candidate.padEnd(24),
     metrics.executionClass.padEnd(14),
+    // QUALITY FIRST, END-TO-END BESIDE IT, never one alone. The first is over the attempts a model
+    // answered; the second is over every attempt made. They differ by exactly the attempts nothing
+    // measured, and a row that showed only the second would read as a model's score.
     (rate === undefined ? 'no rate' : `${(rate / 10).toFixed(1)}%`).padStart(8),
+    (endToEnd === undefined ? '(n/a e2e)' : `(${(endToEnd / 10).toFixed(1)}% e2e)`).padStart(12),
     money.padStart(18),
     metrics.measurementQuality,
     // Appended to the ROW, not printed under the table. A reader scanning a leaderboard reads rows,
@@ -794,6 +838,9 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
     : unavailableQuantity('this attempt carries no token counts to estimate a total from');
 
   const billingBasisOfRow = typeof row.billingBasis === 'string' ? row.billingBasis : 'unknown';
+  // Read through the shared corrector, not off the stored field: a row written before Pass 11 says
+  // `modelAnswered` and states in its own detail that a subscription allowance ran out.
+  const disposition = effectiveDisposition(row);
   const rowRequestedModelID = typeof row.requestedModelID === 'string' ? row.requestedModelID : '';
   // `verified` is the fallback for a row written before Pass 6, where a local candidate's identity
   // was established by its weights digest and there was no third state to record. The state this
@@ -803,6 +850,7 @@ export function attemptMetricsFromRow(row: Record<string, unknown>): FrontierAtt
   return {
     candidate: typeof row.candidate === 'string' ? row.candidate : '',
     slotKey: typeof row.slotKey === 'string' ? row.slotKey : '',
+    disposition,
     provider: row.provider,
     executionClass: typeof row.executionClass === 'string' ? row.executionClass : 'unknown',
     billingBasis: billingBasisOfRow,
