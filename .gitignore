@@ -4,6 +4,7 @@ node_modules/
 # Build output
 out/
 dist/
+dist-head-a96aa04/
 *.tsbuildinfo
 
 # Test output
