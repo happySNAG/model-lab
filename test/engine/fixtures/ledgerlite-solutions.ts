@@ -148,3 +148,49 @@ export const REFERENCE_SOLUTIONS: Record<string, Patch> = {
   'task.dev.multi-file-edit.fix-negative-rounding': solveFixNegativeRounding,
   'task.dev.multi-file-edit.honour-rounding-mode': solveHonourRoundingMode,
 };
+
+// MARK: - Correct answers to the repository-understanding questions
+//
+// The fixture's own ground truth, written out once so every test grades against the same answers.
+
+export const CORRECT_ANSWERS: Record<string, unknown> = {
+  'task.dev.repo-understanding.locate-implementation': {
+    file: 'src/core/charge-pipeline.js',
+    symbol: 'runChargePipeline',
+  },
+  'task.dev.repo-understanding.trace-flow': {
+    files: [
+      'src/index.js',
+      'src/api/charges.js',
+      'src/core/charge-pipeline.js',
+      'src/core/stages/validate.js',
+      'src/core/stages/tax.js',
+      'src/core/stages/round.js',
+      'src/util/money.js',
+    ],
+  },
+  'task.dev.repo-understanding.impact-set': {
+    mustChange: ['src/core/charge-pipeline.js', 'src/config/rates.json'],
+    mustNotEditByHand: ['src/schema/generated/charge-fields.js'],
+  },
+  'task.dev.repo-understanding.source-of-truth': {
+    sourceOfTruth: 'src/schema/charge.schema.json',
+    derived: 'src/schema/generated/charge-fields.js',
+    generator: 'tools/generate-charge-fields.js',
+  },
+  'task.dev.repo-understanding.relevant-tests': {
+    caseFile: 'test/cases/rounding.cases.json',
+    testModule: 'test/money.test.js',
+    otherTestsAffected: [],
+  },
+  'task.dev.repo-understanding.explain-bug': {
+    file: 'src/util/money.js',
+    symbol: 'roundHalfUp',
+    cause: 'roundHalfUp delegates to Math.round, which rounds a half away from zero for positive amounts but toward zero for negative ones, so a negative half lands one minor unit high.',
+    evidence: ['src/util/money.js', 'src/core/stages/round.js', 'test/cases/rounding.cases.json'],
+  },
+  'task.dev.repo-understanding.absent-feature': {
+    present: false,
+    files: [],
+  },
+};

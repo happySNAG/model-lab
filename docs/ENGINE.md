@@ -523,6 +523,56 @@ there is a real sandbox to put it in.
 
 ---
 
+## The development benchmark, and the tier it will not report
+
+Cernum measures twelve capability dimensions by asking a question and judging an answer. Two
+dimensions a development routing decision depends on cannot be measured that way at all:
+**repository understanding** and **multi-file editing**. A question about how a project's files
+relate needs a project; a change that has to stay coherent across four files needs four files.
+
+So they live in a **separate registry** — `src/core/development-catalog.ts` — with their own sealed
+fixture repositories, their own predicate-based assertions, their own scoring contract and their own
+digests. Nothing joins it to the text catalog, and that is the point: `fixtures/parity/catalog.json`
+pins the text suites member for member, and a candidate measured on conversation and retrieval has
+not been asked a development question and must not read as though it had.
+
+**Every candidate starts at NOT MEASURED, structurally.** The ranking layer fills the development
+block on every row from `noDevelopmentEvidence` unless it is handed real results. There is no path
+by which a good text rate becomes a development standing.
+
+### Two tiers, and only one of them is filled in
+
+| Tier | Decided by | Measured today |
+| --- | --- | --- |
+| **Structural** | reading the repository the attempt left behind: which files moved, what the held-out assertions say about their contents, what was preserved, what strayed | ✅ Yes |
+| **Executed** | running the candidate's code: do the new tests pass, do the old ones still pass, does it still build | ❌ No |
+
+The executed tier is **declared in the contract and reported as not measured**, for the reason
+stated directly above: there is no sandbox to run candidate code in, and the isolation module says
+plainly that it is not one. Three consequences follow, and all three are deliberate:
+
+- `newTestsPass`, `existingTestsPass` and `buildSucceeds` carry **no rate at all** — not a zero.
+  Missing evidence is not a zero score is the rule everywhere else in this engine and it holds here.
+- **No multi-file-editing task can reach full credit.** A task graded `full` would be asserting that
+  the candidate's code was run and worked. It was not run.
+- The `multi-file editor` and `development routing candidate` roles **cannot qualify**. Their
+  structural standing is published beside the withheld role, exactly as a candidate whose identity
+  was never established still has its rates published and its recommendation withheld.
+
+The one role that can qualify today is **repository reader**, which asks nothing that requires
+running anything.
+
+### What a development result must carry
+
+A text result's identity is bound by the frozen manifest, because a text case is a frozen prompt and
+a sealed policy. A development task is graded by *code*, and code changes — so every result also
+records the **commit** that graded it, the **fixture repository digest** it ran against, the
+**contract digest** that decided it, and the **machine** that executed it. A commit that cannot be
+read (an installed build has no `.git`) is recorded as empty and named as missing; it is never
+filled in with a version number standing in for a commit.
+
+---
+
 ## The terminal command
 
 The terminal interface ships **inside the installed application**. It needs no checkout, no Node

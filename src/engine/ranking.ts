@@ -29,6 +29,11 @@
 //      table whose coverage is short says so on its face.
 
 import { CapabilityDimension } from '../core/evaluation';
+import {
+  DevelopmentEligibility, DevelopmentEvidence, DevelopmentPlan, DevelopmentRole,
+  assessDevelopmentEligibility, assessDevelopmentRoles, noDevelopmentEvidence,
+} from '../core/development-evidence';
+import { DevelopmentDimension } from '../core/development-scoring';
 import { Measurement, measured, unavailable } from '../core/candidate';
 import { Reconciliation, SlotResult } from './ledger';
 import { NOT_PROMOTABLE_BECAUSE, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isPromotable } from './identity-admission';
@@ -120,6 +125,28 @@ export interface DimensionRate {
   passRateMilli: Measurement<number>;
 }
 
+/**
+ * A candidate's standing on the two development dimensions.
+ *
+ * PRESENT ON EVERY ROW, INCLUDING EVERY ROW THAT PREDATES THE DEVELOPMENT SUITES. A candidate that
+ * has not run them carries `notMeasured` here, with the reason written out — not an absent field a
+ * reader might take for an oversight, and not a zero a reader would take for a result.
+ */
+export interface DevelopmentStanding {
+  evidence: DevelopmentEvidence;
+  roles: DevelopmentRole[];
+  eligibility: DevelopmentEligibility;
+}
+
+export const DEVELOPMENT_MEANS =
+  'The development dimensions — repositoryUnderstanding and multiFileEditing — are measured by a SEPARATE '
+  + 'registry of suites with their own fixtures, their own scoring contract and their own digests. No rate '
+  + 'from the text suites is evidence about them, and nothing here imputes one: a candidate that has not run '
+  + 'the development suites reads NOT MEASURED on both, whatever it scored on the twelve text dimensions. '
+  + 'The `multi-file editor` and `development routing candidate` roles additionally cannot qualify at all '
+  + 'yet, because their contract declares metrics that require running the candidate\'s code and this engine '
+  + 'has no sandbox to run it in. Their structural standing is published in full beside the withheld role.';
+
 export interface CandidateRanking {
   candidate: string;
   rank: number;
@@ -132,6 +159,8 @@ export interface CandidateRanking {
   dimensionsWithoutEvidence: CapabilityDimension[];
   medianLatencyMilliseconds: Measurement<number>;
   roles: CapabilityRole[];
+  /** The two development dimensions, always present, `notMeasured` until the suites are run. */
+  development: DevelopmentStanding;
   strengths: CapabilityDimension[];
   weaknesses: CapabilityDimension[];
   /**
@@ -208,6 +237,10 @@ export interface FinalRankings {
   countingRules: string[];
   /** What the per-candidate reliability figures mean, and what they may not be used for. */
   providerReliabilityMeans: string;
+  /** What the development block on every row means, and what it may not be read as. */
+  developmentMeans: string;
+  /** Candidates whose development dimensions are unmeasured, and which suites each still owes. */
+  developmentUnmeasured: { candidate: string; outstandingDimensions: DevelopmentDimension[] }[];
   derivedAt: string;
 }
 
@@ -234,6 +267,9 @@ export const COUNTING_RULES = [
   + 'rates, which are never netted against a quality figure.',
   'Coverage is published beside every rate. A pass rate over a fraction of the planned attempts is a '
   + 'smaller experiment than one over all of them, and no ranking here asks a reader to assume otherwise.',
+  'The development dimensions are measured by a separate registry and are NOT MEASURED until a candidate '
+  + 'runs it. No text rate is evidence about reading a repository or changing several files coherently, and '
+  + 'no candidate acquires a development standing by having scored well on the questions that were asked.',
 ];
 
 /** Below this share of measured attempts, a candidate's rate is flagged as resting on partial evidence. */
@@ -393,10 +429,40 @@ export interface RankingInputs {
   canonical?: boolean;
   /** Why it is not canonical. Required in substance when `canonical` is false. */
   noncanonicalBecause?: string[];
+  /**
+   * Development evidence by candidate name.
+   *
+   * OMITTING IT IS THE NORMAL CASE and means exactly one thing: nothing ran the development suites,
+   * so every candidate reads NOT MEASURED. It does not mean "assume the text rates carry over".
+   */
+  developmentEvidence?: ReadonlyMap<string, DevelopmentEvidence>;
+  /** How many tasks the development registry holds per dimension. The coverage denominator. */
+  developmentPlan?: DevelopmentPlan;
+}
+
+/**
+ * The plan used when a caller supplies none.
+ *
+ * Zero registered tasks, so a candidate's coverage denominator is honest rather than borrowed from a
+ * registry this ranking was never told about. The state is `notMeasured` either way.
+ */
+export const EMPTY_DEVELOPMENT_PLAN: DevelopmentPlan = {
+  plannedTaskCounts: { repositoryUnderstanding: 0, multiFileEditing: 0 },
+};
+
+function developmentStandingFor(candidate: string, inputs: RankingInputs, plan: DevelopmentPlan): DevelopmentStanding {
+  const evidence = inputs.developmentEvidence?.get(candidate)
+    ?? noDevelopmentEvidence(candidate, plan, inputs.derivedAt);
+  return {
+    evidence,
+    roles: assessDevelopmentRoles(evidence),
+    eligibility: assessDevelopmentEligibility(evidence),
+  };
 }
 
 export function rankCandidates(inputs: RankingInputs): FinalRankings {
   const view: RankingView = inputs.view ?? 'strictTransport';
+  const plan: DevelopmentPlan = inputs.developmentPlan ?? EMPTY_DEVELOPMENT_PLAN;
   // The status this table counts. On the strict view it is the campaign's recorded status, verbatim.
   // On the semantic view it is the second reading where the case produced one, and the recorded
   // status where it did not — a plain-prose case has one verdict and gets it in both tables.
@@ -470,6 +536,7 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
       dimensionsWithoutEvidence: dimensions.filter((rate) => rate.scoredCount === 0).map((rate) => rate.dimension),
       medianLatencyMilliseconds: median(latencies),
       roles: assessRoles(dimensions, disqualified, [...new Set(disqualifying.map((o) => o.caseID))].sort(), identityState),
+      development: developmentStandingFor(candidate, inputs, plan),
       identityState,
       promotable: isPromotable(identityState ?? 'verified'),
       notPromotableBecause: isPromotable(identityState ?? 'verified') ? '' : NOT_PROMOTABLE_BECAUSE,
@@ -534,6 +601,15 @@ export function rankCandidates(inputs: RankingInputs): FinalRankings {
     // rule under it: a rate computed correctly from incomparable measurements is still incomparable.
     countingRules: canonical ? COUNTING_RULES : [NONCANONICAL_COUNTING_RULE, ...COUNTING_RULES],
     providerReliabilityMeans: PROVIDER_RELIABILITY_MEANS,
+    developmentMeans: DEVELOPMENT_MEANS,
+    developmentUnmeasured: ordered
+      .map((ranking) => ({
+        candidate: ranking.candidate,
+        outstandingDimensions: ranking.development.evidence.dimensions
+          .filter((entry) => entry.state !== 'measured')
+          .map((entry) => entry.dimension),
+      }))
+      .filter((row) => row.outstandingDimensions.length > 0),
     derivedAt: inputs.derivedAt,
   };
 }
