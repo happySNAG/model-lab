@@ -214,6 +214,91 @@ function otlpRecord(binding: ProviderBinding, response: FrontierResponse): {
   };
 }
 
+/**
+ * ONE FRONTIER RESPONSE, TURNED INTO THE ROW THAT GETS RECORDED.
+ *
+ * EXTRACTED RATHER THAN COPIED, and the distinction is the whole reason it is a function. The
+ * development runner records the same telemetry as a text campaign — every input token including
+ * the cached ones, the decomposition beside the total, the allowance a subscription actually spent,
+ * the retries, the wasted tokens, the tool's own telemetry where a collector ran. A second builder
+ * beside this one would agree on the day it was written and would drift on the day either half was
+ * corrected, which is exactly how Pass 6 came to understate one provider's input by 1,650x in a
+ * column that looked comparable.
+ *
+ * It is PURE. The spend ceiling is not enforced here — `RoutingHost` reads `costMicroUSD` and
+ * `costProvenance` off the returned row and records against its own tracker — because a function
+ * that both describes an attempt and charges for it could not be called by a caller that only
+ * wanted the description.
+ */
+export function buildFrontierAttemptRecord(binding: ProviderBinding, response: FrontierResponse): FrontierAttemptRecord {
+  // EVERY input token the provider processed, not the fresh remainder.
+  //
+  // Pass 6 read `usage.inputTokens` here and recorded it as the attempt's input count. That field
+  // is the fresh remainder, and the two tools leave a different remainder: Claude reports 2 fresh
+  // tokens beside 6,000 cached ones, Codex reports a total from which the adapter derives the
+  // remainder. So the Pass 6 ledger understated Claude by ~1,650x AND Codex by ~1.75x, in one
+  // column, which is worse than either alone — the column looked comparable and was not.
+  //
+  // `totalInputTokens()` was written for exactly this and, until now, was reached only as a
+  // presence check. The decomposition travels with the total so the correction is auditable from
+  // the row rather than taken on trust.
+  const input = totalInputTokens(response.usage);
+  const freshInput = response.usage.inputTokens;
+  const cacheCreation = response.usage.cacheCreationInputTokens;
+  const cacheRead = response.usage.cacheReadInputTokens;
+  const output = response.usage.visibleOutputTokens;
+  const reasoning = response.usage.reasoningTokens;
+  const counted = input !== undefined || output !== undefined;
+
+  let costMicroUSD: number | undefined;
+  let costProvenance: Provenance;
+  if (!isMetered(binding)) {
+    // Subscription execution has NO per-token charge. Zero is the true marginal API charge, and
+    // the allowance it consumes is a different currency that a dollar figure must not stand in for.
+    costMicroUSD = 0;
+    costProvenance = 'measured';
+  } else if (counted) {
+    // Priced on the TOTAL input, which is the direction in which an imprecise pricing model is
+    // safe: the snapshot carries one input rate and no cache tier, so charging cached tokens at
+    // the full rate can overstate a charge and can never understate one. A ceiling that guards
+    // against the overstatement still guards; one built on the fresh remainder would have let a
+    // metered run spend orders of magnitude past it.
+    costMicroUSD = attemptCostMicroUSD(binding, {
+      inputTokens: input, outputTokens: output, reasoningTokens: reasoning,
+    });
+    costProvenance = response.usageProvenance === 'providerReported' ? 'providerReported' : 'estimated';
+  } else {
+    // Metered, and the provider counted nothing. The cost is genuinely unknown, and writing the
+    // budget in its place would put a number nobody can reconcile into the evidence.
+    costMicroUSD = undefined;
+    costProvenance = 'unavailable';
+  }
+
+  return {
+    provider: binding.provider,
+    executionClass: binding.executionClass,
+    billingBasis: binding.billingBasis,
+    requestedModelID: binding.requestedModelID,
+    reportedModelID: response.reportedModelID,
+    inputTokens: input,
+    freshInputTokens: freshInput,
+    cacheCreationInputTokens: cacheCreation,
+    cacheReadInputTokens: cacheRead,
+    visibleOutputTokens: output,
+    reasoningTokens: reasoning,
+    totalTokens: counted ? (input ?? 0) + (output ?? 0) + (reasoning ?? 0) : undefined,
+    usageProvenance: counted ? response.usageProvenance : 'unavailable',
+    costMicroUSD,
+    costProvenance,
+    ...allowanceRecord(binding, response),
+    ...otlpRecord(binding, response),
+    retryCount: response.retryCount,
+    wastedTokens: response.wastedTokens,
+    timedOut: response.failure?.kind === 'timeout',
+    rawUsage: response.rawUsage,
+  };
+}
+
 export class RoutingHost implements CampaignHost {
   readonly residency: ResidencyController;
   readonly now: () => Date;
@@ -409,82 +494,14 @@ export class RoutingHost implements CampaignHost {
       ? [{ channel: 'visible', atMilliseconds: response.firstVisibleTokenMilliseconds }]
       : [];
 
-    // EVERY input token the provider processed, not the fresh remainder.
-    //
-    // Pass 6 read `usage.inputTokens` here and recorded it as the attempt's input count. That field
-    // is the fresh remainder, and the two tools leave a different remainder: Claude reports 2 fresh
-    // tokens beside 6,000 cached ones, Codex reports a total from which the adapter derives the
-    // remainder. So the Pass 6 ledger understated Claude by ~1,650x AND Codex by ~1.75x, in one
-    // column, which is worse than either alone — the column looked comparable and was not.
-    //
-    // `totalInputTokens()` was written for exactly this and, until now, was reached only as a
-    // presence check. The decomposition travels with the total so the correction is auditable from
-    // the row rather than taken on trust.
-    const totalInput = totalInputTokens(response.usage);
-    const freshInput = response.usage.inputTokens;
-    const cacheCreation = response.usage.cacheCreationInputTokens;
-    const cacheRead = response.usage.cacheReadInputTokens;
-    const input = totalInput;
-    const output = response.usage.visibleOutputTokens;
-    const reasoning = response.usage.reasoningTokens;
-    const counted = input !== undefined || output !== undefined;
-
-    let costMicroUSD: number | undefined;
-    let costProvenance: Provenance;
-    if (!isMetered(binding)) {
-      // Subscription execution has NO per-token charge. Zero is the true marginal API charge, and
-      // the allowance it consumes is a different currency that a dollar figure must not stand in for.
-      costMicroUSD = 0;
-      costProvenance = 'measured';
-    } else if (counted) {
-      // Priced on the TOTAL input, which is the direction in which an imprecise pricing model is
-      // safe: the snapshot carries one input rate and no cache tier, so charging cached tokens at
-      // the full rate can overstate a charge and can never understate one. A ceiling that guards
-      // against the overstatement still guards; one built on the fresh remainder would have let a
-      // metered run spend orders of magnitude past it.
-      costMicroUSD = attemptCostMicroUSD(binding, {
-        inputTokens: input, outputTokens: output, reasoningTokens: reasoning,
-      });
-      costProvenance = response.usageProvenance === 'providerReported' ? 'providerReported' : 'estimated';
-    } else {
-      // Metered, and the provider counted nothing. The cost is genuinely unknown, and writing the
-      // budget in its place would put a number nobody can reconcile into the evidence.
-      costMicroUSD = undefined;
-      costProvenance = 'unavailable';
-    }
+    const frontier = buildFrontierAttemptRecord(binding, response);
 
     if (isMetered(binding)) {
       // Recorded whatever happened, including on a failure: a refused request that burned input
       // tokens still burned them, and a ceiling that ignored those would be a ceiling that leaks.
-      this.options.spend.record(costMicroUSD ?? 0, costProvenance === 'providerReported' ? 'providerReported' : 'estimated');
+      this.options.spend.record(frontier.costMicroUSD ?? 0,
+        frontier.costProvenance === 'providerReported' ? 'providerReported' : 'estimated');
     }
-
-    const allowance = allowanceRecord(binding, response);
-    const otlp = otlpRecord(binding, response);
-
-    const frontier: FrontierAttemptRecord = {
-      provider: binding.provider,
-      executionClass: binding.executionClass,
-      billingBasis: binding.billingBasis,
-      requestedModelID: binding.requestedModelID,
-      reportedModelID: response.reportedModelID,
-      inputTokens: input,
-      freshInputTokens: freshInput,
-      cacheCreationInputTokens: cacheCreation,
-      cacheReadInputTokens: cacheRead,
-      visibleOutputTokens: output,
-      reasoningTokens: reasoning,
-      totalTokens: counted ? (input ?? 0) + (output ?? 0) + (reasoning ?? 0) : undefined,
-      usageProvenance: counted ? response.usageProvenance : 'unavailable',
-      costMicroUSD,
-      costProvenance,
-      ...allowance,
-      ...otlp,
-      retryCount: response.retryCount,
-      wastedTokens: response.wastedTokens,
-      timedOut: response.failure?.kind === 'timeout',
-      rawUsage: response.rawUsage,
-    };
 
     return {
       answerText: response.answerText,
@@ -493,10 +510,11 @@ export class RoutingHost implements CampaignHost {
       assembledContext: request.suppliedContext,
       streamEvents,
       runtime: {
-        evalTokenCount: output,
+        evalTokenCount: frontier.visibleOutputTokens,
         // The corrected total, so the telemetry summariser and the ledger row cannot disagree about
-        // how large the request was.
-        promptTokenCount: input,
+        // how large the request was. Read off the record rather than recomputed, so the row and the
+        // telemetry summary cannot be derived from two different readings of one usage block.
+        promptTokenCount: frontier.inputTokens,
         // Deliberately absent. The provider's own generation duration is not something these APIs
         // report, and deriving one from the client's wall clock would turn a network round trip into
         // a claim about how fast the model generates.

@@ -151,6 +151,25 @@ export interface FrontierResponse {
   otlpTurn?: OTLPTurnObservation;
 }
 
+/**
+ * A DISPOSABLE REPOSITORY THE REQUEST RUNS INSIDE. Present only on a development attempt.
+ *
+ * Every text attempt leaves this absent, and absent is byte-for-byte the behaviour this adapter has
+ * always had: an empty temp directory is created here, used, and removed. When it IS present, the
+ * caller owns the directory — it is an `IsolatedWorkspace` that has already had a sealed fixture
+ * copied into it — so this adapter points the child at it and NEVER removes it. Disposal belongs to
+ * whoever materialized it, because the snapshot has to be read back before it goes.
+ *
+ * `writable` is the task's own permission, not a convenience. A repository-understanding task is
+ * read-only by construction and is given no editing tool at all; an edit task is given them and is
+ * still confined to this directory by the tool's own `--restricted` mode.
+ */
+export interface DevelopmentWorkspaceRequest {
+  /** Absolute path to the isolated workspace root. Becomes the child's working directory. */
+  root: string;
+  writable: boolean;
+}
+
 export interface FrontierRequest {
   binding: ProviderBinding;
   promptText: string;
@@ -158,6 +177,8 @@ export interface FrontierRequest {
   /** Return true to stop: a pause or an abort. Polled, and it reaches a child process. */
   shouldCancel?: () => boolean;
   now?: () => number;
+  /** Set only by the development runner. See `DevelopmentWorkspaceRequest`. */
+  developmentWorkspace?: DevelopmentWorkspaceRequest;
 }
 
 export interface FrontierAdapter {
@@ -275,6 +296,37 @@ const CLI_NAME: Partial<Record<ProviderID, string>> = { claudeCLI: 'claude', cod
 export const CLAUDE_CLI_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
+ * THE TOOLS A DEVELOPMENT TURN IS GIVEN, AND THE ONES IT IS NOT.
+ *
+ * Verified against the installed `claude` 2.1.278's own `--help`, in the same way every other flag
+ * in this file was verified, and not guessed. `--tools` documents `""` to disable all tools,
+ * `default` for all of them, or an explicit list.
+ *
+ * NEITHER LIST CONTAINS `Bash`, AND THAT IS THE LOAD-BEARING PART. `development-scoring.ts` refuses
+ * to report the executed tier because `isolation.ts` is a temp directory and a path fence rather
+ * than an OS sandbox, and says plainly that it cannot stop a child process from opening a socket.
+ * Giving a development turn a shell would be exactly that child process. So the candidate reads and
+ * edits FILES and can start nothing — which keeps the unmeasured executed tier honestly unmeasured
+ * instead of quietly running candidate code under a weaker guarantee than the contract claims.
+ */
+export const DEVELOPMENT_READ_ONLY_TOOLS = 'Read,Glob,Grep';
+export const DEVELOPMENT_EDIT_TOOLS = 'Read,Glob,Grep,Edit,Write';
+
+/** Why a provider other than `claude` cannot be given a development workspace by this adapter yet. */
+export const DEVELOPMENT_WORKSPACE_UNVERIFIED =
+  'no development argument shape has been verified against this tool. `codex exec` documents `-s '
+  + 'workspace-write` and `-C <dir>`, but its sandbox governs MODEL-GENERATED SHELL COMMANDS, which '
+  + 'is the one capability a development attempt in Cernum is deliberately not given — see '
+  + 'DEVELOPMENT_READ_ONLY_TOOLS. Establishing what that interface actually permits is a pass of its '
+  + 'own, and until somebody does it the request is refused rather than sent under an isolation '
+  + 'claim nobody has checked.';
+
+export interface CLIArgumentOptions {
+  /** Present only on a development attempt. See `DevelopmentWorkspaceRequest`. */
+  developmentWorkspace?: DevelopmentWorkspaceRequest;
+}
+
+/**
  * The arguments the official tool documents for a single non-interactive request.
  *
  * The prompt is NOT among them. It goes on stdin, because anything in argv is visible in the process
@@ -286,17 +338,36 @@ export const CLAUDE_CLI_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high',
  * be expressed. Sending a request that quietly ignores a frozen setting is the substitution this
  * whole engine refuses.
  */
-export function buildCLIArguments(binding: ProviderBinding): { args: string[]; unexpressed: string[]; notEnforceable: string[] } {
+export function buildCLIArguments(binding: ProviderBinding, options: CLIArgumentOptions = {}):
+  { args: string[]; unexpressed: string[]; notEnforceable: string[] } {
   const unexpressed: string[] = [];
   const notEnforceable: string[] = [];
   const args: string[] = [];
+  const workspace = options.developmentWorkspace;
 
   if (binding.provider === 'claudeCLI') {
     args.push('-p', '--output-format', 'json');
     // A benchmark request must not be shaped by whatever happens to be configured on this machine.
     // Settings files, skills, MCP servers and tools all change what the model is asked and what it
     // may do, and none of them are in the manifest — so they are all switched off, explicitly.
-    args.push('--tools', '', '--disable-slash-commands', '--strict-mcp-config',
+    //
+    // A DEVELOPMENT TURN IS THE ONE EXCEPTION, AND IT IS AN EXPLICIT ONE. It is handed a disposable
+    // repository and asked to read it, so `--tools ""` would measure whether a model can answer a
+    // question about files it was never allowed to open. It is given the narrowest list that makes
+    // the task possible and nothing beyond it; `--restricted` then confines those file tools to the
+    // working directory, drops every command-running tool the list does not name, refuses
+    // `bypassPermissions`, and ignores user, project and local settings on top of
+    // `--setting-sources ""`. Everything else below is unchanged, including for this path.
+    if (workspace) {
+      args.push('--tools', workspace.writable ? DEVELOPMENT_EDIT_TOOLS : DEVELOPMENT_READ_ONLY_TOOLS);
+      args.push('--restricted', '--permission-prompts', 'none');
+      // `acceptEdits` only where the task PERMITS an edit. A read-only task is given no editing tool
+      // to accept an edit with, so it is given no editing permission either.
+      if (workspace.writable) args.push('--permission-mode', 'acceptEdits');
+    } else {
+      args.push('--tools', '');
+    }
+    args.push('--disable-slash-commands', '--strict-mcp-config',
       '--setting-sources', '', '--no-session-persistence');
     if (binding.requestedModelID.length > 0) args.push('--model', binding.requestedModelID);
     if (binding.effort !== 'none') {
@@ -332,6 +403,7 @@ export function buildCLIArguments(binding: ProviderBinding): { args: string[]; u
     // It is not called here, because it needs a freshly created empty working directory that only
     // the adapter can make and clean up. `SubscriptionCLIAdapter.complete` calls it directly, and
     // this branch exists to refuse the settings that must be refused before any of that happens.
+    if (workspace) unexpressed.push(`a development workspace on ${binding.provider}: ${DEVELOPMENT_WORKSPACE_UNVERIFIED}`);
     if (binding.effort !== 'none' && !CODEX_SERVICE_EFFORT_LEVELS.includes(binding.effort)) {
       unexpressed.push(`effort '${binding.effort}': the Codex service accepts only `
         + `${CODEX_SERVICE_EFFORT_LEVELS.filter((level) => level !== 'none').join(', ')}`
@@ -339,6 +411,7 @@ export function buildCLIArguments(binding: ProviderBinding): { args: string[]; u
     }
   } else {
     unexpressed.push(`${binding.provider} is not a subscription CLI`);
+    if (workspace) unexpressed.push(`a development workspace on ${binding.provider}: ${DEVELOPMENT_WORKSPACE_UNVERIFIED}`);
   }
 
   // Sampling is not expressible through these tools. A binding that froze a temperature and is run
@@ -570,7 +643,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         + 'reach the service any other way.');
     }
 
-    const { args, unexpressed, notEnforceable } = buildCLIArguments(request.binding);
+    const { args, unexpressed, notEnforceable } = buildCLIArguments(request.binding, {
+      developmentWorkspace: request.developmentWorkspace,
+    });
     if (unexpressed.length > 0) {
       // Refused BEFORE the request. A run that sent this would produce real answers under settings
       // the manifest does not describe, which is worse than no answers.
@@ -599,7 +674,15 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
     // the operator happened to be standing when they typed the command.
     //
     // Created empty, removed afterwards, and never the repository.
-    const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-claude-'));
+    //
+    // A DEVELOPMENT ATTEMPT SUPPLIES ITS OWN, AND THIS ADAPTER DOES NOT DELETE IT. The disposable
+    // workspace already holds the materialized fixture, and it has to survive this call so the
+    // runner can read the repository back and grade what the attempt did to it. Disposal belongs to
+    // whoever created it — `withIsolatedWorkspace` — which deletes it whether the attempt succeeded
+    // or not. It is still never a checkout: `createIsolatedWorkspace` makes it under the OS temp
+    // root and the path fence refuses anything that resolves outside it.
+    const supplied = request.developmentWorkspace;
+    const workingDirectory = supplied?.root ?? fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-claude-'));
     let result;
     try {
       result = await this.run({
@@ -612,7 +695,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         onFirstOutput: (at) => { firstVisibleTokenMilliseconds = at; },
       });
     } finally {
-      try { fs.rmSync(workingDirectory, { recursive: true, force: true }); } catch { /* already gone */ }
+      if (supplied === undefined) {
+        try { fs.rmSync(workingDirectory, { recursive: true, force: true }); } catch { /* already gone */ }
+      }
     }
 
     // A REFUSED MODEL EXITS NON-ZERO AND STILL PRINTS ITS DOCUMENTED ENVELOPE. Reading the exit code
