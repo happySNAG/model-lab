@@ -11,7 +11,8 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  DEVELOPMENT_WORKSPACE_PREFIX, developmentPromptFor, executeDevelopmentAttempt,
+  DEVELOPMENT_NEVER_MEASURED_FAILURES, DEVELOPMENT_WORKSPACE_PREFIX, developmentPromptFor,
+  executeDevelopmentAttempt,
 } from '../../src/engine/development-execution';
 import {
   DEVELOPMENT_EDIT_TOOLS, DEVELOPMENT_READ_ONLY_TOOLS, DEVELOPMENT_WORKSPACE_UNVERIFIED,
@@ -298,14 +299,31 @@ describe('a transport failure is never a model failure', () => {
     expect(outcome.evaluable).toBe(false);
   });
 
-  it('leaves a timeout scoreable, because a model that cannot finish in budget is a capability outcome', async () => {
+  it('leaves a timeout gradeable, because a model that cannot finish in budget is a capability outcome', async () => {
     const outcome = await run(QUESTION_TASK, adapterThat(() => ({
       failure: { kind: 'timeout', detail: 'the request exceeded its budget' }, answerText: '',
     })));
     expect(outcome.disposition).toBe('modelAnswered');
-    // Still not evaluable: there is no answer text to grade, and the runner says which of the two
-    // reasons applies rather than conflating them.
-    expect(outcome.evaluable).toBe(false);
+    // Graded against whatever the workspace holds, exactly as a timeout is scoreable in the text
+    // benchmark. It is a failure of the model, not an absence of evidence.
+    expect(outcome.evaluable).toBe(true);
+  });
+
+  it('leaves an unparseable answer gradeable, because that is a format outcome of this path', async () => {
+    const outcome = await run(QUESTION_TASK, adapterThat(() => ({
+      failure: { kind: 'malformedResponse', detail: 'the output is not the documented JSON form' }, answerText: '',
+    })));
+    expect(outcome.evaluable).toBe(true);
+  });
+
+  it('refuses to grade a request that was never sent, or one a different model answered', async () => {
+    for (const kind of DEVELOPMENT_NEVER_MEASURED_FAILURES) {
+      const outcome = await run(QUESTION_TASK, adapterThat(() => ({
+        failure: { kind, detail: `refused as ${kind}` }, answerText: '',
+      })));
+      expect(outcome.evaluable).toBe(false);
+      expect(outcome.notEvaluableBecause).toContain('before any model answered it');
+    }
   });
 
   it('marks a clean answer evaluable', async () => {

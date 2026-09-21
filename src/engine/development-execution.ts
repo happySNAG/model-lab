@@ -104,12 +104,37 @@ export function developmentPromptFor(task: DevelopmentTask): { system: string; u
   return { system: task.prompt.system, user: `${preamble}${task.prompt.user}` };
 }
 
+/**
+ * Failures on which NOTHING WAS MEASURED, whatever the disposition axis says about the row.
+ *
+ * Both of these abort a text candidate BEFORE a terminal row exists, so there is no precedent in the
+ * ledger to inherit and `FAILURE_KIND_DISPOSITIONS` keeps them at `modelAnswered` only to stay
+ * total. A development campaign does not abort a whole candidate over one task, so it has to say
+ * what the row means — and neither of them means a model answered badly:
+ *
+ *   budgetRefused   the request was NOT SENT. Frozen settings this interface cannot express, which
+ *                   on this path includes a development workspace on a provider whose argument
+ *                   shape nobody has verified. Grading it would score a model for a request it
+ *                   never received.
+ *   modelMismatch   a real answer, from a DIFFERENT MODEL. Recording it against the requested
+ *                   candidate is the substitution this whole engine exists to refuse.
+ *
+ * TIMEOUT AND MALFORMEDRESPONSE ARE DELIBERATELY NOT HERE, exactly as they are deliberately
+ * scoreable in the text benchmark. A model that cannot finish a development task inside its budget
+ * has told you something about the model, and an unparseable answer is a format outcome of this
+ * provider path. Both are graded against whatever the workspace actually holds, which for a
+ * timed-out edit is usually the untouched baseline — a truthful failure rather than an absence.
+ */
+export const DEVELOPMENT_NEVER_MEASURED_FAILURES: FrontierFailureKind[] = ['budgetRefused', 'modelMismatch'];
+
 /** Why an attempt that produced no model answer must not be graded, in the disposition's own terms. */
-function notEvaluableBecause(disposition: AttemptDisposition, failure?: { kind: string; detail: string }): string {
-  return `this attempt is ${disposition}, so no model answered it and there is nothing here to grade. `
-    + `The result is recorded as NOT MEASURED rather than as a failed development task: a blank is not a `
-    + `wrong answer, and putting one in a capability column is the single most misleading thing a `
-    + `benchmark can do.${failure ? ` The adapter reported ${failure.kind}.` : ''}`;
+function notEvaluableBecause(disposition: AttemptDisposition, failure?: { kind: FrontierFailureKind; detail: string }): string {
+  const because = failure !== undefined && DEVELOPMENT_NEVER_MEASURED_FAILURES.includes(failure.kind)
+    ? `the request was refused as ${failure.kind} before any model answered it`
+    : `this attempt is ${disposition}, so no model answered it`;
+  return `${because}, and there is nothing here to grade. The result is recorded as NOT MEASURED rather than `
+    + 'as a failed development task: a blank is not a wrong answer, and putting one in a capability column is '
+    + `the single most misleading thing a benchmark can do.${failure ? ` The adapter reported ${failure.kind}.` : ''}`;
 }
 
 /**
@@ -159,7 +184,11 @@ export async function executeDevelopmentAttempt(
     const disposition = failure === undefined
       ? 'modelAnswered' as AttemptDisposition
       : dispositionForFailure(failure.kind, failure.detail);
-    const evaluable = failure === undefined && isScoreableDisposition(disposition);
+    // GRADEABLE, NOT SUCCESSFUL. A timed-out or unparseable attempt IS graded — against whatever the
+    // workspace holds — because both are outcomes of the model on this interface. What is excluded
+    // is every row on which no model was reached at all, plus the two refusals above.
+    const evaluable = isScoreableDisposition(disposition)
+      && (failure === undefined || !DEVELOPMENT_NEVER_MEASURED_FAILURES.includes(failure.kind));
 
     return {
       runID: request.runID,
