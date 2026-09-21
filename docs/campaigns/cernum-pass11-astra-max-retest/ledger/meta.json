@@ -1,0 +1,38 @@
+{
+  "campaignFormatVersion": 1,
+  "campaignID": "campaign:c1f59ceb7f5666a5",
+  "label": "cernum-pass11-astra-max-retest",
+  "manifestID": "manifest:f3a707691bcbbe89",
+  "manifestDigest": "f3a707691bcbbe897b8fbf62e29d23f9e5ae873ef27737de242d754bfe8530ff",
+  "suiteIDs": [
+    "suite.model-lab.foundation",
+    "suite.model-lab.foundation-v2",
+    "suite.model-lab.conversation",
+    "suite.model-lab.memory-honesty",
+    "suite.model-lab.context-integration",
+    "suite.model-lab.calendar-reasoning",
+    "suite.model-lab.emotional-understanding",
+    "suite.model-lab.privacy-governance",
+    "suite.model-lab.hallucination-resistance",
+    "suite.model-lab.tool-use",
+    "suite.model-lab.structured-output",
+    "suite.model-lab.planning",
+    "suite.model-lab.long-context-retrieval",
+    "suite.model-lab.safety-boundaries"
+  ],
+  "repeatsPerCase": 2,
+  "residencyMode": "managed",
+  "thinkingMode": "disabled",
+  "canonical": true,
+  "manifestFormatVersion": 4,
+  "providers": [
+    "codexCLI"
+  ],
+  "executionClasses": [
+    "subscriptionCLI"
+  ],
+  "mixedExecution": false,
+  "hasMeteredBinding": false,
+  "createdAt": "2026-09-21T12:14:45Z",
+  "ledgerFormatVersion": 2
+}

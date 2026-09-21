@@ -1,0 +1,113 @@
+{
+  "label": "cernum-pass11-astra-max-retest",
+  "suiteIDs": [
+    "suite.model-lab.foundation",
+    "suite.model-lab.foundation-v2",
+    "suite.model-lab.conversation",
+    "suite.model-lab.memory-honesty",
+    "suite.model-lab.context-integration",
+    "suite.model-lab.calendar-reasoning",
+    "suite.model-lab.emotional-understanding",
+    "suite.model-lab.privacy-governance",
+    "suite.model-lab.hallucination-resistance",
+    "suite.model-lab.tool-use",
+    "suite.model-lab.structured-output",
+    "suite.model-lab.planning",
+    "suite.model-lab.long-context-retrieval",
+    "suite.model-lab.safety-boundaries"
+  ],
+  "repeatsPerCase": 2,
+  "candidates": [
+    {
+      "name": "codexCLI:gpt-6-astra@max",
+      "modelID": "gpt-6-astra",
+      "runtimeDigest": "",
+      "parameterSize": "",
+      "quantization": ""
+    }
+  ],
+  "hardware": {
+    "platform": "darwin",
+    "architecture": "x64",
+    "model": "Skippys-Mac-mini.local",
+    "cpuCoreCount": 12,
+    "physicalMemoryBytes": 34359738368,
+    "osVersion": "Darwin 24.6.0"
+  },
+  "runtimeVersion": "ollama-unreported",
+  "execution": {
+    "residency": "managed",
+    "thinkingMode": "disabled"
+  },
+  "operationalEnvelope": {
+    "bindings": [
+      {
+        "candidate": "codexCLI:gpt-6-astra@max",
+        "provider": "codexCLI",
+        "executionClass": "subscriptionCLI",
+        "requestedModelID": "gpt-6-astra",
+        "identityState": "requestAcceptedIdentityUnverifiable",
+        "verifiedModelID": "",
+        "identityEvidence": "state: requestAcceptedIdentityUnverifiable · requested model: gpt-6-astra · requested effort: max · returned model: none — the provider named no model · CLI version: codex-cli 0.154.0 · authentication: ChatGPT subscription session; `codex login status` reports \"Logged in using ChatGPT\", stored auth mode chatgpt with no stored API key (auth.json OPENAI_API_KEY is null); OPENAI_API_KEY and CODEX_API_KEY absent from this machine and stripped from every child environment; billing basis subscriptionIncluded, marginal API charge $0, finite plan allowance · evidence digest: 6334eb9ed702ca1cfb36ff15909cd49a4fb94511e612d57e01d7659ffd8ced33 · evidence captured: 2026-09-21T01:55:55Z · The provider accepted this identifier and something answered. The tool never named the model that replied, so this row means \"what answered when this identifier was requested\", NOT \"this model answered\". It is not verified identity and must not be read, cited or charted as though it were.",
+        "effort": "max",
+        "thinkingMode": "disabled",
+        "sampling": {
+          "temperatureMilli": null,
+          "topPMilli": null,
+          "seed": null
+        },
+        "maxInputTokens": 588,
+        "maxOutputTokens": 1024,
+        "timeoutMilliseconds": 300000,
+        "retry": {
+          "maxRetries": 2,
+          "backoffMilliseconds": 2000,
+          "retryOn": [
+            "timeout",
+            "rateLimited",
+            "transport"
+          ]
+        },
+        "billingBasis": "subscriptionIncluded",
+        "pricing": null,
+        "authorizationMode": "subscriptionCLISession"
+      }
+    ],
+    "executionClasses": [
+      "subscriptionCLI"
+    ],
+    "providers": [
+      "codexCLI"
+    ],
+    "mixed": false,
+    "hasMeteredBinding": false
+  },
+  "guardPolicy": {
+    "minimumFreeDiskBytes": 16106127360,
+    "maximumSwapUsedBytes": 8589934592,
+    "minimumFreeMemoryMilli": 50,
+    "portsThatMustBeQuiet": []
+  },
+  "residencyDelayMilliseconds": 5000,
+  "identityAdmission": {
+    "admissionFormatVersion": 1,
+    "campaignLabel": "cernum-pass11-astra-max-retest",
+    "authorizedAt": "2026-09-21T12:14:45Z",
+    "authorizedBy": "Authorized by Seth Leopold for a scored Cernum benchmark campaign on the Mac mini using these six exact Codex/OpenAI subscription-covered configurations. I understand that returned model identity on this CLI path is not structurally verifiable, so provider-side substitution cannot currently be detected. I authorize these candidates to be benchmarked and compared under REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE. This authorization is for benchmark evidence only and does not authorize promotion or production routing based solely on unverifiable identity. This campaign is permitted only under my zero-marginal-cost policy: subscription-covered usage is allowed, but metered API or pay-per-token billing is not.  [SCOPE NOTE, added by the retest and not part of the sentence above: this record narrows that authorization to ONE of the six configurations it named — codexCLI gpt-6-astra at effort max — on the same Mac mini, under the same zero-marginal-cost policy, for a retest of the attempts that the subscription allowance ended. It admits no provider, model, effort, machine or billing basis that the original did not.]",
+    "admitted": [
+      {
+        "provider": "codexCLI",
+        "requestedModelID": "gpt-6-astra",
+        "requestedEffort": "max",
+        "cliVersion": "codex-cli 0.154.0",
+        "authenticationBasis": "ChatGPT subscription session; `codex login status` reports \"Logged in using ChatGPT\", stored auth mode chatgpt with no stored API key (auth.json OPENAI_API_KEY is null); OPENAI_API_KEY and CODEX_API_KEY absent from this machine and stripped from every child environment; billing basis subscriptionIncluded, marginal API charge $0, finite plan allowance",
+        "evidenceDigest": "6334eb9ed702ca1cfb36ff15909cd49a4fb94511e612d57e01d7659ffd8ced33",
+        "evidenceCapturedAt": "2026-09-21T01:55:55Z",
+        "returnedModelID": "",
+        "state": "requestAcceptedIdentityUnverifiable"
+      }
+    ],
+    "admissionDigest": "5183238396edc32e5937232748168ef8df7540f287e26d9258b94ec06ef40e87"
+  },
+  "costPolicy": {}
+}

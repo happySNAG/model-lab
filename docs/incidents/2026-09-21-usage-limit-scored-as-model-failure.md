@@ -89,6 +89,58 @@ means nothing: it reached **none of the thirteen governance cases** that disqual
 beside it, because the allowance ran out first. It is not a comparable result, and a retest — a fresh
 campaign, superseding rather than rewriting — is the only thing that can make it one.
 
+## The retest — and what it found
+
+That retest has now been run, after the transport-disposition fix
+(`87146737ea1e9040a3ba375f830fe855567d2ea3`) and after the stated allowance reset of 01:55 CDT had
+passed. Its evidence is committed at:
+
+**[`docs/campaigns/cernum-pass11-astra-max-retest/`](../campaigns/cernum-pass11-astra-max-retest/README.md)**
+— campaign `cernum-pass11-astra-max-retest`, manifest `manifest:f3a707691bcbbe89`, on the same Mac
+mini (`Skippys-Mac-mini.local`), Cernum v0.2.4, same 44 cases × 2 repeats over the same 14 suites.
+Every digest that defines the *benchmark* is byte-identical to the Tier B manifest; only the things
+that must differ for a single-candidate retest differ, and
+[`supersedes.json`](../campaigns/cernum-pass11-astra-max-retest/supersedes.json) names each one.
+
+**It is a fresh campaign, not a rewrite.** `cernum-pass07-tierb-codex-scored` is untouched — not
+edited, not re-scored, not re-opened, not deleted. Its sixty-nine allowance rows stay exactly as
+recorded, and they remain the historical evidence of what the provider did on 2026-09-21. The link
+between the two runs is a pointer in one direction; nothing flows back.
+
+**What the allowance had been hiding:**
+
+| | Superseded run | Retest |
+|---|---|---|
+| Attempts producing a model evaluation | 19 of 88 (coverage 21.6%) | **86 of 88 (coverage 97.7%)** |
+| Pass / partial / fail | — | **49 / 8 / 25** |
+| Awaiting blinded human review | — | **4** (in no rate until the verdicts return) |
+| Measured no model | 69 allowance-exhausted | **2** content-filtered |
+| Governance cases reached | **none of 13** | **all 13** |
+| Outcome | rank 1, nothing having disqualified it | **DISQUALIFIED on 11 governance cases** |
+
+So the original defect published, at rank 1, a candidate that a complete measurement disqualifies.
+That is the cost of counting an allowance failure as a model result, and it ran in the direction
+that flatters: the wrong number was not merely wrong, it was wrong in the candidate's favour on the
+one axis — governance — that no pass rate offsets.
+
+**The retest is still not a promotion.** Identity on this CLI path remains
+`requestAcceptedIdentityUnverifiable`: the provider accepted the identifier and something answered,
+and nothing named what. `promotable: false`, no capability role, no retention recommendation. Its
+rank 1 is again worth nothing, this time for the plain reason that it is the only candidate in the
+campaign. It ran under the same zero-marginal-cost policy — subscription-covered Codex usage,
+marginal API charge $0, a finite plan allowance consumed and booked as allowance rather than as
+free — and no metered binding was present or would have been permitted.
+
+**The fix held.** In the retest, `providerCapacityExhausted`, `providerUnauthenticated`,
+`providerRejectedRequest`, `transportFailed` and `measurementFault` are all zero. The two rows that
+measured no model are `providerRefusedContent`, and they left the numerator and the denominator
+together exactly as the rule now requires — which is the whole point: **an exhausted allowance, a
+rejected credential, a refused request or a failed transport is a fact about the provider, the
+account or the network, never about the model's quality, and must never be counted as a model
+failure.** The four outstanding human reviews are likewise excluded from every rate above until
+their blinded verdicts are recorded; the key that reverses the blinding is deliberately not
+committed with the packet.
+
 ## What is still NOT measured
 
 Unchanged by this pass and stated again so it cannot be inferred away: **repository understanding and
