@@ -47,7 +47,6 @@ import {
   applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
   costPolicyDisclosure,
 } from '../engine/index';
-import { CapabilityDimension } from '../core/evaluation';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
@@ -2033,8 +2032,13 @@ async function commandAdjudicate(positional: string[], options: Options): Promis
  */
 function rederiveRankings(rows: { slotKey: string; status: string; [key: string]: unknown }[], producedAt: string) {
   const catalogue = buildCatalogueForRecount(allRankableSuiteIDs(), 1);
+  // `dimensions`, not `cases.get(...).category`. The category is what KIND of case it is; the
+  // dimension is the capability the ranking groups by, and it is the map `Campaign.finalize` uses.
+  // Reading the wrong one leaves the overall rate correct — the same rows are scored either way —
+  // and silently re-labels every per-dimension row, which is exactly the sort of quiet disagreement
+  // between two readings of one campaign that this pass exists to stop.
   const outcomes = outcomesFromLedger(rows as unknown as SlotResult[],
-    (caseID) => catalogue.cases.get(caseID)?.category as CapabilityDimension | undefined);
+    (caseID) => catalogue.dimensions.get(caseID));
   // No reconciliation is supplied and the table says so on its face: this is a re-reading of an
   // evidence file, not a finalization of a live campaign, and it must not pass itself off as one.
   const rankings = rankCandidates({ outcomes, derivedAt: producedAt });
