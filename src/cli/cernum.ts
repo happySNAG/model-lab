@@ -50,6 +50,10 @@ import {
   WorkspaceMatrixError, aggregateWorkspaceRuns, buildWorkspaceMatrixPlan, collectWorkspaceRunRows,
   describeWorkspaceCell, describeWorkspaceMatrixPlan, registeredWorkspacePacks, runWorkspaceMatrix,
   workspacePackByID,
+  // The provider-throttle circuit breaker, and the non-model session preflight beside it.
+  describeUnproductiveSpend, describeWorkspaceMatrixRunResult, readProviderSessionStatus,
+  describeProviderSessionStatus, sessionPreflightRefusal, describeProviderThrottle,
+  UNPRODUCTIVE_SPEND_DEFINITION, THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS,
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
   IDENTITY_UNVERIFIABLE_CAVEAT, IdentityAdmission, IdentityAdmissionError, NEVER_AFFECTS,
   REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance, authorizeIdentityAdmission,
@@ -1928,6 +1932,20 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   say('');
   for (const line of describeWorkspaceMatrixPlan(plan)) say(`  ${line}`);
   say('');
+
+  // 3a. THE SESSION PREFLIGHT. A credential read, run in BOTH modes, that cannot reach a model:
+  //     the argv comes from a frozen table and is checked against a deny-list of every flag that
+  //     could carry a prompt. It reports what the tool actually exposes and refuses to convert a
+  //     plan name into a remaining-allowance figure — see `provider-session-status.ts`.
+  const sessionStatus = await readProviderSessionStatus({ provider });
+  for (const line of describeProviderSessionStatus(sessionStatus)) say(`  ${line}`);
+  say('');
+  const preflightRefusal = sessionPreflightRefusal(sessionStatus);
+  if (preflightRefusal !== undefined) {
+    say(`  REFUSED       ${preflightRefusal}`);
+    say('');
+  }
+
   for (const line of wrap(WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, 74)) say(`  ${line}`);
   say('');
 
@@ -1947,6 +1965,11 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
 
   if (plan.runnableRunCount === 0) {
     fail('every cell of this matrix was refused, so nothing was sent. The reasons are listed above.', 6);
+  }
+  // The one refusal the preflight can support: no signed-in session at all. Everything else it
+  // could "warn" about would be a guess at an allowance this tool does not report.
+  if (preflightRefusal !== undefined) {
+    fail(`${preflightRefusal}\nNothing was run.`, 6);
   }
   if (options.yes !== true) {
     fail(`Nothing was run. Re-run with --yes once the ${plan.runnableRunCount} run(s) described above are what you `
@@ -1979,12 +2002,20 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
     onCellStarted: (cell) => say(`→ ${cell.candidate} · ${cell.caseID} · repeat `
       + `${cell.repeat.repeatIndex}/${cell.repeat.repeatsPlanned}`),
     onCellFinished: (cell, outcome) => say(`  ${describeScorecard(outcome.scorecard)}`),
+    onProviderThrottled: (signal) => {
+      say('');
+      say('  ** CIRCUIT BREAKER TRIPPED — the provider declined, so the matrix stops launching affected work. **');
+      for (const line of describeProviderThrottle(signal)) say(`  ${line}`);
+      say('');
+    },
   });
 
   say('');
-  say(`${result.completed.length} run(s) sealed, ${result.skipped.length} not attempted.`);
+  for (const line of describeWorkspaceMatrixRunResult(result)) say(`  ${line}`);
+  say('');
   for (const entry of result.skipped) {
-    say(`  skipped ${entry.cell.candidate} · ${entry.cell.caseID} · repeat ${entry.cell.repeat.repeatIndex}: `
+    say(`  ${entry.disposition === 'providerThrottledBeforeExecution' ? 'NOT EXECUTED' : 'skipped     '} `
+      + `${entry.cell.candidate} · ${entry.cell.caseID} · repeat ${entry.cell.repeat.repeatIndex}: `
       + entry.reasons.join('; '));
   }
 
@@ -1993,9 +2024,21 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   const cells = aggregateWorkspaceRuns(
     collectWorkspaceRunRows(root).filter((run) => run.row.packID === pack.id));
   say('');
-  say('candidate                       case                              pass     score     time            allowance  quality');
+  say('candidate                       case                              pass     score      time           allowance  quality');
   for (const cell of cells) say(describeWorkspaceCell(cell));
   say('');
+  // SPEND THAT BOUGHT NOTHING, in its own table. `time` above is MODEL time and excludes provider
+  // declines by construction; this is where the resources those declines consumed are reported.
+  if (cells.some((cell) => cell.unproductiveSpend.unproductiveRunCount > 0)) {
+    say('spend with no result (executed runs that produced no scorable outcome):');
+    for (const cell of cells) {
+      if (cell.unproductiveSpend.unproductiveRunCount === 0) continue;
+      say(describeUnproductiveSpend(cell));
+    }
+    say('');
+    say(`  ${UNPRODUCTIVE_SPEND_DEFINITION}`);
+    say('');
+  }
   say(`  ${plan.repeatDisclosure}`);
 
   if (options.aggregate !== undefined) {
@@ -2011,6 +2054,26 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       packVersion: plan.packVersion,
       packDigest: plan.packDigest,
       repeatDisclosure: plan.repeatDisclosure,
+      // WHAT WAS PLANNED, BESIDE WHAT RAN. A reader handed only the cells cannot tell a matrix that
+      // finished from one the provider stopped, and they mean opposite things about the models.
+      execution: {
+        plannedRunCount: result.plannedRunCount,
+        executedRunCount: result.executedRunCount,
+        notExecutedBecauseProviderThrottled: result.notExecutedBecauseThrottledCount,
+        notExecutedForOtherReason: result.notExecutedForOtherReasonCount,
+        providerThrottle: result.throttle,
+        disclosure: result.throttle === undefined ? undefined : THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS,
+        notExecutedCells: result.skipped
+          .filter((entry) => entry.disposition === 'providerThrottledBeforeExecution')
+          .map((entry) => ({
+            candidate: entry.cell.candidate,
+            caseID: entry.cell.caseID,
+            repeatIndex: entry.cell.repeat.repeatIndex,
+            disposition: entry.disposition,
+            reasons: entry.reasons,
+          })),
+      },
+      sessionPreflight: sessionStatus,
       cells,
     }, null, 2) + '\n', 'utf8');
     say(`Aggregate written to ${aggregatePath}`);

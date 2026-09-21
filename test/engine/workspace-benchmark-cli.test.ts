@@ -50,6 +50,34 @@ function invocations(): string[] {
   return fs.readFileSync(log, 'utf8').split('\n').filter((line) => line.trim().length > 0);
 }
 
+/**
+ * The frozen NON-MODEL probes this command is allowed to run before it plans anything.
+ *
+ * `cernum workspace-benchmark` now asks the installed CLI about its own SESSION before it prints a
+ * plan — `claude auth status --json`, a credential read that starts no session, sends no prompt and
+ * consumes no allowance. It is a process, so `invocations()` sees it, and a test asserting that
+ * NOTHING ran would now fail for a reason that has nothing to do with reaching a model.
+ *
+ * So the assertion is sharpened rather than relaxed: the probe is allowed by exact string, and
+ * `modelInvocations` is what must stay empty. An invocation that carried a prompt, resumed a
+ * conversation or named a model would appear there and fail the test exactly as before.
+ */
+const ALLOWED_NON_MODEL_PROBES = ['auth status --json'];
+
+function modelInvocations(): string[] {
+  return invocations().filter((line) => !ALLOWED_NON_MODEL_PROBES.includes(line.trim()));
+}
+
+/** Nothing that could have reached a model ran, whatever else did. */
+function expectNoModelRequest(): void {
+  expect(modelInvocations()).toEqual([]);
+  for (const line of invocations()) {
+    for (const forbidden of ['-p', '--print', '--prompt', '--resume', '--continue', '--model']) {
+      expect(line.split(/\s+/)).not.toContain(forbidden);
+    }
+  }
+}
+
 /** The discovery store the whole lineup is proven in. Written by hand; no provider was contacted. */
 function proveLineup(modelIDs: string[]): void {
   const file = discoveryStorePath(campaigns);
@@ -129,8 +157,10 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expect(result.output).toContain(path.join(campaigns, 'workspace'));
     expect(fs.existsSync(path.join(campaigns, 'workspace'))).toBe(false);
 
-    // AND THE POINT OF ALL OF IT: not one request.
-    expect(invocations()).toEqual([]);
+    // AND THE POINT OF ALL OF IT: not one model request. The session preflight's credential read
+    // is the only process this command is allowed to start before it has printed a plan.
+    expectNoModelRequest();
+    expect(invocations()).toEqual(['auth status --json']);
   }, 120_000);
 
   it('reports a model this machine has never proven as refused, and still plans the rest', () => {
@@ -141,7 +171,7 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expect(result.output).toMatch(/runnable\s+12/);
     expect(result.output).toMatch(/refused\s+12/);
     expect(result.output).toContain('REFUSED       unprovenRoute');
-    expect(invocations()).toEqual([]);
+    expectNoModelRequest();
   }, 120_000);
 
   it('says when the operator changed the sample count rather than the pack', () => {
@@ -150,10 +180,40 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
       '--models', 'claude-haiku-4-5', '--repeats', '1', '--max-attempts', '1', '--dry-run');
     expect(result.status).toBe(0);
     expect(result.output).toContain('repeats         1 per case (set by the operator');
+    // A REAL override, so it is named as one and the pack's own number is printed beside it.
+    expect(result.output).toContain('OVERRIDING the sealed pack, which asks for 3');
     expect(result.output).toContain('1 models x 4 cases x 1 repeats = 4 independent runs');
     // An operator cap narrows what a case allows, and the preview says whose ceiling it is.
     expect(result.output).toContain('(operator cap; the case allows 2)');
     expect(result.output).toMatch(/max attempts\s+4/);
+  }, 120_000);
+
+  it('does NOT call it an override when the operator names the pack\'s own number', () => {
+    proveLineup(['claude-haiku-4-5']);
+    // The foundation pack's own `repeatsPerCase` is 3, and the operator asked for 3. Nothing was
+    // changed, so the preview must not say the pack wanted something different — which is what it
+    // used to say, for every operator who passed the number they had read off the pack.
+    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+      '--models', 'claude-haiku-4-5', '--repeats', '3', '--dry-run');
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('the same number the pack asks for (3)');
+    expect(result.output).toContain('this is not an override');
+    expect(result.output).not.toContain('OVERRIDING');
+    expect(result.output).not.toContain('different number');
+  }, 120_000);
+
+  it('asks the CLI about its session without anything that could carry a prompt', () => {
+    proveLineup(['claude-haiku-4-5']);
+    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+      '--models', 'claude-haiku-4-5', '--dry-run');
+    expect(result.status).toBe(0);
+    // The probe ran, it is the frozen one, and it is the ONLY process this dry run started.
+    expect(invocations()).toEqual(['auth status --json']);
+    expect(result.output).toContain('session probe   claude auth status --json');
+    // And it refuses to claim a remaining allowance the tool does not report.
+    expect(result.output).toContain('allowance     NOT KNOWN');
+    expect(result.output).toContain('no remaining-allowance figure');
+    expectNoModelRequest();
   }, 120_000);
 });
 
@@ -210,7 +270,7 @@ describe('the refusals that make a forty-eight-run command safe to type', () => 
     // The disclosure was printed, and the matrix was not run.
     expect(result.output).toContain('About to hand models a repository');
     expect(fs.existsSync(path.join(campaigns, 'workspace'))).toBe(false);
-    expect(invocations()).toEqual([]);
+    expectNoModelRequest();
   }, 120_000);
 
   it('refuses a matrix in which every cell was refused, rather than running an empty one', () => {
@@ -218,6 +278,6 @@ describe('the refusals that make a forty-eight-run command safe to type', () => 
       '--models', 'claude-nothing-proved-this', '--yes');
     expect(result.status).toBe(6);
     expect(result.output).toContain('every cell of this matrix was refused');
-    expect(invocations()).toEqual([]);
+    expectNoModelRequest();
   }, 120_000);
 });

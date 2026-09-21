@@ -42,7 +42,7 @@ import { CanonicalValue } from './canonical';
 import { Ledger } from './ledger';
 import {
   FrontierAttemptMetrics, FrontierCandidateMetrics, Provenance, Quantity, aggregateCandidateMetrics,
-  attemptMetricsFromRow, measuredQuantity, unavailableQuantity, worstProvenance,
+  attemptMetricsFromRow, measuredQuantity, sumQuantities, unavailableQuantity, worstProvenance,
 } from './frontier-metrics';
 import { WORKSPACE_REPEAT_IS_NOT_RETRY } from './workspace-pack';
 import { workspaceRecordPaths, workspaceRecordRoot } from './workspace-campaign';
@@ -66,6 +66,26 @@ export const STATUSES_THAT_MEASURED_NO_WORK = ['runtimeError', 'safetyAbort', 'e
 export const NO_QUALITY_DENOMINATOR =
   'no run of this cell measured the model\'s work — every one of them ended as a harness, driver or envelope fault. '
   + 'A rate with nothing in its denominator is unavailable rather than zero.';
+
+/**
+ * Why model timing must come from the SAME rows the quality rates come from.
+ *
+ * A run the provider declined has a wall clock and a first-byte time, and both are real
+ * measurements — of how fast a 429 came back. The first sealed Claude matrix recorded forty-seven
+ * of them, with first-byte times clustered around 500 ms and wall clocks around 2 s, and the
+ * aggregate presented those as the cell's time-to-first-token and its median run duration. A reader
+ * would have concluded that Opus answered a three-layer refactor in two seconds. Nothing was
+ * fabricated and the number was still a lie, because the column's NAME claims it describes the
+ * model.
+ *
+ * So the model-performance columns are computed over the rows that measured the model's work, and
+ * the provider's own response times are kept — not discarded — in a separately named column that
+ * says what it is.
+ */
+export const NO_MODEL_TIMING =
+  'no run of this cell measured a model\'s execution: every one of them ended as a harness, driver or envelope fault, '
+  + 'and on a provider decline the only interval there is to measure is how fast the provider refused. That is not '
+  + 'this model\'s latency, so it is reported under operational timing instead and left unavailable here.';
 
 // MARK: - One run, as the aggregate needs to see it
 
@@ -214,6 +234,87 @@ export interface WorkspaceQualityAggregate {
   statusCounts: Record<string, number>;
 }
 
+/**
+ * Timing, split by what it actually measured.
+ *
+ * Two families of number that a single "wall clock" column had been quietly mixing: how long the
+ * MODEL took, and how long the PROVIDER took to answer at all. Both are kept.
+ */
+export interface WorkspaceEfficiencyAggregate {
+  /** Runs whose timing describes a model doing work. The denominator of the model columns below. */
+  modelTimedRunCount: number;
+  /** Runs excluded from the model columns because a provider decline or a fault produced them. */
+  nonModelTimedRunCount: number;
+  /** Of those, the ones the provider itself declined — a rate limit or an expired session. */
+  providerDeclinedRunCount: number;
+
+  /** Milliseconds to the first visible output, over model-timed runs only. */
+  modelTimeToFirstTokenMilliseconds: NumericSpread;
+  /** Whole-run wall clock, over model-timed runs only. The figure a comparison may use. */
+  modelWallClockMilliseconds: NumericSpread;
+
+  /**
+   * EVERY run's wall clock, declines and faults included. Operational, not comparative.
+   *
+   * Kept because the evidence is real and occasionally the question: how long the harness spent, or
+   * how quickly a provider refused, is a fact about the run even though it says nothing about the
+   * model. Never to be read as latency.
+   */
+  operationalWallClockMilliseconds: NumericSpread;
+  /** Wall clock of the declined runs alone — how fast the provider said no. */
+  providerDeclineWallClockMilliseconds: NumericSpread;
+}
+
+/**
+ * RESOURCES SPENT ON EXECUTED WORK THAT PRODUCED NO SCORABLE OUTCOME.
+ *
+ * A DIFFERENT QUESTION FROM `wastedTokens`, WHICH KEEPS ITS MEANING. `FrontierAttemptMetrics.
+ * wastedTokens` has meant one thing since Pass 3 — tokens spent INSIDE a run on attempts that did
+ * not decide it, the cost of getting it wrong first — and redefining it would silently change every
+ * prose figure that has ever been published under that name. So it stays exactly as it is, and the
+ * thing it cannot express gets its own name here.
+ *
+ * WHAT IT CANNOT EXPRESS. In the first sealed Claude matrix, one Haiku run on `receipt-refunds`
+ * spent 86,332 tokens and $0.032535 of plan allowance building a change, and was then cut off by
+ * the session limit before verification could produce a result. It used ONE attempt, so nothing was
+ * retried, so `wastedTokens` is 0 — correctly, under its own definition. And yet the matrix spent
+ * 86,332 tokens on that cell and got no outcome from it. Both facts are true and only one of them
+ * was reported.
+ *
+ * THE TWO ARE DISJOINT BY CONSTRUCTION, so they can be added. A run that produced a scorable
+ * outcome contributes its intra-run retry waste to `retryWastedTokens` and nothing to
+ * `unproductiveTokens`; a run that produced none contributes its WHOLE spend to `unproductiveTokens`
+ * and nothing to `retryWastedTokens`. No token is counted under both, and `totalNonResultTokens` is
+ * their sum, stated once so that nobody has to decide whether adding them is legitimate.
+ */
+export interface WorkspaceUnproductiveSpend {
+  /** Executed runs that consumed resources and yielded no scorable quality outcome. */
+  unproductiveRunCount: number;
+  /** Of those, the ones the provider declined rather than the harness breaking. */
+  providerDeclinedRunCount: number;
+  /** Every token those runs consumed. Zero — truly — when there were no such runs. */
+  unproductiveTokens: Quantity;
+  /** Plan allowance those runs consumed, at the provider's list value, where it reported one. */
+  unproductiveAllowanceMicroUSD: Quantity;
+  /** Real money billed for those runs. A true zero on every subscription route. */
+  unproductiveMarginalChargeMicroUSD: Quantity;
+
+  /** Retry waste inside runs that DID produce an outcome. Disjoint from `unproductiveTokens`. */
+  retryWastedTokens: Quantity;
+  /** `unproductiveTokens + retryWastedTokens`. Safe to read as a total; nothing is double-counted. */
+  totalNonResultTokens: Quantity;
+
+  /** What each figure above means, carried on the row so it cannot be read under the wrong name. */
+  definition: string;
+}
+
+export const UNPRODUCTIVE_SPEND_DEFINITION =
+  'unproductiveTokens counts every token consumed by an EXECUTED run that yielded no scorable quality outcome — a '
+  + 'provider decline, a harness fault or an envelope failure — whether or not that run retried. retryWastedTokens '
+  + 'counts tokens spent on non-deciding attempts INSIDE runs that did yield an outcome. The two sets of runs are '
+  + 'disjoint, so no token appears in both and their sum is a real total. A run that was never executed contributes '
+  + 'nothing to either: no resources were spent on it.';
+
 /** One `provider:model` × case cell of a comparative matrix. */
 export interface WorkspaceCellAggregate {
   candidate: string;
@@ -257,7 +358,19 @@ export interface WorkspaceCellAggregate {
    */
   metrics: FrontierCandidateMetrics;
 
-  /** The spread of the columns a reader actually compares across repeats. */
+  /** Timing, split by what it measured. Model columns and operational columns, never merged. */
+  efficiency: WorkspaceEfficiencyAggregate;
+  /** Resources spent on executed runs that produced no result. See `WorkspaceUnproductiveSpend`. */
+  unproductiveSpend: WorkspaceUnproductiveSpend;
+
+  /**
+   * The spread of the columns a reader actually compares across repeats.
+   *
+   * `wallClockMilliseconds` is MODEL wall clock — the same values as
+   * `efficiency.modelWallClockMilliseconds`, kept under the name every existing reader already uses,
+   * and narrowed in this pass to exclude provider declines. `efficiency.operationalWallClock`
+   * holds what it used to contain.
+   */
   wallClockMilliseconds: NumericSpread;
   totalTokens: NumericSpread;
 
@@ -303,6 +416,132 @@ function patchCleanReading(row: Record<string, unknown>): boolean | undefined {
   const metrics = row.metricsMilli as Record<string, { valueMilli?: unknown }> | undefined;
   const reading = metrics?.patchClean;
   return typeof reading?.valueMilli === 'number' ? reading.valueMilli >= 1000 : undefined;
+}
+
+/** Did this run measure a model doing work? The same test every quality rate's denominator uses. */
+function measuredModelWork(row: Record<string, unknown>): boolean {
+  return !STATUSES_THAT_MEASURED_NO_WORK.includes(String(row.status));
+}
+
+/**
+ * Did the PROVIDER decline this run, rather than the harness breaking?
+ *
+ * Two independent spellings of the same fact are accepted because both are written by the engine
+ * and a row from either era must read correctly: `providerThrottled` is the scorecard's own flag,
+ * and `terminationReason: providerDeclined` is what `workspace-transcript.ts` records for the two
+ * failure kinds that set it.
+ */
+function providerDeclined(row: Record<string, unknown>): boolean {
+  return row.providerThrottled === true || text(row, 'terminationReason') === 'providerDeclined';
+}
+
+/**
+ * Split this cell's timing into what measured a model and what measured a provider's refusal.
+ *
+ * Nothing is discarded and nothing becomes a zero: a run excluded from the model columns appears in
+ * the operational ones, and a cell with no model-timed run at all reports its model columns as
+ * unavailable WITH the reason rather than as an empty average.
+ */
+function efficiencyOf(rows: Record<string, unknown>[]): WorkspaceEfficiencyAggregate {
+  const modelTimed = rows.filter(measuredModelWork);
+  const declined = rows.filter((row) => !measuredModelWork(row) && providerDeclined(row));
+
+  const wallOf = (list: Record<string, unknown>[]): Quantity[] => list.map((row) =>
+    quantityFromRow(row, 'wallClockMilliseconds', 'this run recorded no wall-clock time'));
+  const firstTokenOf = (list: Record<string, unknown>[]): Quantity[] => list.map((row) =>
+    quantityFromRow(row, 'timeToFirstTokenMilliseconds', 'this run observed no first visible output'));
+
+  return {
+    modelTimedRunCount: modelTimed.length,
+    nonModelTimedRunCount: rows.length - modelTimed.length,
+    providerDeclinedRunCount: declined.length,
+    modelTimeToFirstTokenMilliseconds: spreadOf(firstTokenOf(modelTimed), NO_MODEL_TIMING),
+    modelWallClockMilliseconds: spreadOf(wallOf(modelTimed), NO_MODEL_TIMING),
+    operationalWallClockMilliseconds: spreadOf(wallOf(rows),
+      'no run of this cell recorded a wall-clock time'),
+    providerDeclineWallClockMilliseconds: spreadOf(wallOf(declined),
+      'no run of this cell was declined by the provider, so there is no decline latency to report'),
+  };
+}
+
+/**
+ * Resources this cell spent on executed runs that produced nothing scorable.
+ *
+ * THE DISJOINTNESS IS ENFORCED HERE, in two lines: `unproductive` is the runs that measured no
+ * model work, `productive` is its complement, and the retry-waste sum is taken over the complement
+ * alone. A run cannot contribute to both because a run cannot be in both sets.
+ *
+ * A TRUE ZERO IS ALLOWED, and only here. When no run of this cell was unproductive, the
+ * unproductive spend really is zero — it is a count over an empty set, not a measurement that went
+ * missing — so it is reported as a measured zero rather than as unavailable. When there ARE
+ * unproductive runs and one of them reported no token count, `sumQuantities` makes the total
+ * unavailable, which is the correct answer for a total that would otherwise be an undercount.
+ */
+function unproductiveSpendOf(rows: Record<string, unknown>[]): WorkspaceUnproductiveSpend {
+  const unproductive = rows.filter((row) => !measuredModelWork(row));
+  const productive = rows.filter(measuredModelWork);
+
+  const metricsOf = (list: Record<string, unknown>[]): FrontierAttemptMetrics[] => list
+    .map((row) => attemptMetricsFromRow(row))
+    .filter((entry): entry is FrontierAttemptMetrics => entry !== undefined);
+
+  const unproductiveMetrics = metricsOf(unproductive);
+  const productiveMetrics = metricsOf(productive);
+
+  const zeroBecauseNone = (what: string): Quantity => ({ provenance: 'measured', value: 0, note: what });
+
+  /**
+   * Sum over a set of runs, refusing to under-report one whose row could not be read at all.
+   *
+   * A row `attemptMetricsFromRow` rejected is not a row that spent nothing; it is a row nothing can
+   * be said about. Summing the readable remainder would publish an undercount as a total.
+   */
+  const sumOver = (all: Record<string, unknown>[], readable: FrontierAttemptMetrics[],
+                   pick: (entry: FrontierAttemptMetrics) => Quantity, noneNote: string,
+                   missingNote: string): Quantity => {
+    if (all.length === 0) return zeroBecauseNone(noneNote);
+    if (readable.length !== all.length) return unavailableQuantity(missingNote);
+    return sumQuantities(readable.map(pick), missingNote);
+  };
+
+  const unproductiveTokens = sumOver(unproductive, unproductiveMetrics, (entry) => entry.totalTokens,
+    'every executed run of this cell produced a scorable outcome, so no tokens were spent without one',
+    'at least one run of this cell produced no outcome AND reported no token count, so what it consumed is not '
+    + 'known. It is not zero: the run executed.');
+
+  const unproductiveAllowance = sumOver(unproductive, unproductiveMetrics,
+    (entry) => entry.subscriptionIncludedUsageMicroUSD,
+    'every executed run of this cell produced a scorable outcome, so no allowance was spent without one',
+    'at least one run of this cell produced no outcome AND reported no allowance valuation, so what it consumed of '
+    + 'the plan is not known. It is not zero.');
+
+  const unproductiveCharge = sumOver(unproductive, unproductiveMetrics,
+    (entry) => entry.marginalAPIChargeMicroUSD,
+    'every executed run of this cell produced a scorable outcome, so nothing was billed without one',
+    'at least one run of this cell produced no outcome AND has no marginal charge recorded');
+
+  const retryWasted = sumOver(productive, productiveMetrics, (entry) => entry.wastedTokens,
+    'no run of this cell produced a scorable outcome, so no run of it retried toward one',
+    'at least one run of this cell that produced an outcome cannot say how many of its tokens went on '
+    + 'non-deciding attempts');
+
+  const total = unproductiveTokens.provenance === 'unavailable' || retryWasted.provenance === 'unavailable'
+    ? unavailableQuantity('a total of non-result tokens needs both halves, and one of them is not known')
+    : {
+      provenance: worstProvenance([unproductiveTokens, retryWasted]),
+      value: (unproductiveTokens.value ?? 0) + (retryWasted.value ?? 0),
+    };
+
+  return {
+    unproductiveRunCount: unproductive.length,
+    providerDeclinedRunCount: unproductive.filter(providerDeclined).length,
+    unproductiveTokens,
+    unproductiveAllowanceMicroUSD: unproductiveAllowance,
+    unproductiveMarginalChargeMicroUSD: unproductiveCharge,
+    retryWastedTokens: retryWasted,
+    totalNonResultTokens: total,
+    definition: UNPRODUCTIVE_SPEND_DEFINITION,
+  };
 }
 
 /**
@@ -386,13 +625,18 @@ export function aggregateWorkspaceCell(runs: WorkspaceRunRow[]): WorkspaceCellAg
 
   // The same reader every other surface uses, applied per run. An absence in a row stays an absence
   // here: `attemptMetricsFromRow` returns `unavailable` quantities rather than zeros.
+  //
+  // OVER EVERY ROW, DELIBERATELY. This is the ECONOMICS aggregate, and rule 3 in this file's header
+  // is that tokens spent on a run that broke were still spent. The model-PERFORMANCE columns are
+  // computed separately below, from the scored rows alone.
   const attemptMetrics = rows
     .map((row) => attemptMetricsFromRow(row))
     .filter((metrics): metrics is FrontierAttemptMetrics => metrics !== undefined);
   const metrics = aggregateCandidateMetrics(text(first, 'candidate') ?? '', attemptMetrics, passes.length);
 
-  const wallClock = spreadOf(rows.map((row) => quantityFromRow(row, 'wallClockMilliseconds',
-    'this run recorded no wall-clock time')), 'no run of this cell recorded a wall-clock time');
+  const efficiency = efficiencyOf(rows);
+  const unproductiveSpend = unproductiveSpendOf(rows);
+
   const totalTokens = spreadOf(attemptMetrics.map((entry) => entry.totalTokens),
     'no run of this cell carried a provider-reported token count');
 
@@ -427,7 +671,9 @@ export function aggregateWorkspaceCell(runs: WorkspaceRunRow[]): WorkspaceCellAg
 
     quality,
     metrics,
-    wallClockMilliseconds: wallClock,
+    efficiency,
+    unproductiveSpend,
+    wallClockMilliseconds: efficiency.modelWallClockMilliseconds,
     totalTokens,
     measurementQuality: worstProvenance([
       metrics.inputTokens, metrics.visibleOutputTokens, metrics.costPerRunMicroUSD,
@@ -450,13 +696,36 @@ export function describeWorkspaceCell(cell: WorkspaceCellAggregate): string {
     cell.caseID.padEnd(30),
     `${cell.quality.successCount}/${cell.quality.scoredRunCount}`.padStart(6),
     (composite === undefined ? 'no score' : `${(composite / 10).toFixed(1)}%`).padStart(9),
-    (cell.wallClockMilliseconds.median.value === undefined ? 'no time'
-      : `${Math.round(cell.wallClockMilliseconds.median.value / 1000)}s`).padStart(7),
+    // MODEL time, never the provider's refusal latency. A cell whose runs were all declined prints
+    // `declined` rather than the half-second it took to be told no.
+    (cell.wallClockMilliseconds.median.value !== undefined
+      ? `${Math.round(cell.wallClockMilliseconds.median.value / 1000)}s`
+      : cell.efficiency.providerDeclinedRunCount > 0 ? 'declined' : 'no time').padStart(8),
     (cell.billingBasis === 'subscriptionIncluded'
       ? (allowance === undefined ? 'allowance unknown' : `$${(allowance / 1_000_000).toFixed(4)} allow.`)
       : (cell.metrics.costPerRunMicroUSD.value === undefined ? 'cost unknown'
         : `$${(cell.metrics.costPerRunMicroUSD.value / 1_000_000).toFixed(4)}`)).padStart(18),
     cell.measurementQuality,
+  ].join('  ').trimEnd();
+}
+
+/**
+ * One line per cell for the spend a cell got nothing back for.
+ *
+ * Printed apart from the quality table on purpose: it answers "what did this matrix burn without
+ * learning anything", which is an operator's question rather than a comparison between models.
+ */
+export function describeUnproductiveSpend(cell: WorkspaceCellAggregate): string {
+  const spend = cell.unproductiveSpend;
+  const tokens = spend.unproductiveTokens.value;
+  const allowance = spend.unproductiveAllowanceMicroUSD.value;
+  return [
+    cell.candidate.padEnd(30),
+    cell.caseID.padEnd(30),
+    `${spend.unproductiveRunCount}/${cell.runCount} no result`.padStart(18),
+    (tokens === undefined ? 'tokens unknown' : `${tokens} tok`).padStart(16),
+    (allowance === undefined ? 'allowance unknown' : `$${(allowance / 1_000_000).toFixed(6)} allow.`).padStart(20),
+    spend.providerDeclinedRunCount > 0 ? `${spend.providerDeclinedRunCount} provider-declined` : '',
   ].join('  ').trimEnd();
 }
 

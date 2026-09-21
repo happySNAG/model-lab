@@ -51,6 +51,32 @@ import {
 } from './workspace-pack';
 import { HardwareIdentity } from './manifest';
 import { WorkspaceOutcome } from './workspace-host';
+import {
+  ProviderThrottleSignal, THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS, describeProviderThrottle,
+  describeThrottleDeferral, detectProviderThrottle, throttleBlocks,
+} from './workspace-throttle';
+
+/**
+ * Who chose the repeat count, and whether that choice differs from the sealed pack's.
+ *
+ * `operatorMatchedPack` exists because "the operator named a number" and "the operator changed the
+ * experiment" are different facts, and only the second is worth warning about.
+ */
+export type WorkspaceRepeatProvenance = 'pack' | 'operatorMatchedPack' | 'operatorOverrodePack';
+
+/** The one sentence each provenance is described by, everywhere. */
+export function describeRepeatProvenance(from: WorkspaceRepeatProvenance, packRepeats: number): string {
+  switch (from) {
+    case 'pack':
+      return 'the sealed pack\'s own number; the operator named none';
+    case 'operatorMatchedPack':
+      return `set by the operator, and the same number the pack asks for (${packRepeats}) — this is not an override`;
+    case 'operatorOverrodePack':
+      return `set by the operator, OVERRIDING the sealed pack, which asks for ${packRepeats}`;
+    default:
+      return 'unknown provenance';
+  }
+}
 
 export class WorkspaceMatrixError extends Error {
   constructor(readonly code: string, message: string) {
@@ -163,8 +189,18 @@ export interface WorkspaceMatrixPlan {
   modelIDs: string[];
   caseIDs: string[];
   repeatsPerCase: number;
-  /** Whether the sample count came from the sealed pack or from the operator. */
-  repeatsFrom: 'pack' | 'operator';
+  /**
+   * WHERE THE SAMPLE COUNT CAME FROM, in three states rather than two.
+   *
+   * The two-state version could not tell "the operator asked for three and the pack asks for three"
+   * apart from "the operator overrode the pack", and printed the override sentence for both — so a
+   * dry run told an operator who had passed `--repeats 3` against a pack whose own number is 3 that
+   * the pack wanted something different. Nothing was wrong with the plan; the sentence describing it
+   * was false. An override is a real thing to flag and an agreement is not, so they are named apart.
+   */
+  repeatsFrom: WorkspaceRepeatProvenance;
+  /** The sealed pack's own number, kept beside the effective one so the two are always comparable. */
+  packRepeatsPerCase: number;
 
   models: WorkspaceMatrixModel[];
   cells: WorkspaceMatrixCell[];
@@ -223,8 +259,10 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
 
   const packCases = resolveWorkspacePack(request.pack, request.cases);
   const packDigest = workspacePackDigest(request.pack, request.cases);
-  const repeatsFrom: 'pack' | 'operator' = request.repeatsPerCase === undefined ? 'pack' : 'operator';
-  const repeatsPerCase = request.repeatsPerCase ?? request.pack.repeatsPerCase;
+  const packRepeatsPerCase = request.pack.repeatsPerCase;
+  const repeatsPerCase = request.repeatsPerCase ?? packRepeatsPerCase;
+  const repeatsFrom: WorkspaceRepeatProvenance = request.repeatsPerCase === undefined ? 'pack'
+    : request.repeatsPerCase === packRepeatsPerCase ? 'operatorMatchedPack' : 'operatorOverrodePack';
   if (!Number.isInteger(repeatsPerCase) || repeatsPerCase < 1) {
     throw new WorkspaceMatrixError('nonPositiveRepeats',
       `${repeatsPerCase} repeats would record a matrix nothing sampled. Ask for at least one.`);
@@ -268,6 +306,7 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
     caseIDs: packCases.map((entry) => entry.id),
     repeatsPerCase,
     repeatsFrom,
+    packRepeatsPerCase,
     models,
     cells,
     taskRunCount: cells.length,
@@ -488,8 +527,8 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   lines.push(`provider        ${plan.provider}${plan.effort === 'none' ? '' : ` · effort ${plan.effort}`}`);
   lines.push(`models          ${plan.modelIDs.length}: ${plan.modelIDs.join(', ')}`);
   lines.push(`cases           ${plan.caseIDs.length}: ${plan.caseIDs.join(', ')}`);
-  lines.push(`repeats         ${plan.repeatsPerCase} per case (${plan.repeatsFrom === 'pack'
-    ? 'the sealed pack\'s own number' : 'set by the operator; the pack asks for a different number'})`);
+  lines.push(`repeats         ${plan.repeatsPerCase} per case `
+    + `(${describeRepeatProvenance(plan.repeatsFrom, plan.packRepeatsPerCase)})`);
   lines.push('');
   lines.push(`base task runs  ${plan.modelIDs.length} models x ${plan.caseIDs.length} cases x `
     + `${plan.repeatsPerCase} repeats = ${plan.taskRunCount} independent runs`);
@@ -579,8 +618,35 @@ export interface WorkspaceMatrixRunOptions {
   shouldCancel?: () => boolean;
   onCellStarted?: (cell: WorkspaceMatrixCell) => void;
   onCellFinished?: (cell: WorkspaceMatrixCell, outcome: WorkspaceOutcome) => void;
+  /** Called once, the moment a sealed run establishes a throttle condition. */
+  onProviderThrottled?: (signal: ProviderThrottleSignal) => void;
+  /** Called for each cell the breaker declines to start. Not a failure; nothing was asked. */
+  onCellDeferred?: (cell: WorkspaceMatrixCell, signal: ProviderThrottleSignal) => void;
   /** Injected by the tests so a verification command need not be a real process. */
   runCommand?: Parameters<typeof WorkspaceCampaign.create>[0]['runCommand'];
+}
+
+/**
+ * Why a planned cell produced no record. Four different things, and they are not interchangeable.
+ *
+ * The one this pass adds is `providerThrottledBeforeExecution`, and its whole point is that it is
+ * NOT `harnessFault` and NOT any kind of outcome: nothing was asked of the model, so there is
+ * nothing about the model to record. It must never be folded into a failure count.
+ */
+export type WorkspaceCellDisposition =
+  /** Refused while the plan was built: an unproven route, no driver, a capability shortfall. */
+  | 'refusedInPlan'
+  /** The operator or the surface cancelled the matrix before this cell started. */
+  | 'cancelled'
+  /** A provider throttle had already been established, and it reaches this cell. */
+  | 'providerThrottledBeforeExecution'
+  /** The cell was attempted and the HARNESS broke — a missing fixture, an unusable sandbox. */
+  | 'harnessFault';
+
+export interface WorkspaceMatrixSkippedCell {
+  cell: WorkspaceMatrixCell;
+  reasons: string[];
+  disposition: WorkspaceCellDisposition;
 }
 
 export interface WorkspaceMatrixRunResult {
@@ -588,7 +654,19 @@ export interface WorkspaceMatrixRunResult {
   /** One entry per cell that ran, in execution order. A refused cell has none. */
   completed: { cell: WorkspaceMatrixCell; recordRoot: string; status: string }[];
   /** Cells that were not attempted, and why. Refusals from the plan, plus anything that faulted. */
-  skipped: { cell: WorkspaceMatrixCell; reasons: string[] }[];
+  skipped: WorkspaceMatrixSkippedCell[];
+
+  /** The throttle that tripped the breaker, when one did. Absent means the matrix ran to the end. */
+  throttle?: ProviderThrottleSignal;
+
+  /** Every run the plan contained. Unchanged by anything that happened; `plan.cells.length`. */
+  plannedRunCount: number;
+  /** Runs that produced a sealed record, whatever their status. */
+  executedRunCount: number;
+  /** Runs never attempted because the provider had already declined. NOT failures. */
+  notExecutedBecauseThrottledCount: number;
+  /** Runs never attempted for any other reason — refused in the plan, cancelled, or faulted. */
+  notExecutedForOtherReasonCount: number;
 }
 
 /**
@@ -601,6 +679,19 @@ export interface WorkspaceMatrixRunResult {
  * of `WorkspaceCampaign.run`, and the honest response is to record the cell as not attempted and
  * carry on: forty-seven results and one named gap is worth more than a matrix abandoned at run
  * twelve. A model's own failure is not a fault at all — it is a terminal row, and it is sealed.
+ *
+ * A PROVIDER THROTTLE IS THE ONE THING THAT DOES STOP IT, and only for the cells it reaches. The
+ * first sealed matrix proved why: the subscription hit its session limit on run two and this loop
+ * went on to hand the same exhausted session forty-six more workspaces, producing forty-six
+ * further records of a 429 in about ninety seconds. Every one of those records was honest and not
+ * one of them measured a model. So a run that seals with `providerThrottled` set — and ONLY that;
+ * see `workspace-throttle.ts` for how narrow the condition is — establishes a signal, the signal's
+ * declared scope says which later cells are futile, and those cells are recorded as NOT EXECUTED.
+ *
+ * NOT EXECUTED IS NOT A FAILURE, and the distinction is the whole point. A deferred cell seals no
+ * record, carries no status, contributes to no rate and is not counted as anything the model did.
+ * The plan it came from is returned untouched, so "forty-eight planned, two executed" is readable
+ * from the result rather than inferred from a short directory listing.
  */
 export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: WorkspaceMatrixRequest,
                                          options: WorkspaceMatrixRunOptions): Promise<WorkspaceMatrixRunResult> {
@@ -608,21 +699,45 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
   const skipped: WorkspaceMatrixRunResult['skipped'] = [];
   const factory = request.driverFactory ?? buildWorkspaceDriver;
   const packCases = resolveWorkspacePack(request.pack, request.cases);
+  // THE BREAKER'S WHOLE STATE. One signal, set by the first run that establishes one and never
+  // replaced: the first decline is the one with the evidence closest to the cause, and a later
+  // identical decline would only restate it.
+  let throttle: ProviderThrottleSignal | undefined;
 
   for (const cell of plan.cells) {
+    // FIRST, because a cell the breaker has already excluded must not even be looked up: no driver
+    // is built for it, no case is resolved, and nothing is sent.
+    if (throttle !== undefined
+      && throttleBlocks(throttle, { provider: request.provider, candidate: cell.candidate })) {
+      skipped.push({
+        cell,
+        disposition: 'providerThrottledBeforeExecution',
+        reasons: [describeThrottleDeferral(throttle)],
+      });
+      options.onCellDeferred?.(cell, throttle);
+      continue;
+    }
     if (options.shouldCancel?.()) {
-      skipped.push({ cell, reasons: ['the matrix was cancelled before this run started'] });
+      skipped.push({ cell, disposition: 'cancelled', reasons: ['the matrix was cancelled before this run started'] });
       continue;
     }
     const model = plan.models.find((entry) => entry.candidate === cell.candidate);
     if (!cell.runnable || model?.binding === undefined) {
-      skipped.push({ cell, reasons: cell.refusals.length > 0 ? cell.refusals : ['this cell was refused when the matrix was planned'] });
+      skipped.push({
+        cell,
+        disposition: 'refusedInPlan',
+        reasons: cell.refusals.length > 0 ? cell.refusals : ['this cell was refused when the matrix was planned'],
+      });
       continue;
     }
     const driver = factory({ provider: request.provider, requestedModelID: cell.modelID, effort: request.effort });
     const workspaceCase = packCases.find((entry) => entry.id === cell.caseID);
     if (driver === undefined || workspaceCase === undefined) {
-      skipped.push({ cell, reasons: ['the driver or the case could not be resolved at execution time'] });
+      skipped.push({
+        cell,
+        disposition: 'harnessFault',
+        reasons: ['the driver or the case could not be resolved at execution time'],
+      });
       continue;
     }
 
@@ -649,12 +764,70 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
         runCommand: options.runCommand,
       });
       const { outcome } = await campaign.run();
+      // 1. SEAL FIRST, ALWAYS. The run that observed the decline is a complete, durable record with
+      //    its own provider-decline evidence, exactly as it was before this breaker existed. The
+      //    breaker changes what happens NEXT, never what this record says.
       completed.push({ cell, recordRoot: cell.recordRoot, status: outcome.scorecard.status });
       options.onCellFinished?.(cell, outcome);
+
+      // 2. THEN ASK WHETHER CONTINUING IS FUTILE. `providerThrottled` is set by the scorecard for
+      //    `rateLimited` and `notAuthenticated` alone; every model failure, every timeout and every
+      //    one-off transport fault leaves it false and the matrix carries on.
+      if (throttle === undefined) {
+        const deciding = outcome.run.attempts[outcome.run.attempts.length - 1];
+        throttle = detectProviderThrottle({
+          provider: request.provider,
+          candidate: cell.candidate,
+          caseID: cell.caseID,
+          repeatIndex: cell.repeat.repeatIndex,
+          recordRoot: cell.recordRoot,
+          providerThrottled: outcome.scorecard.providerThrottled,
+          detail: outcome.scorecard.detail,
+          failureKind: deciding?.agent.failure?.kind,
+          observedAt: (request.now?.() ?? new Date()).toISOString(),
+        });
+        if (throttle !== undefined) options.onProviderThrottled?.(throttle);
+      }
     } catch (error) {
-      skipped.push({ cell, reasons: [error instanceof Error ? error.message : String(error)] });
+      skipped.push({
+        cell,
+        disposition: 'harnessFault',
+        reasons: [error instanceof Error ? error.message : String(error)],
+      });
     }
   }
 
-  return { plan, completed, skipped };
+  const throttled = skipped.filter((entry) => entry.disposition === 'providerThrottledBeforeExecution');
+  return {
+    plan,
+    completed,
+    skipped,
+    throttle,
+    // The PLAN is the authority for what was asked for, and it is never edited by what happened.
+    plannedRunCount: plan.cells.length,
+    executedRunCount: completed.length,
+    notExecutedBecauseThrottledCount: throttled.length,
+    notExecutedForOtherReasonCount: skipped.length - throttled.length,
+  };
+}
+
+/**
+ * What a matrix actually did, as a person reads it. Planned, executed, and every gap named.
+ *
+ * Deliberately prints the planned count FIRST and the executed count beside it, because the single
+ * most misleading way to report a matrix the provider stopped is to report only what it produced.
+ */
+export function describeWorkspaceMatrixRunResult(result: WorkspaceMatrixRunResult): string[] {
+  const lines: string[] = [];
+  lines.push(`planned runs    ${result.plannedRunCount}`);
+  lines.push(`executed runs   ${result.executedRunCount} (sealed, whatever their status)`);
+  lines.push(`not executed    ${result.notExecutedBecauseThrottledCount} because the PROVIDER throttled`
+    + ` · ${result.notExecutedForOtherReasonCount} for other reasons`);
+  if (result.throttle !== undefined) {
+    lines.push('');
+    for (const line of describeProviderThrottle(result.throttle)) lines.push(line);
+    lines.push('');
+    lines.push(THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS);
+  }
+  return lines;
 }
