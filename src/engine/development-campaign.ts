@@ -49,13 +49,20 @@ export class DevelopmentCampaignError extends Error {
   }
 }
 
-/** Create the ledger and write the plan beside it. Refuses to overwrite an existing campaign. */
+/**
+ * Create the ledger and write the plan beside it. Refuses to overwrite an existing campaign.
+ *
+ * `extraMeta` is recorded beside the plan's own fields and cannot replace any of them — it is how a
+ * caller notes a fact about the campaign the plan does not carry, such as that it is synthetic.
+ */
 export function createDevelopmentCampaign(root: string, plan: DevelopmentCampaignPlan,
-                                          clock?: () => string): Ledger {
+                                          clock?: () => string,
+                                          extraMeta: Record<string, CanonicalValue> = {}): Ledger {
   fs.mkdirSync(root, { recursive: true });
   const ledger = Ledger.create(root, plan.plannableCatalog, plan.candidates.map((candidate) => ({
     name: candidate.name, modelID: candidate.binding.requestedModelID,
   })), {
+    ...extraMeta,
     campaignKind: 'development',
     developmentFormatVersion: plan.formatVersion,
     developmentPlanDigest: plan.planDigest,
@@ -427,6 +434,16 @@ export async function runDevelopmentCampaign(
       runID: attempt.runID, slotKey: attempt.slotKey,
       shouldCancel: options.shouldCancel, sleep: options.sleep,
     });
+
+    // A CANCELLED ATTEMPT IS NOT AN OUTCOME, AND IT IS NOT RECORDED. The operator stopped it; no model
+    // finished and no transport failed. Writing it would make the slot terminal forever — a resume
+    // could never run it, and the task could never reach its required repeats — so the slot is left
+    // pending and the run stops here, which is the slot-boundary pause the text campaign has.
+    if (outcome.failure?.kind === 'cancelled') {
+      progress.cancelled = true;
+      ledger.event('developmentAttemptCancelled', { slotKey: slot.slotKey, runID: attempt.runID });
+      break;
+    }
 
     const graded = gradeDevelopmentAttempt({
       task, repo, outcome, provenance: provenanceFor(attempt, plan, isoSeconds(now())),

@@ -32,7 +32,7 @@ import { compareCodePoints } from './digest';
 import { DevelopmentProvenance, provenanceIsComplete } from './development-benchmark';
 import { DevelopmentTaskResult } from './development-evaluation';
 import {
-  ALL_DEVELOPMENT_DIMENSIONS, DevelopmentDimension, DevelopmentMetricID, EXECUTED_TIER_NOT_MEASURED_REASON,
+  ALL_DEVELOPMENT_DIMENSIONS, Credit, DevelopmentDimension, DevelopmentMetricID, EXECUTED_TIER_NOT_MEASURED_REASON,
   MetricTier, metricsForDimension,
 } from './development-scoring';
 
@@ -61,31 +61,94 @@ export interface DevelopmentMetricRate {
   passRateMilli: Measurement<number>;
 }
 
+/**
+ * One task's standing across its repeats.
+ *
+ * COVERAGE IS COUNTED HERE, PER TASK, AND NOWHERE ELSE. A task with one of two repeats graded is not
+ * half-measured and is not measured: it is INCOMPLETE, and it stays incomplete however well that one
+ * repeat went. The quality of the repeats it does have is still reported, because a real grade is
+ * still real — what is withheld is the claim that the experiment on this task was finished.
+ */
+export interface DevelopmentTaskCoverage {
+  taskID: string;
+  dimension: DevelopmentDimension;
+  requiredRepeats: number;
+  /** Repeat identities that were graded, sorted. Each counts once, however many rows claimed it. */
+  gradedRepeats: number[];
+  /** Repeat identities on which no model answered — transport, account, refusal. Visible, never scored. */
+  excludedRepeats: number[];
+  /** Repeat identities with no terminal record at all. */
+  missingRepeats: number[];
+  /** True only when every required repeat was graded. */
+  measured: boolean;
+  /** Graded repeats at full structural credit. */
+  structuralFullRepeatCount: number;
+  /** Graded repeats by overall credit. */
+  creditCounts: Record<Credit, number>;
+  /** Graded repeats at full structural credit, per thousand graded repeats. Unavailable when none were graded. */
+  structuralScoreMilli: Measurement<number>;
+  /**
+   * Whether the graded repeats agreed with one another.
+   *
+   *   consistent     every graded repeat reached the same structural and overall credit
+   *   mixed          they did not — the task score is the share of repeats that reached full credit
+   *   singleRepeat   one graded repeat, so there is nothing to compare it with
+   *   notMeasured    none was graded
+   */
+  stability: 'consistent' | 'mixed' | 'singleRepeat' | 'notMeasured';
+  /** Per graded repeat, what it earned. The raw material for any variance a reader wants to compute. */
+  repeatCredits: { repeat: number; structuralCredit: Credit; credit: Credit }[];
+}
+
 export interface DevelopmentDimensionEvidence {
   dimension: DevelopmentDimension;
   state: DevelopmentEvidenceState;
   because: string;
+  /** Unique tasks planned on this dimension. The coverage denominator — never a row count. */
   plannedTaskCount: number;
+  /** Tasks with EVERY required repeat graded. The coverage numerator. */
   gradedTaskCount: number;
-  /** Tasks where every gating STRUCTURAL metric reached its bar. */
+  /** Tasks with at least one graded repeat: the tasks the rate below is computed over. */
+  scoredTaskCount: number;
+  /** Valid graded repeats each task needs before it counts as measured. */
+  requiredRepeats: number;
+  /** plannedTaskCount × requiredRepeats. */
+  requiredRepeatCount: number;
+  gradedRepeatCount: number;
+  /** Repeats on which no model answered. They reduce completeness and never reduce a score. */
+  excludedRepeatCount: number;
+  missingRepeatCount: number;
+  /** Scored tasks whose graded repeats disagreed. */
+  mixedTaskCount: number;
+  /** Tasks where EVERY graded repeat reached full structural credit. */
   structuralFullCreditCount: number;
-  /** Tasks graded `full` overall. Zero while any gating executed metric is unmeasured. */
+  /** Tasks where every graded repeat was graded `full` overall. Zero while any gating executed metric is unmeasured. */
   fullCreditCount: number;
+  /**
+   * The mean, over scored tasks, of each task's share of graded repeats at full structural credit.
+   *
+   * Averaged per TASK, not per repeat, so a task is weighted once whatever its repeat count — and a
+   * task whose repeats disagree contributes the share it actually earned rather than a coin flip.
+   */
   structuralPassRateMilli: Measurement<number>;
-  /** Over held-out assertions only: the share the prompt did not give away. */
+  /** Over held-out assertions only: the share the prompt did not give away. Per task, then across tasks. */
   heldOutPassRateMilli: Measurement<number>;
+  /** Tasks on which any graded repeat tripped a shortcut probe. */
   shortcutSuspectedCount: number;
   /** False whenever this dimension's contract declares an executed metric. */
   executedTierMeasured: boolean;
   executedTierBecause: string;
+  /** Per metric, over every graded repeat. */
   metrics: DevelopmentMetricRate[];
+  /** Scored task ids, sorted. */
   taskIDs: string[];
+  tasks: DevelopmentTaskCoverage[];
 }
 
 export interface DevelopmentEvidence {
   candidate: string;
   dimensions: DevelopmentDimensionEvidence[];
-  /** One record per graded task. Empty when nothing was measured. */
+  /** One record per graded repeat. Empty when nothing was measured. */
   provenance: DevelopmentProvenance[];
   provenanceComplete: boolean;
   /** Named gaps: `<taskID>: <field>`. A result whose provenance is incomplete is still published. */
@@ -96,38 +159,98 @@ export interface DevelopmentEvidence {
 export interface DevelopmentPlan {
   /** How many tasks the registry holds for each dimension. The denominator for coverage. */
   plannedTaskCounts: Record<DevelopmentDimension, number>;
+  /**
+   * Valid graded repeats a task needs before it counts as measured. Absent means one, which is what
+   * every caller that predates repeats meant.
+   */
+  requiredRepeats?: number;
+  /**
+   * The exact task ids planned, when the caller knows them. Present, coverage is checked by id — a
+   * record for a task that was not planned is not part of this experiment and is ignored — and a
+   * planned task with no record at all still appears, as missing.
+   */
+  plannedTaskIDs?: Record<DevelopmentDimension, string[]>;
+}
+
+/**
+ * One repeat of one task, as the evidence layer reads it.
+ *
+ * `repeat` is the plan's repeat identity. Two records naming the same task and repeat are ONE repeat
+ * — the first wins, exactly as `ledger.ts` lets the first terminal record per slot win — so a retried
+ * or duplicated row can never add coverage that was not planned.
+ */
+export interface DevelopmentRepeatRecord {
+  taskID: string;
+  dimension: DevelopmentDimension;
+  repeat: number;
+  /** Present when a model answered and the attempt was graded. */
+  result?: DevelopmentTaskResult;
+  /** Why this repeat carries no grade. A record with neither this nor `result` is treated as excluded. */
+  excludedBecause?: string;
+  disposition?: string;
 }
 
 function rateMilli(passes: number, decided: number, noneReason: string): Measurement<number> {
   return decided === 0 ? unavailable(noneReason) : measured(Math.round((passes * 1_000) / decided));
 }
 
+function meanMilli(values: number[], noneReason: string): Measurement<number> {
+  return values.length === 0
+    ? unavailable(noneReason)
+    : measured(Math.round(values.reduce((sum, value) => sum + value, 0) / values.length));
+}
+
 function dimensionDeclaresExecutedTier(dimension: DevelopmentDimension): boolean {
   return metricsForDimension(dimension).some((spec) => spec.tier === 'executed');
 }
 
+function executedTierBecauseFor(dimension: DevelopmentDimension): string {
+  return dimensionDeclaresExecutedTier(dimension)
+    ? EXECUTED_TIER_NOT_MEASURED_REASON
+    : 'this dimension declares no executed metric; nothing is missing from it';
+}
+
+function requiredRepeatsOf(plan: DevelopmentPlan): number {
+  const required = plan.requiredRepeats ?? 1;
+  return Number.isInteger(required) && required >= 1 ? required : 1;
+}
+
+function plannedCountOf(plan: DevelopmentPlan, dimension: DevelopmentDimension): number {
+  return plan.plannedTaskIDs ? new Set(plan.plannedTaskIDs[dimension]).size : plan.plannedTaskCounts[dimension];
+}
+
 /** The state of a candidate that has never run these suites. Every ranking starts here. */
 export function noDevelopmentEvidence(candidate: string, plan: DevelopmentPlan, derivedAt: string): DevelopmentEvidence {
+  const required = requiredRepeatsOf(plan);
   return {
     candidate,
-    dimensions: ALL_DEVELOPMENT_DIMENSIONS.map((dimension) => ({
-      dimension,
-      state: 'notMeasured' as const,
-      because: DEVELOPMENT_NOT_MEASURED_REASON,
-      plannedTaskCount: plan.plannedTaskCounts[dimension],
-      gradedTaskCount: 0,
-      structuralFullCreditCount: 0,
-      fullCreditCount: 0,
-      structuralPassRateMilli: unavailable(DEVELOPMENT_NOT_MEASURED_REASON),
-      heldOutPassRateMilli: unavailable(DEVELOPMENT_NOT_MEASURED_REASON),
-      shortcutSuspectedCount: 0,
-      executedTierMeasured: false,
-      executedTierBecause: dimensionDeclaresExecutedTier(dimension)
-        ? EXECUTED_TIER_NOT_MEASURED_REASON
-        : 'this dimension declares no executed metric; nothing is missing from it',
-      metrics: [],
-      taskIDs: [],
-    })),
+    dimensions: ALL_DEVELOPMENT_DIMENSIONS.map((dimension) => {
+      const planned = plannedCountOf(plan, dimension);
+      return {
+        dimension,
+        state: 'notMeasured' as const,
+        because: DEVELOPMENT_NOT_MEASURED_REASON,
+        plannedTaskCount: planned,
+        gradedTaskCount: 0,
+        scoredTaskCount: 0,
+        requiredRepeats: required,
+        requiredRepeatCount: planned * required,
+        gradedRepeatCount: 0,
+        excludedRepeatCount: 0,
+        missingRepeatCount: planned * required,
+        mixedTaskCount: 0,
+        structuralFullCreditCount: 0,
+        fullCreditCount: 0,
+        structuralPassRateMilli: unavailable(DEVELOPMENT_NOT_MEASURED_REASON),
+        heldOutPassRateMilli: unavailable(DEVELOPMENT_NOT_MEASURED_REASON),
+        shortcutSuspectedCount: 0,
+        executedTierMeasured: false,
+        executedTierBecause: executedTierBecauseFor(dimension),
+        metrics: [],
+        taskIDs: [],
+        tasks: [],
+      };
+    }),
     provenance: [],
     provenanceComplete: false,
     provenanceGaps: ['no development task was run, so there is no provenance to be complete'],
@@ -135,30 +258,137 @@ export function noDevelopmentEvidence(candidate: string, plan: DevelopmentPlan, 
   };
 }
 
+/**
+ * Evidence from graded task results, one repeat each.
+ *
+ * The form every caller used before repeats existed. Each result is repeat 1 of its task, so two
+ * results for one task are ONE task graded once — the second is a duplicate, and it is dropped
+ * rather than counted as a second task.
+ */
 export function buildDevelopmentEvidence(
   candidate: string, results: DevelopmentTaskResult[], plan: DevelopmentPlan, derivedAt: string,
 ): DevelopmentEvidence {
+  return buildRepeatedDevelopmentEvidence(candidate, results.map((result) => ({
+    taskID: result.taskID, dimension: result.dimension, repeat: 1, result,
+  })), plan, derivedAt);
+}
+
+function coverageFor(taskID: string, dimension: DevelopmentDimension, required: number,
+                     records: DevelopmentRepeatRecord[]): DevelopmentTaskCoverage {
+  const graded = records.filter((record) => record.result !== undefined);
+  const gradedRepeats = graded.map((record) => record.repeat).sort((a, b) => a - b);
+  const excludedRepeats = records.filter((record) => record.result === undefined)
+    .map((record) => record.repeat).sort((a, b) => a - b);
+  const seen = new Set(records.map((record) => record.repeat));
+  const missingRepeats: number[] = [];
+  for (let repeat = 1; repeat <= required; repeat++) if (!seen.has(repeat)) missingRepeats.push(repeat);
+
+  const repeatCredits = graded
+    .map((record) => ({ repeat: record.repeat, structuralCredit: record.result!.grade.structuralCredit, credit: record.result!.grade.credit }))
+    .sort((a, b) => a.repeat - b.repeat);
+  const structuralFull = repeatCredits.filter((entry) => entry.structuralCredit === 'full').length;
+  const creditCounts: Record<Credit, number> = { full: 0, partial: 0, none: 0 };
+  for (const entry of repeatCredits) creditCounts[entry.credit] += 1;
+  const distinct = new Set(repeatCredits.map((entry) => `${entry.structuralCredit}/${entry.credit}`));
+
+  return {
+    taskID,
+    dimension,
+    requiredRepeats: required,
+    gradedRepeats,
+    excludedRepeats,
+    missingRepeats,
+    measured: gradedRepeats.length >= required,
+    structuralFullRepeatCount: structuralFull,
+    creditCounts,
+    structuralScoreMilli: rateMilli(structuralFull, repeatCredits.length, 'no repeat of this task was graded'),
+    stability: repeatCredits.length === 0 ? 'notMeasured'
+      : repeatCredits.length === 1 ? 'singleRepeat'
+        : distinct.size === 1 ? 'consistent' : 'mixed',
+    repeatCredits,
+  };
+}
+
+/**
+ * Evidence from every repeat of every task, with coverage counted per task.
+ *
+ * THE RULES, in the order they are applied:
+ *
+ *   1  one record per (task, repeat): the first wins, and a repeat outside 1…required is ignored.
+ *   2  a repeat with no grade — no model answered it — is EXCLUDED. It is visible, it makes the task
+ *      incomplete, and it never enters a rate: a dead socket is not a wrong answer.
+ *   3  a task is MEASURED only when every required repeat was graded.
+ *   4  a task's score is the share of its graded repeats at full structural credit.
+ *   5  a dimension's rate is the mean of its scored tasks' scores; it is MEASURED only when every
+ *      planned task is measured, and PARTIALLY MEASURED — with the rate still published — otherwise.
+ */
+export function buildRepeatedDevelopmentEvidence(
+  candidate: string, records: DevelopmentRepeatRecord[], plan: DevelopmentPlan, derivedAt: string,
+): DevelopmentEvidence {
   const empty = noDevelopmentEvidence(candidate, plan, derivedAt);
-  if (results.length === 0) return empty;
+  const required = requiredRepeatsOf(plan);
+  const plannedIDs = plan.plannedTaskIDs
+    ? new Set(ALL_DEVELOPMENT_DIMENSIONS.flatMap((dimension) => plan.plannedTaskIDs![dimension]))
+    : undefined;
+
+  const unique = new Map<string, DevelopmentRepeatRecord>();
+  for (const record of records) {
+    if (!Number.isInteger(record.repeat) || record.repeat < 1 || record.repeat > required) continue;
+    if (plannedIDs && !plannedIDs.has(record.taskID)) continue;
+    const key = `${record.taskID}\u0000${record.repeat}`;
+    if (!unique.has(key)) unique.set(key, record);
+  }
+  const kept = [...unique.values()];
+  if (kept.length === 0) return empty;
 
   const dimensions = ALL_DEVELOPMENT_DIMENSIONS.map((dimension): DevelopmentDimensionEvidence => {
-    const forDimension = results
-      .filter((result) => result.dimension === dimension)
-      .sort((a, b) => compareCodePoints(a.taskID, b.taskID));
-    if (forDimension.length === 0) return empty.dimensions.find((entry) => entry.dimension === dimension)!;
+    const base = empty.dimensions.find((entry) => entry.dimension === dimension)!;
+    const forDimension = kept.filter((record) => record.dimension === dimension);
+    const taskIDs = [...new Set([
+      ...(plan.plannedTaskIDs?.[dimension] ?? []),
+      ...forDimension.map((record) => record.taskID),
+    ])].sort(compareCodePoints);
+    const tasks = taskIDs.map((taskID) => coverageFor(taskID, dimension, required,
+      forDimension.filter((record) => record.taskID === taskID)));
 
-    const planned = plan.plannedTaskCounts[dimension];
-    const graded = forDimension.length;
-    const structuralFull = forDimension.filter((result) => result.grade.structuralCredit === 'full').length;
-    const full = forDimension.filter((result) => result.grade.credit === 'full').length;
+    const planned = plannedCountOf(plan, dimension);
+    const requiredRepeatCount = planned * required;
+    const gradedRepeatCount = tasks.reduce((sum, task) => sum + task.gradedRepeats.length, 0);
+    const excludedRepeatCount = tasks.reduce((sum, task) => sum + task.excludedRepeats.length, 0);
+    const missingRepeatCount = Math.max(0, requiredRepeatCount - gradedRepeatCount - excludedRepeatCount);
 
-    const heldOut = forDimension
-      .map((result) => result.grade.heldOutPassRateMilli)
-      .filter((value): value is { measured: number } => 'measured' in value);
+    const gradedResults = forDimension
+      .filter((record) => record.result !== undefined)
+      .sort((a, b) => compareCodePoints(a.taskID, b.taskID) || a.repeat - b.repeat);
+
+    if (gradedResults.length === 0) {
+      if (excludedRepeatCount === 0) return base;
+      return {
+        ...base,
+        because: `${excludedRepeatCount} repeat(s) on this dimension were attempted and no model answered any of them `
+          + '(transport, account or refusal), so nothing was graded. They are reported as exclusions, never as failures. '
+          + DEVELOPMENT_NOT_MEASURED_REASON,
+        excludedRepeatCount,
+        missingRepeatCount,
+        tasks,
+      };
+    }
+
+    const scored = tasks.filter((task) => task.gradedRepeats.length > 0);
+    const measuredTasks = tasks.filter((task) => task.measured).length;
+
+    const heldOutPerTask = scored.map((task) => {
+      const values = gradedResults
+        .filter((record) => record.taskID === task.taskID)
+        .map((record) => record.result!.grade.heldOutPassRateMilli)
+        .filter((value): value is { measured: number } => 'measured' in value)
+        .map((value) => value.measured);
+      return values.length === 0 ? undefined : values.reduce((sum, value) => sum + value, 0) / values.length;
+    }).filter((value): value is number => value !== undefined);
 
     const metrics: DevelopmentMetricRate[] = metricsForDimension(dimension).map((spec) => {
-      const statuses = forDimension
-        .map((result) => result.grade.metrics.find((entry) => entry.id === spec.id))
+      const statuses = gradedResults
+        .map((record) => record.result!.grade.metrics.find((entry) => entry.id === spec.id))
         .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
       const passCount = statuses.filter((entry) => entry.status === 'pass').length;
       const failCount = statuses.filter((entry) => entry.status === 'fail').length;
@@ -176,52 +406,71 @@ export function buildDevelopmentEvidence(
       };
     });
 
-    const state: DevelopmentEvidenceState = graded >= planned ? 'measured' : 'partiallyMeasured';
+    const state: DevelopmentEvidenceState = measuredTasks >= planned ? 'measured' : 'partiallyMeasured';
+    const repeatClause = required > 1 ? ` on all ${required} repeats` : '';
     return {
       dimension,
       state,
       because: state === 'measured'
-        ? `every one of the ${planned} registered task(s) on this dimension was graded`
-        : `${graded} of the ${planned} registered task(s) on this dimension were graded; the rate is correct over what was run and rests on part of the suite`,
+        ? `every one of the ${planned} registered task(s) on this dimension was graded${repeatClause}`
+        : `${measuredTasks} of the ${planned} registered task(s) on this dimension were graded`
+          + (required > 1 ? ` on all ${required} required repeats` : '')
+          + `; ${gradedRepeatCount} of ${requiredRepeatCount} required repeat(s) were graded, ${excludedRepeatCount} `
+          + `excluded because no model answered, ${missingRepeatCount} not yet run. The rate is correct over what was `
+          + 'run and rests on part of the suite',
       plannedTaskCount: planned,
-      gradedTaskCount: graded,
-      structuralFullCreditCount: structuralFull,
-      fullCreditCount: full,
-      structuralPassRateMilli: rateMilli(structuralFull, graded, 'no task on this dimension was graded'),
-      heldOutPassRateMilli: heldOut.length === 0
+      gradedTaskCount: measuredTasks,
+      scoredTaskCount: scored.length,
+      requiredRepeats: required,
+      requiredRepeatCount,
+      gradedRepeatCount,
+      excludedRepeatCount,
+      missingRepeatCount,
+      mixedTaskCount: scored.filter((task) => task.stability === 'mixed').length,
+      structuralFullCreditCount: scored.filter((task) => task.structuralFullRepeatCount === task.gradedRepeats.length).length,
+      fullCreditCount: scored.filter((task) => task.creditCounts.full === task.gradedRepeats.length).length,
+      structuralPassRateMilli: meanMilli(
+        scored.map((task) => (task.structuralFullRepeatCount * 1_000) / task.gradedRepeats.length),
+        'no task on this dimension was graded'),
+      heldOutPassRateMilli: heldOutPerTask.length === 0
         ? unavailable('no graded task on this dimension declared a held-out assertion')
-        : measured(Math.round(heldOut.reduce((sum, value) => sum + value.measured, 0) / heldOut.length)),
-      shortcutSuspectedCount: forDimension.filter((result) => result.grade.shortcutSuspected).length,
+        : meanMilli(heldOutPerTask, 'no graded task on this dimension declared a held-out assertion'),
+      shortcutSuspectedCount: scored.filter((task) => gradedResults
+        .some((record) => record.taskID === task.taskID && record.result!.grade.shortcutSuspected)).length,
       executedTierMeasured: false,
-      executedTierBecause: dimensionDeclaresExecutedTier(dimension)
-        ? EXECUTED_TIER_NOT_MEASURED_REASON
-        : 'this dimension declares no executed metric; nothing is missing from it',
+      executedTierBecause: executedTierBecauseFor(dimension),
       metrics,
-      taskIDs: forDimension.map((result) => result.taskID),
+      taskIDs: scored.map((task) => task.taskID),
+      tasks,
     };
   });
 
-  const provenance = results
-    .map((result) => result.provenance)
-    .filter((record): record is DevelopmentProvenance => record !== undefined)
-    .sort((a, b) => compareCodePoints(a.taskID, b.taskID));
+  const graded = kept
+    .filter((record) => record.result !== undefined)
+    .sort((a, b) => compareCodePoints(a.taskID, b.taskID) || a.repeat - b.repeat);
+  const provenance = graded
+    .map((record) => record.result!.provenance)
+    .filter((entry): entry is DevelopmentProvenance => entry !== undefined);
 
   const gaps: string[] = [];
-  for (const result of results) {
-    if (result.provenance === undefined) {
-      gaps.push(`${result.taskID}: no provenance was recorded at all`);
+  for (const record of graded) {
+    const label = required > 1 ? `${record.taskID} (repeat ${record.repeat})` : record.taskID;
+    if (record.result!.provenance === undefined) {
+      gaps.push(`${label}: no provenance was recorded at all`);
       continue;
     }
-    const { complete, missing } = provenanceIsComplete(result.provenance);
-    if (!complete) gaps.push(`${result.taskID}: ${missing.join(', ')}`);
+    const { complete, missing } = provenanceIsComplete(record.result!.provenance);
+    if (!complete) gaps.push(`${label}: ${missing.join(', ')}`);
   }
 
   return {
     candidate,
     dimensions,
     provenance,
-    provenanceComplete: gaps.length === 0,
-    provenanceGaps: gaps,
+    provenanceComplete: graded.length > 0 && gaps.length === 0,
+    provenanceGaps: graded.length === 0
+      ? ['no development repeat was graded, so there is no provenance to be complete']
+      : gaps,
     derivedAt,
   };
 }

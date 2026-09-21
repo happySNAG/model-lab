@@ -14,7 +14,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   Campaign, CampaignBuildError, CampaignConfiguration, CampaignError, CampaignLockError, CampaignStatus,
   DEFAULT_EXECUTION_POLICY, DiscoveredFrontierModel, EffortLevel, ExecutionPolicy, FrontierCandidateRequest,
@@ -46,6 +46,11 @@ import {
   FABLE_SUBSTITUTION_REASON, prepareManifest, renderPreparedManifest,
   applyRulingsToAnswerSheet, recordRulings, RulingsInput, RulingsRecord,
   costPolicyDisclosure,
+  DEVELOPMENT_EXECUTABLE_PROVIDERS, DevelopmentCampaignError, DevelopmentCandidateRequest, FrontierAdapter, SYNTHETIC_DEVELOPMENT_PROVIDER,
+  SyntheticDevelopmentAdapter, acquireCampaignLock, buildDevelopmentCampaignReport, buildDevelopmentPlan,
+  createDevelopmentCampaign, describeDevelopmentCampaignReport, describeDevelopmentPlan, developmentExecutionRefusals,
+  openDevelopmentCampaign, parseSyntheticDevelopmentScript, readDevelopmentCampaignState, runDevelopmentCampaign,
+  unrunnableAttempts,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
@@ -1877,6 +1882,10 @@ function commandGeneralHelp(): void {
   say('  verify <name>                   recompute every manifest binding and report what moved');
   say('  finalize <name>                 reconcile, rank, interpret, and build the blinded packet');
   say('  retest <name> <new-name>        derive a manifest for this machine from another one');
+  say('  develop <name> --candidates p:m  plan and run a development campaign — SENDS REAL REQUESTS');
+  say('                                  --dry-run first; --synthetic runs it with no provider at all');
+  say('  develop-resume <name>           continue a development campaign where it stopped');
+  say('  develop-status <name>           task coverage, repeat completeness and grades');
   say('');
   say('  adjudicate <results.jsonl...> --out <dir> --key-out <dir>');
   say('                                  build the blinded human-review packet, the blank answer sheet');
@@ -2240,6 +2249,289 @@ async function commandRecordRulings(positional: string[], options: Options): Pro
   if (!verification.valid) fail('the recorded rulings did not verify; treat the written files as suspect');
 }
 
+// ------------------------------------------------------------------ the development runner
+//
+// Three commands, and only three: `develop` plans a development campaign and — with --dry-run —
+// stops there having written nothing and sent nothing, or creates it and runs it; `develop-resume`
+// continues the slots that never finished; `develop-status` reads what the rows say. Every rule
+// they apply lives in the engine: the plan, the cost gate, the identity requirement, the isolated
+// workspace, the graders, the ledger and the coverage arithmetic. The terminal only decides which
+// adapter answers, and refuses before a campaign exists when none may.
+
+/** Where the commit a development grade is stamped with is read from: this checkout, never a task workspace. */
+const CERNUM_SOURCE_ROOT = path.resolve(__dirname, '..', '..');
+
+function isoSecondsNow(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+interface SyntheticScriptFile { script?: ReturnType<typeof parseSyntheticDevelopmentScript>; digest: string }
+
+/** Read `--synthetic-script`, or nothing. The digest pins a resume to the script the campaign began with. */
+function readSyntheticScript(options: Options): SyntheticScriptFile {
+  if (typeof options['synthetic-script'] !== 'string') return { digest: '' };
+  const file = path.resolve(String(options['synthetic-script']));
+  if (!fs.existsSync(file)) fail(`--synthetic-script ${file} does not exist`, 2);
+  const contents = fs.readFileSync(file, 'utf8');
+  try {
+    return { script: parseSyntheticDevelopmentScript(contents), digest: sha256Hex(contents) };
+  } catch (error) {
+    return fail((error as Error).message, 2);
+  }
+}
+
+function sha256Hex(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/** The candidates a `develop` names, as plan requests. A real one takes its identity from a proof, never from its name. */
+function developmentCandidates(options: Options, root: string): DevelopmentCandidateRequest[] {
+  const listed = typeof options.candidates === 'string'
+    ? String(options.candidates).split(',').filter((entry) => entry.length > 0) : [];
+  if (options.synthetic === true) {
+    const names = listed.length > 0 ? listed : ['scripted'];
+    return names.map((name) => {
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) fail(`--candidates '${name}': a synthetic candidate is named by a plain slug`, 2);
+      return {
+        name: `synthetic:${name}`,
+        provider: SYNTHETIC_DEVELOPMENT_PROVIDER,
+        modelID: `synthetic-${name}`,
+        verifiedModelID: `synthetic-${name}`,
+        identityEvidence: 'the deterministic synthetic development candidate. No model answers it; it names itself, '
+          + 'and a synthetic campaign is never run by, merged with or mistaken for a real one',
+        authorizationMode: 'none',
+      };
+    });
+  }
+  if (listed.length === 0) {
+    fail('--candidates is required: provider:model[:effort], comma-separated, each one proven by '
+      + `\`${TERMINAL_COMMAND} smoke\` first. Or pass --synthetic to exercise the runner with no provider at all.`, 2);
+  }
+  const proven = readDiscovered(root).filter((model) => model.availability === 'proven');
+  return listed.map((spec) => {
+    let parsed;
+    try {
+      parsed = parseSoleFrontierSpec(spec);
+    } catch (error) {
+      return fail(`--candidates: ${(error as Error).message.replace(/--frontier/g, 'candidate')}`, 2);
+    }
+    const proof = proven.find((model) => model.provider === parsed.provider && model.modelID === parsed.requestedModelID);
+    return {
+      name: `${parsed.provider}:${parsed.requestedModelID}${parsed.effort === 'none' ? '' : `@${parsed.effort}`}`,
+      provider: parsed.provider,
+      modelID: parsed.requestedModelID,
+      effort: parsed.effort,
+      // FROM THE PROOF, OR NOT AT ALL. An unproven candidate stays unverifiable and is refused below.
+      verifiedModelID: proof && proof.verifiedModelID.length > 0 ? proof.verifiedModelID : undefined,
+      identityEvidence: proof ? proof.evidence : undefined,
+    };
+  });
+}
+
+function developmentAdapters(synthetic: boolean, script: SyntheticScriptFile['script']): Partial<Record<ProviderID, FrontierAdapter>> {
+  if (synthetic) return { [SYNTHETIC_DEVELOPMENT_PROVIDER]: new SyntheticDevelopmentAdapter(script) };
+  const adapters: Partial<Record<ProviderID, FrontierAdapter>> = {};
+  for (const provider of DEVELOPMENT_EXECUTABLE_PROVIDERS) {
+    const adapter = buildAdapter(provider);
+    if (adapter) adapters[provider] = adapter;
+  }
+  return adapters;
+}
+
+function sayLines(lines: string[]): void {
+  for (const line of lines) say(line);
+}
+
+/** Run whatever is pending, under the campaign lock, and print the status it leaves behind. */
+async function runDevelopmentPending(directory: string, name: string, invocationLine: string, options: Options,
+                                     synthetic: boolean, script: SyntheticScriptFile['script']): Promise<void> {
+  const { ledger, plan } = openDevelopmentCampaign(directory);
+  const adapters = developmentAdapters(synthetic, script);
+  const missing = unrunnableAttempts(plan, adapters);
+  if (missing.length > 0) fail(`nothing was run:\n${missing.map((line) => `· ${line}`).join('\n')}`, 2);
+
+  let lock;
+  try {
+    lock = acquireCampaignLock(directory, {
+      processType: 'terminal', command: invocationLine, campaignID: plan.planDigest, campaignName: name,
+    });
+  } catch (error) {
+    if (error instanceof CampaignLockError) return fail(error.message, 2);
+    throw error;
+  }
+
+  const limit = typeof options['max-attempts'] === 'string' ? Number(options['max-attempts']) : Infinity;
+  let finished = 0;
+  let interrupted = false;
+  const onSignal = (): void => { interrupted = true; say('  interrupt received — stopping after the attempt in progress is recorded'); };
+  process.once('SIGINT', onSignal);
+  try {
+    const progress = await runDevelopmentCampaign({
+      root: directory, ledger, plan, adapters,
+      shouldCancel: () => interrupted || finished >= limit,
+      onProgress: (event) => {
+        if (event.kind !== 'finished') return;
+        finished += 1;
+        say(`  [${event.index}/${event.total}] ${event.slotKey} → ${event.status} (${event.disposition})`);
+      },
+    });
+    say('');
+    say(`${progress.attempted} attempt(s) run this time, ${progress.alreadyTerminal} already recorded before it; `
+      + `${progress.graded} graded, ${progress.notMeasured} not measured.`);
+    if (progress.cancelled) {
+      say(`Stopped before the end${interrupted ? ' on an interrupt' : ` at --max-attempts ${limit}`}. `
+        + `Continue with: ${TERMINAL_COMMAND} develop-resume ${name}${script ? ' --synthetic-script <the same file>' : ''}`);
+    }
+  } finally {
+    process.removeListener('SIGINT', onSignal);
+    lock.release();
+  }
+  say('');
+  const state = readDevelopmentCampaignState(directory);
+  sayLines(describeDevelopmentCampaignReport(buildDevelopmentCampaignReport({
+    plan: state.plan, rows: state.rows, derivedAt: isoSecondsNow(), synthetic: state.meta.synthetic === true,
+  })));
+}
+
+function describeDevelopmentEligibility(refusals: string[], synthetic: boolean): string[] {
+  const lines = ['', 'EXECUTION ELIGIBILITY — workspace isolation, identity and cost, checked before anything runs.'];
+  if (synthetic) {
+    lines.push('  synthetic candidate: no provider, no process, no network. Writes go through the workspace path fence.');
+  } else if (refusals.length === 0) {
+    lines.push(`  every candidate may run: ${DEVELOPMENT_EXECUTABLE_PROVIDERS.join(', ')} workspace shape verified, identity proven, cost authorized.`);
+  } else {
+    lines.push('  A RUN WOULD BE REFUSED:');
+    for (const refusal of refusals) for (const wrapped of wrap(refusal, 90)) lines.push(`    ${wrapped}`);
+  }
+  return lines;
+}
+
+async function commandDevelop(positional: string[], options: Options, invocationLine: string): Promise<void> {
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} develop <name> --candidates provider:model[:effort] [--repeats n] [--dry-run]`);
+  const root = String(options.root ?? defaultCampaignRoot());
+  const directory = campaignDirectory(root, name);
+  const synthetic = options.synthetic === true;
+  if (!synthetic && options['synthetic-script'] !== undefined) fail('--synthetic-script is only read with --synthetic', 2);
+
+  const candidates = developmentCandidates(options, root);
+  const script = readSyntheticScript(options);
+  let plan;
+  try {
+    plan = buildDevelopmentPlan({
+      label: String(options.label ?? name),
+      suiteIDs: typeof options.suites === 'string' ? String(options.suites).split(',') : undefined,
+      repeats: Number(options.repeats ?? 1),
+      candidates,
+      benchmarkVersion: PRODUCT.version,
+      createdAt: isoSecondsNow(),
+      repositoryPath: CERNUM_SOURCE_ROOT,
+    });
+  } catch (error) {
+    return fail((error as Error).message, 2);
+  }
+  const refusals = synthetic ? [] : developmentExecutionRefusals(plan);
+
+  if (options['dry-run'] === true) {
+    say(`DRY RUN — no campaign was created, no workspace was made, and no request was sent.`);
+    say('');
+    sayLines(describeDevelopmentPlan(plan));
+    sayLines(describeDevelopmentEligibility(refusals, synthetic));
+    if (Campaign.exists(directory) || fs.existsSync(path.join(directory, 'meta.json'))) {
+      say('');
+      say(`  NOTE: ${directory} already holds a campaign; a run would be refused. Use develop-resume.`);
+    }
+    return;
+  }
+
+  if (refusals.length > 0) {
+    fail(`nothing was created and nothing was sent:\n${refusals.map((line) => `· ${line}`).join('\n')}`, 2);
+  }
+  if (fs.existsSync(path.join(directory, 'plan.json'))) {
+    fail(`a campaign already exists at ${directory}. Continue it with: ${TERMINAL_COMMAND} develop-resume ${name}`, 2);
+  }
+  if (!synthetic && options.yes !== true) {
+    sayLines(describeDevelopmentPlan(plan).filter((line) => !line.startsWith('NOTHING WAS SENT')));
+    say('');
+    fail(`this would send ${plan.attempts.length} development request(s) and consume subscription allowance. `
+      + 'Nothing was created. Re-run with --yes once the plan above is what you intend.', 3);
+  }
+
+  createDevelopmentCampaign(directory, plan, undefined, {
+    synthetic, syntheticScriptDigest: script.digest, createdBy: invocationLine,
+  });
+  say(`Created development campaign ${name} at ${directory} — ${plan.attempts.length} attempt(s), plan ${plan.planDigest}`);
+  say('');
+  await runDevelopmentPending(directory, name, invocationLine, options, synthetic, script.script);
+}
+
+async function commandDevelopResume(positional: string[], options: Options, invocationLine: string): Promise<void> {
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} develop-resume <name> [--max-attempts n] [--dry-run]`);
+  const directory = campaignDirectory(String(options.root ?? defaultCampaignRoot()), name);
+  let state;
+  try {
+    state = readDevelopmentCampaignState(directory);
+  } catch (error) {
+    return fail((error as Error).message, 2);
+  }
+  const synthetic = state.meta.synthetic === true;
+  const script = readSyntheticScript(options);
+  // THE SAME EXPERIMENT OR NONE. A synthetic campaign is never continued by a real adapter, a real one
+  // never by the synthetic candidate, and a synthetic one only by the script it began with.
+  if (!synthetic && options['synthetic-script'] !== undefined) fail(`${name} is not a synthetic campaign; --synthetic-script does not apply`, 2);
+  if (synthetic && script.digest !== (state.meta.syntheticScriptDigest ?? '')) {
+    fail(`${name} was created with ${state.meta.syntheticScriptDigest ? `synthetic script ${state.meta.syntheticScriptDigest}` : 'no synthetic script'}, `
+      + `and this resume supplies ${script.digest ? `script ${script.digest}` : 'none'}. Resuming would join two experiments.`, 2);
+  }
+  const done = new Set(state.rows.map((row) => row.slotKey));
+  const pending = state.plan.attempts.filter((attempt) => !done.has(attempt.slotKey));
+  const refusals = synthetic ? [] : developmentExecutionRefusals(state.plan);
+
+  if (options['dry-run'] === true) {
+    say(`DRY RUN — ${name} was not resumed, no lock was taken and no request was sent.`);
+    say('');
+    say(`  ${state.plan.attempts.length - pending.length} of ${state.plan.attempts.length} attempt(s) already recorded; ${pending.length} would run:`);
+    for (const attempt of pending) say(`    ${attempt.slotKey}  run ${attempt.runID}`);
+    sayLines(describeDevelopmentEligibility(refusals, synthetic));
+    return;
+  }
+  if (refusals.length > 0) fail(`nothing was sent:\n${refusals.map((line) => `· ${line}`).join('\n')}`, 2);
+  if (pending.length === 0) {
+    say(`${name} has no pending attempt; nothing was run.`);
+  } else if (!synthetic && options.yes !== true) {
+    fail(`this would send ${pending.length} development request(s) and consume subscription allowance. `
+      + 'Nothing was sent. Re-run with --yes to continue.', 3);
+  }
+  try {
+    await runDevelopmentPending(directory, name, invocationLine, options, synthetic, script.script);
+  } catch (error) {
+    if (error instanceof DevelopmentCampaignError) return fail(error.message, 2);
+    throw error;
+  }
+}
+
+async function commandDevelopStatus(positional: string[], options: Options): Promise<void> {
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} develop-status <name> [--json]`);
+  const directory = campaignDirectory(String(options.root ?? defaultCampaignRoot()), name);
+  let state;
+  try {
+    state = readDevelopmentCampaignState(directory);
+  } catch (error) {
+    return fail((error as Error).message, 2);
+  }
+  const report = buildDevelopmentCampaignReport({
+    plan: state.plan, rows: state.rows, derivedAt: isoSecondsNow(), synthetic: state.meta.synthetic === true,
+  });
+  if (options.json === true) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    return;
+  }
+  sayLines(describeDevelopmentCampaignReport(report));
+  if (state.unreadableLines > 0) say(`\n  ${state.unreadableLines} unreadable line(s) in results.jsonl were skipped, not repaired.`);
+}
+
 export async function main(argv: string[]): Promise<void> {
   // A terminal command has to survive its reader going away. `cernum status | head -3` closes the
   // pipe while there is still output queued, and without this Node turns that into an unhandled
@@ -2306,6 +2598,9 @@ export async function main(argv: string[]): Promise<void> {
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();
+    case 'develop': return commandDevelop(positional, options, invocationLine);
+    case 'develop-resume': return commandDevelopResume(positional, options, invocationLine);
+    case 'develop-status': return commandDevelopStatus(positional, options);
     case 'help': return commandHelp();
     // Unreachable: an unknown command was refused by the gate above, and every name in
     // COMMAND_SPECS has a case here — `cli-argument-safety.test.ts` walks the table to prove it.

@@ -51,3 +51,23 @@ export * from './synthetic';
 export * from './live-host';
 export * from './frontier-host';
 export * from './host-factory';
+
+// The development runner. Named rather than `export *`, so the terminal's development commands reach
+// exactly what they call and the engine's public surface grows by nothing else.
+export {
+  DevelopmentPlanError, buildDevelopmentPlan, describeDevelopmentPlan,
+} from './development-plan';
+export type { DevelopmentCampaignPlan, DevelopmentCandidateRequest } from './development-plan';
+export {
+  DevelopmentCampaignError, createDevelopmentCampaign, openDevelopmentCampaign, runDevelopmentCampaign,
+  unrunnableAttempts,
+} from './development-campaign';
+export type { DevelopmentProgressEvent } from './development-campaign';
+export {
+  buildDevelopmentCampaignReport, describeDevelopmentCampaignReport, readDevelopmentCampaignState,
+} from './development-report';
+export type { DevelopmentCampaignReport } from './development-report';
+export {
+  DEVELOPMENT_EXECUTABLE_PROVIDERS, DevelopmentEligibilityError, SYNTHETIC_DEVELOPMENT_PROVIDER,
+  SyntheticDevelopmentAdapter, developmentExecutionRefusals, parseSyntheticDevelopmentScript,
+} from './development-synthetic';

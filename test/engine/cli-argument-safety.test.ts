@@ -228,7 +228,8 @@ describe('v0.2.3 · --dry-run shows the requests and sends none', () => {
 
 describe('v0.2.3 · the command table is the contract', () => {
   it('declares an effect class for every command, and marks the spenders', () => {
-    expect(spendingCommands().sort()).toEqual(['resume', 'run', 'smoke']);
+    // Pass D added the development runner's two spenders; both are gated by --dry-run and --yes.
+    expect(spendingCommands().sort()).toEqual(['develop', 'develop-resume', 'resume', 'run', 'smoke']);
   });
 
   it('gives every command --help, so none can be built without one', () => {
