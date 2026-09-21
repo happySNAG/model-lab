@@ -147,13 +147,73 @@ describe('the dry run shows everything and does none of it', () => {
 describe('the refusals, each of which happens before anything is sent', () => {
   it('refuses a provider with no WORKSPACE driver, rather than falling through to prose execution', () => {
     proveHaiku();
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI',
-      '--model', 'gpt-6-astra', '--dry-run');
+    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'opencodeCLI',
+      '--model', 'opencode/gpt-5.5', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('workspace driver unavailable');
     expect(result.output).toContain('claudeCLI');
+    expect(result.output).toContain('codexCLI');
     // The reason, not just the refusal: an answer about describing a fix is not an answer about making one.
     expect(result.output).toMatch(/does not fall back to prose execution/);
+    expect(invocations()).toEqual([]);
+  }, 120_000);
+
+  it('refuses a Codex route with no admission, because codex can never prove one', () => {
+    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI',
+      '--model', 'gpt-6-astra', '--dry-run');
+    expect(result.status).toBe(2);
+    expect(result.output).toContain('unprovenRoute');
+    expect(result.output).toContain('sealed identity admission');
+    expect(invocations()).toEqual([]);
+  }, 120_000);
+
+  it('admits a Codex route only under a written admission for this exact configuration, and says what it is not', () => {
+    const file = path.join(campaigns, 'admission.json');
+    const entry = {
+      provider: 'codexCLI', requestedModelID: 'gpt-5.6-sol', requestedEffort: 'medium', cliVersion: '0.155.0',
+      authenticationBasis: 'ChatGPT subscription session', evidenceDigest: 'sha256:fixture',
+      evidenceCapturedAt: '2026-09-20T18:27:08Z',
+    };
+    fs.writeFileSync(file, JSON.stringify({ authorizedBy: 'a test, in writing', admitted: [entry] }), 'utf8');
+
+    const admitted = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', 'gpt-5.6-sol',
+      '--effort', 'medium', '--admit-identity-unverifiable', file, '--dry-run');
+    expect(admitted.status).toBe(0);
+    expect(admitted.output).toContain('ADMITTED BY A SEALED IDENTITY ADMISSION, NOT PROVEN');
+    expect(admitted.output).toContain('requestAcceptedIdentityUnverifiable');
+    expect(admitted.output).toContain('driver.codex-cli.workspace');
+    expect(admitted.output).toContain('forced_login_method="chatgpt"');
+    expect(admitted.output).toContain('approval_policy="never"');
+    const argv = admitted.output.split('\n').find((line) => line.trim().startsWith('argv')) ?? '';
+    expect(argv).toContain('codex exec --json');
+    expect(argv).not.toContain('dangerously-bypass');
+    expect(argv).not.toContain('--add-dir');
+    expect(argv).toContain('-m gpt-5.6-sol');
+    expect(argv).toContain('model_reasoning_effort="medium"');
+    // The instruction goes on stdin, never argv.
+    expect(argv).not.toContain('The test suite in this repository fails');
+    // The re-run hint must describe THIS run, admission and effort included.
+    expect(admitted.output).toContain(`--effort medium --admit-identity-unverifiable ${file}`);
+    expect(admitted.output).toContain('No request was sent');
+
+    // THE SAME FILE DOES NOT ADMIT A DIFFERENT EFFORT. Admission is per configuration.
+    const otherEffort = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', 'gpt-5.6-sol',
+      '--effort', 'max', '--admit-identity-unverifiable', file, '--dry-run');
+    expect(otherEffort.status).toBe(2);
+    expect(otherEffort.output).toContain('does not admit this run');
+    expect(invocations()).toEqual([]);
+  }, 120_000);
+
+  it('refuses a Claude route under an admission: the exception is for a tool that cannot name its model', () => {
+    const file = path.join(campaigns, 'admission.json');
+    fs.writeFileSync(file, JSON.stringify({ authorizedBy: 'a test', admitted: [{
+      provider: 'claudeCLI', requestedModelID: 'claude-opus-5', requestedEffort: 'none', cliVersion: '2.1.278',
+      authenticationBasis: 'subscription', evidenceDigest: 'sha256:x', evidenceCapturedAt: '2026-09-20T00:00:00Z',
+    }] }), 'utf8');
+    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI', '--model', 'claude-opus-5',
+      '--admit-identity-unverifiable', file, '--dry-run');
+    expect(result.status).toBe(2);
+    expect(result.output).toMatch(/cannot be admitted under this exception/);
     expect(invocations()).toEqual([]);
   }, 120_000);
 

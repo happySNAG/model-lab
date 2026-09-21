@@ -640,6 +640,11 @@ export class ClaudeWorkspaceDriver implements WorkspaceAgentDriver {
 
   readonly executablePath?: string;
 
+  /** What `argv[0]` is called in a preflight, and what version the flags were verified against. */
+  readonly commandName = 'claude';
+
+  readonly cliVersionVerifiedAgainst = CLAUDE_CLI_VERSION_VERIFIED_AGAINST;
+
   private readonly runCLIProcess: (options: CLIRunOptions) => Promise<CLIResult>;
 
   constructor(private readonly options: ClaudeWorkspaceDriverOptions) {

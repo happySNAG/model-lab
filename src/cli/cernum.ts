@@ -41,7 +41,7 @@ import {
   ALWAYS_ALLOWED_ENVIRONMENT_NAMES, PROVIDER_IDS, ProviderBinding, ProviderBindingError,
   WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, WorkspaceBindingError, WorkspaceCampaign,
   allWorkspaceCases, assertSandboxRootIsSafe, billingLabel, buildWorkspaceBinding, buildWorkspaceDriver,
-  describePreRunIdentity, describeScorecard, describeWorkspaceRequest, discloseWorkspaceDriver, isMetered,
+  admitPreRunIdentity, describePreRunIdentity, describeScorecard, describeWorkspaceRequest, discloseWorkspaceDriver, isMetered,
   manifestSeal, providersWithWorkspaceDriver, readDiscoveryStore as readDiscoveryStoreForWorkspace,
   describeWorkspaceDifficulty, registeredWorkspaceDifficultyProfiles, resolvePreRunIdentity, sha256Text,
   validateWorkspaceCatalog, workspaceDifficultyProfileFor,
@@ -51,7 +51,6 @@ import {
   workspaceRecoveryEvidence, describeWorkspaceRecoveryEvidence, workspaceEmpiricalDiscrimination,
   describeWorkspaceEmpiricalDiscrimination, WORKSPACE_RECOVERY_REQUIRES_A_FAILED_ATTEMPT,
   workspacePromptRecordOf, workspaceRecordPaths, workspaceRecordRoot, workspaceTimeoutFor,
-  CLAUDE_CLI_VERSION_VERIFIED_AGAINST,
   // The comparative matrix: one sealed pack, several models, several independent samples of each.
   WorkspaceMatrixError, aggregateWorkspaceRuns, buildWorkspaceMatrixPlan, collectWorkspaceRunRows,
   describeWorkspaceCell, describeWorkspaceMatrixPlan, registeredWorkspacePacks, runWorkspaceMatrix,
@@ -1590,7 +1589,24 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   // 3. THE DRIVER, AND THE REFUSAL THAT MATTERS MOST. A provider Cernum can send a PROMPT to is not
   //    necessarily one it can hand a REPOSITORY. Falling back to prose execution here would answer a
   //    different question and record the answer under this case's name.
-  const driver = buildWorkspaceDriver({ provider, requestedModelID: modelID, effort: effort as EffortLevel });
+  // TELEMETRY, WHEN ASKED FOR, AND ONLY FROM THE ONE TOOL THAT EXPORTS WHAT THIS ENGINE READS. The
+  // collector binds loopback on an ephemeral port and is started only for a live run: a dry run binds
+  // nothing, and shows the argument with the port it cannot know yet.
+  const dryRunRequested = options['dry-run'] === true;
+  const otlpDirectory = options['otlp-observer'] === undefined ? undefined : String(options['otlp-observer']);
+  if (otlpDirectory !== undefined && provider !== 'codexCLI') {
+    fail(`--otlp-observer was given for ${provider}. Only the Codex CLI exposes an exporter this engine reads, so `
+      + 'nothing would arrive.', 2);
+  }
+  const observer = otlpDirectory === undefined || dryRunRequested ? undefined : await OTLPObserver.start({
+    evidenceFile: path.join(otlpDirectory, 'workspace-otlp-payloads.redacted.jsonl'),
+    observeTimeoutMilliseconds: 2_000,
+  });
+  const otlpSource: OTLPTurnSource | undefined = observer
+    ?? (otlpDirectory === undefined ? undefined
+      : { endpoint: 'http://127.0.0.1:<ephemeral port chosen when the run starts>', observe: async () => undefined });
+  const driver = buildWorkspaceDriver({ provider, requestedModelID: modelID, effort: effort as EffortLevel },
+    { otlp: otlpSource });
   if (!driver) {
     fail(`workspace driver unavailable: ${provider} has no workspace driver in this build, so a repository cannot be `
       + 'handed to it.\n'
@@ -1603,7 +1619,18 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   // 4. IDENTITY, RESOLVED FROM THE EVIDENCE THIS MACHINE ALREADY HAS, before anything is sent. The
   //    discovery store is the one mechanism that can say a route is proven, and this reads it rather
   //    than starting from `unverifiable` and discovering afterwards that the model named itself.
-  const identity = resolvePreRunIdentity(readDiscoveryStoreForWorkspace(root), provider, modelID);
+  //    A route whose tool cannot name its model (codexCLI) may instead be ADMITTED, by a person's sealed
+  //    authorization bound to this one record's label — never proven, and never upgraded later.
+  const recordLabel = `${workspaceCase.id}@${workspaceCase.version} · ${provider}:${modelID}`;
+  const identityAdmission = readIdentityAdmission(options, recordLabel);
+  const admission = admitPreRunIdentity(resolvePreRunIdentity(readDiscoveryStoreForWorkspace(root), provider, modelID), {
+    provider, modelID, effort: effort as EffortLevel, campaignLabel: recordLabel, admission: identityAdmission,
+  });
+  if (identityAdmission !== undefined && admission.identity.resolvedFrom !== 'identityAdmission') {
+    fail(`the identity admission given does not admit this run: ${admission.admissionReason ?? 'the route is already proven'}\n`
+      + 'Nothing was sent and nothing was written.', 2);
+  }
+  const identity = admission.identity;
 
   const attemptCeiling = options['max-attempts'] === undefined ? undefined : Number(options['max-attempts']);
   let timeoutMilliseconds: number;
@@ -1641,7 +1668,7 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   }
   const recordRoot = path.join(workspaceRecordRoot(root), recordName);
   const disclosure = discloseWorkspaceDriver(driver, workspaceCase);
-  const dryRun = options['dry-run'] === true;
+  const dryRun = dryRunRequested;
 
   // 6. WHAT WOULD BE DONE, ALWAYS PRINTED BEFORE ANYTHING IS DONE. Under --dry-run this is the whole
   //    command; otherwise it is the disclosure that precedes the run. ONE renderer, so the preview
@@ -1671,13 +1698,18 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   }
   say('');
   for (const line of describePreRunIdentity(identity)) say(`  ${line}`);
+  if (identityAdmission !== undefined) {
+    say('');
+    for (const line of identityAdmissionDisclosure(identityAdmission)) for (const wrapped of wrap(line, 74)) say(`  ${wrapped}`);
+    say('');
+  }
   say(`  binding         ${describeBinding(binding)}`);
   say(`  validation      PASS — this binding was validated by the same validateBinding every binding passes`);
   say('');
   say(`  driver          ${disclosure.driverID} (${disclosure.provider})`);
   say(`  executable      ${disclosure.executablePath ?? 'NOT FOUND ON PATH'}`);
   if (disclosure.invocation) {
-    say(`  argv            ${disclosure.provider === 'claudeCLI' ? 'claude' : disclosure.driverID} `
+    say(`  argv            ${disclosure.commandName ?? disclosure.driverID} `
       + `${disclosure.invocation.map((argument) => (argument === '' ? "''" : argument)).join(' ')}`);
     say('  stdin           the case instruction (never argv)');
   } else {
@@ -1686,8 +1718,12 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   // THE VERSION THE FLAGS WERE DERIVED FROM, which is the only thing that makes them checkable. A
   // dry run deliberately does NOT probe the installed binary: this command contacts nothing, and
   // `cernum discover claudeCLI` is the command whose job is to ask a tool what it is.
-  say(`  flags verified  against ${CLAUDE_CLI_VERSION_VERIFIED_AGAINST}`
-    + ` — this run does not probe the installed binary; \`${TERMINAL_COMMAND} discover ${provider}\` does`);
+  say(`  flags verified  against ${disclosure.cliVersionVerifiedAgainst ?? '(this driver states no version)'}`
+    + (provider === 'codexCLI'
+      ? ' — REQUIRED: the driver probes `codex --version` and `codex doctor --json` (no model request) and refuses '
+        + 'any other version or any non-ChatGPT session before sending anything'
+      : ` — this run does not probe the installed binary; \`${TERMINAL_COMMAND} discover ${provider}\` does`));
+  if (otlpDirectory !== undefined) say(`  telemetry       loopback OTLP collector writing to ${path.resolve(otlpDirectory)}`);
   say(`  tools           ${(disclosure.toolNames ?? []).join(', ') || '(none)'}`);
   say(`  allowed         ${(disclosure.allowedToolRules ?? []).join(', ') || '(none)'}`);
   say(`  environment     allow-list ${workspaceCase.execution.environmentAllowlist.join(', ') || '(machine names only)'}`
@@ -1749,7 +1785,10 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   if (dryRun) {
     say('No request was sent, no manifest was frozen and no directory was made.');
     say(`Re-run without --dry-run (and with --yes) to run it: ${TERMINAL_COMMAND} workspace ${caseID} `
-      + `--provider ${provider} --model ${modelID}${attemptCeiling === undefined ? '' : ` --max-attempts ${attemptCeiling}`} --yes`);
+      + `--provider ${provider} --model ${modelID}${effort === 'none' ? '' : ` --effort ${effort}`}`
+      + `${identityAdmission === undefined ? '' : ` --admit-identity-unverifiable ${String(options['admit-identity-unverifiable'])}`}`
+      + `${otlpDirectory === undefined ? '' : ` --otlp-observer ${otlpDirectory}`}`
+      + `${attemptCeiling === undefined ? '' : ` --max-attempts ${attemptCeiling}`} --yes`);
     return;
   }
 
@@ -1764,10 +1803,11 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   //    would be a record that cannot describe a failure, and a failure is a result.
   const campaign = WorkspaceCampaign.create({
     root: recordRoot,
-    label: `${workspaceCase.id}@${workspaceCase.version} · ${provider}:${modelID}`,
+    label: recordLabel,
     case: workspaceCase,
     binding,
     identity,
+    identityAdmission: identity.resolvedFrom === 'identityAdmission' ? identityAdmission : undefined,
     driver,
     hardware: {
       platform: process.platform, architecture: process.arch, model: os.hostname(),
@@ -1789,6 +1829,9 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   say('');
 
   const { outcome, record } = await campaign.run();
+  // THE COLLECTOR IS STOPPED AFTER THE RUN, with its grace period: the tool's trace spans arrive seconds
+  // after the attempt closes, and the join from row to telemetry is the placeholder key on the usage.
+  const otlpSummary = observer === undefined ? undefined : await observer.stop();
 
   say('');
   say(describeScorecard(outcome.scorecard));
@@ -1818,6 +1861,11 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   say(`  plan allowance  ${record.subscriptionIncludedUsageMicroUSD === undefined ? 'not reported — which is not zero'
     : `$${(record.subscriptionIncludedUsageMicroUSD / 1_000_000).toFixed(6)} at list value — a zero charge is not a zero cost`}`);
   say(`  wall clock      ${record.wallClockMilliseconds} ms · wasted ${record.wastedMilliseconds} ms / ${record.wastedTokens} tokens`);
+  if (otlpSummary !== undefined) {
+    say(`  telemetry       ${otlpSummary.payloadCount} payload(s), ${otlpSummary.conversationCount} conversation(s), `
+      + `leak audit ${otlpSummary.leakAuditClean ? 'clean' : `FAILED (${otlpSummary.leaks.length})`} · ${otlpSummary.evidenceFile}`);
+    say(`                  joined by placeholder key in ${otlpSummary.indexFile}`);
+  }
   say('');
   say(`Sealed: ${campaign.paths.record}`);
   say(`  ledger row    ${path.join(campaign.paths.ledger, 'results.jsonl')}`);
@@ -1837,6 +1885,8 @@ async function commandWorkspace(positional: string[], options: Options): Promise
       run: outcome.run,
       scorecard: outcome.scorecard,
       frontier: outcome.frontier,
+      identityAdmission: identity.resolvedFrom === 'identityAdmission' ? identityAdmission : undefined,
+      telemetry: otlpSummary,
     }, null, 2) + '\n', 'utf8');
     say(`Evidence written to ${evidencePath}`);
   }

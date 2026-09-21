@@ -37,6 +37,9 @@ import {
   authorizationModeForProvider, billingBasisOf, executionClassOf, validateBinding,
 } from './provider';
 import { WorkspaceCase } from './workspace-case';
+import {
+  IdentityAdmission, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionFor, admissionProvenance,
+} from './identity-admission';
 
 export class WorkspaceBindingError extends Error {
   constructor(readonly code: string, message: string) {
@@ -56,7 +59,12 @@ export interface PreRunIdentity {
   state: ProviderBinding['identityState'];
   verifiedModelID: string;
   evidence: string;
-  resolvedFrom: 'discoveryStore' | 'nothing';
+  /**
+   * `identityAdmission` is the ONE route by which a route nobody proved reaches a workspace run: a
+   * person's sealed, campaign-bound authorization, under the Pass 6 exception, for `codexCLI` only.
+   * It never produces `verified`, and it never fills `verifiedModelID`.
+   */
+  resolvedFrom: 'discoveryStore' | 'nothing' | 'identityAdmission';
   /** When the proof was established, ISO-8601, when there was one. */
   provenAt?: string;
 }
@@ -92,6 +100,40 @@ export function resolvePreRunIdentity(evidence: DiscoveryEvidence, provider: Pro
   };
 }
 
+/**
+ * Apply a sealed identity admission to what the store said, or leave it exactly as it was.
+ *
+ * STRONGER EVIDENCE WINS, as in `buildCampaignPlan`: a route the store has PROVEN is returned
+ * untouched, and an admission that was not needed downgrades nothing. Otherwise the admission is read
+ * through `admissionFor` — the same gate a prose campaign uses — whose default is refusal: no record, a
+ * record for another campaign, a broken seal, or a configuration it does not name all leave the route
+ * unproven, and `buildWorkspaceBinding` then refuses it as it always did.
+ *
+ * What an admitted route becomes is `requestAcceptedIdentityUnverifiable`, with an EMPTY verified
+ * model. The requested identifier is never copied anywhere a returned one belongs.
+ */
+export function admitPreRunIdentity(identity: PreRunIdentity, request: {
+  provider: ProviderID; modelID: string; effort: EffortLevel; campaignLabel: string; admission?: IdentityAdmission;
+}): { identity: PreRunIdentity; admissionReason?: string } {
+  if (identity.state === 'verified' || request.admission === undefined) return { identity };
+  const decision = admissionFor({
+    provider: request.provider, modelID: request.modelID, effort: request.effort,
+    campaignLabel: request.campaignLabel, admission: request.admission,
+  });
+  if (!decision.admitted || decision.evidence === undefined) return { identity, admissionReason: decision.reason };
+  return {
+    identity: {
+      state: REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
+      verifiedModelID: '',
+      evidence: admissionProvenance(decision.evidence).join(' · '),
+      resolvedFrom: 'identityAdmission',
+      // NO `provenAt`: nothing was proven. The smoke evidence's capture time is in `evidence`, where it
+      // is labelled for what it is, rather than in a field every surface prints as "proven <date>".
+    },
+    admissionReason: decision.reason,
+  };
+}
+
 export interface WorkspaceBindingRequest {
   /** The candidate name this run records. A model at two efforts is two candidates, as ever. */
   candidate: string;
@@ -124,14 +166,18 @@ export function buildWorkspaceBinding(request: WorkspaceBindingRequest): Provide
     throw new WorkspaceBindingError('noModelRequested',
       'a workspace run with no model identifier asks nobody to do the work. Name the model.');
   }
-  if (request.identity.state !== 'verified') {
+  const admitted = request.identity.state === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
+    && request.identity.resolvedFrom === 'identityAdmission';
+  if (request.identity.state !== 'verified' && !admitted) {
     // THE SAME REFUSAL `buildCampaignPlan` MAKES, on the same evidence, for the same reason. A model
     // nobody proved this account can call must not be spendable on, and must not be recorded as
     // having answered. The workspace contract relaxes the BUDGET rule and nothing else.
     throw new WorkspaceBindingError('unprovenRoute',
       `${request.modelID} on ${request.provider} has not been proven callable by this account, so it cannot be run `
       + `against a workspace case. ${request.identity.evidence} A model identifier is a plan, not a capability: `
-      + `prove it once with an identity smoke test and the proof is then read from the discovery store.`);
+      + `prove it once with an identity smoke test and the proof is then read from the discovery store. A route whose `
+      + 'tool can never name its model (codexCLI) can instead be admitted for ONE run by a sealed identity admission, '
+      + 'which records it as requestAcceptedIdentityUnverifiable and never as verified.');
   }
 
   const executionClass = executionClassOf(request.provider);
@@ -183,6 +229,14 @@ export function workspaceTimeoutFor(workspaceCase: WorkspaceCase, operatorTimeou
 
 /** The lines a preflight prints about what was known before the request. Rendered in one place. */
 export function describePreRunIdentity(identity: PreRunIdentity): string[] {
+  if (identity.resolvedFrom === 'identityAdmission') {
+    return [
+      `pre-run identity  ${identity.state} — ADMITTED BY A SEALED IDENTITY ADMISSION, NOT PROVEN`,
+      '                  the tool accepted this identifier and something answered when it was smoke-tested; nothing',
+      '                  has established WHICH model answers. The returned model is empty and stays empty.',
+      `                  ${identity.evidence}`,
+    ];
+  }
   if (identity.resolvedFrom === 'nothing') {
     return [
       'pre-run identity  NOTHING PROVEN — no unexpired proof for this route is on this machine',

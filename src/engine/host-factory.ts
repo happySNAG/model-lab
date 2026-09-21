@@ -29,6 +29,7 @@ import { OpenCodeAdapter } from './opencode-adapter';
 import { OperationalEnvelope, PROVIDER_IDS, ProviderBinding, ProviderID, isLocal } from './provider';
 import { WorkspaceAgentDriver } from './workspace-agent';
 import { ClaudeWorkspaceDriver } from './workspace-claude-driver';
+import { CodexWorkspaceDriver } from './workspace-codex-driver';
 import { SpendTracker, SpendingAuthorization, restoreSpendFromRows } from './spending';
 import { CredentialLookupOptions } from './credentials';
 import { OTLPTurnSource } from './otlp-observer';
@@ -88,24 +89,38 @@ export function buildAdapter(provider: ProviderID, environment: NodeJS.ProcessEn
 /**
  * The WORKSPACE driver for a provider, where one exists yet.
  *
- * DELIBERATELY ONE ENTRY. `buildAdapter` above answers "can Cernum send this provider a prompt?" and
- * has four answers; this answers "can Cernum hand this provider a repository?" and has one. A second
- * entry would be a claim that a driver had been written and checked against that tool's installed
- * help, and none has. `undefined` is therefore the honest answer for every other provider, and the
- * caller reports it as "no workspace driver exists for this provider" rather than falling back to
- * one that does — an answer from somebody else's tool is not this candidate's answer.
+ * TWO ENTRIES, EACH A CLAIM THAT A DRIVER WAS WRITTEN AND CHECKED AGAINST THAT TOOL'S INSTALLED CLI.
+ * `buildAdapter` above answers "can Cernum send this provider a prompt?"; this answers "can Cernum hand
+ * this provider a repository?". `claudeCLI` was verified against `claude` 2.1.278 and `codexCLI` against
+ * `codex` 0.155.0 — see each driver's header. `undefined` is the honest answer for every other provider,
+ * and the caller reports it as "no workspace driver exists for this provider" rather than falling back
+ * to one that does — an answer from somebody else's tool is not this candidate's answer.
+ *
+ * `openaiAPI` IS DELIBERATELY ABSENT. The metered API proves identity and bills per token, but a
+ * workspace attempt through it needs Cernum itself to run the agent loop and the tools, which is a
+ * different piece of engineering from driving a CLI. See `docs/OPENAI-API-WORKSPACE.md`.
  */
 export function buildWorkspaceDriver(binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>,
-                                     options: { executablePath?: string } = {}): WorkspaceAgentDriver | undefined {
-  if (binding.provider !== 'claudeCLI') return undefined;
-  return new ClaudeWorkspaceDriver({
-    requestedModelID: binding.requestedModelID,
-    effort: binding.effort,
-    executablePath: options.executablePath,
-  });
+                                     options: { executablePath?: string; otlp?: OTLPTurnSource } = {}): WorkspaceAgentDriver | undefined {
+  if (binding.provider === 'claudeCLI') {
+    return new ClaudeWorkspaceDriver({
+      requestedModelID: binding.requestedModelID,
+      effort: binding.effort,
+      executablePath: options.executablePath,
+    });
+  }
+  if (binding.provider === 'codexCLI') {
+    return new CodexWorkspaceDriver({
+      requestedModelID: binding.requestedModelID,
+      effort: binding.effort,
+      executablePath: options.executablePath,
+      otlp: options.otlp,
+    });
+  }
+  return undefined;
 }
 
-/** Every provider a workspace case can actually be run through. One, for now, and it says so. */
+/** Every provider a workspace case can actually be run through, derived from the factory above. */
 export function providersWithWorkspaceDriver(): ProviderID[] {
   return PROVIDER_IDS.filter((provider) => buildWorkspaceDriver({ provider, requestedModelID: '', effort: 'none' }) !== undefined);
 }

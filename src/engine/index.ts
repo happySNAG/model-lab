@@ -60,6 +60,7 @@ export * from './workspace-throttle';
 export * from './workspace-matrix';
 export * from './provider-session-status';
 export * from './workspace-claude-driver';
+export * from './workspace-codex-driver';
 export * from './blinded';
 export * from './adjudication';
 export * from './adjudication-markdown';

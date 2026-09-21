@@ -116,6 +116,24 @@ export interface WorkspaceAgentUsage extends Record<string, CanonicalValue | und
   terminalReason?: string;
   apiErrorStatus?: number;
   numTurns?: number;
+  /**
+   * How `visibleOutputTokens` and `reasoningTokens` relate, when the driver cannot say they are
+   * disjoint. Absent means the tool's own fields are disjoint by construction, as Claude's are.
+   * `reasoningIncludedInOutput` is the Codex value: see `CODEX_OUTPUT_TOKEN_SEMANTICS`.
+   */
+  outputTokenSemantics?: string;
+  /**
+   * What the tool's OWN telemetry says it applied, when a collector was attached. Its account of
+   * itself, recorded beside the frozen request and never in place of it — and never an identity.
+   */
+  providerReportedEffort?: string;
+  providerReportedAuthMode?: string;
+  providerReportedSandboxPolicy?: string;
+  providerReportedApprovalPolicy?: string;
+  /** The redacted placeholder joining this attempt to late-arriving telemetry. Not an identifier. */
+  otlpCorrelationKey?: string;
+  /** The telemetry's own total, kept to settle how the token fields decompose. */
+  otlpTotalTokens?: number;
   /** The provider's usage block verbatim, so a figure here can be reconciled against a bill. */
   rawUsage?: CanonicalValue;
 }

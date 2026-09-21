@@ -71,6 +71,9 @@ export const OTLP_SENSITIVE_ATTRIBUTES = [
  */
 const CONVERSATION_STARTS_EVENT = 'codex.conversation_starts';
 
+/** The per-turn TTFT record 0.155.0 exports, carrying `duration_ms`. Observed in captured telemetry. */
+const TURN_TTFT_EVENT = 'codex.turn_ttft';
+
 /**
  * Record an effort, or refuse to.
  *
@@ -134,6 +137,16 @@ export interface OTLPTurnObservation {
   totalTokens?: number;
   /** Which MCP servers the tool attached. `codex_apps` survives `--ignore-user-config`. */
   mcpServers?: string;
+  /**
+   * `auth_mode` on the conversation-start record — `Chatgpt` on a subscription session. The tool's own
+   * statement of how this turn was authenticated, which is billing evidence and not identity.
+   */
+  authMode?: string;
+  /** `sandbox_policy` and `approval_policy` on the same record: what the tool says it ran under. */
+  sandboxPolicy?: string;
+  approvalPolicy?: string;
+  /** `duration_ms` on the `codex.turn_ttft` record: the tool's own time to first token for the turn. */
+  turnTTFTMilliseconds?: number;
   /** How many telemetry records mentioned this conversation. Zero means it was never seen. */
   recordCount: number;
 }
@@ -240,6 +253,16 @@ export class OTLPObserver implements OTLPTurnSource {
       if (turnEffort !== undefined) recordEffort(entry, turnEffort);
       entry.requestReasoningEffort = text('codex.request.reasoning_effort') ?? entry.requestReasoningEffort;
       entry.mcpServers = text('mcp_servers') ?? entry.mcpServers;
+      // Read ONLY from the record whose meaning is known, for the reason given on
+      // `CONVERSATION_STARTS_EVENT`: these are common attribute names.
+      if (text('event.name') === CONVERSATION_STARTS_EVENT) {
+        entry.authMode = text('auth_mode') ?? entry.authMode;
+        entry.sandboxPolicy = text('sandbox_policy') ?? entry.sandboxPolicy;
+        entry.approvalPolicy = text('approval_policy') ?? entry.approvalPolicy;
+      }
+      if (text('event.name') === TURN_TTFT_EVENT && entry.turnTTFTMilliseconds === undefined) {
+        entry.turnTTFTMilliseconds = count('duration_ms');
+      }
       const assign = (field: keyof OTLPTurnObservation, key: string): void => {
         const value = count(key);
         if (value !== undefined) (entry as unknown as Record<string, unknown>)[field] = value;

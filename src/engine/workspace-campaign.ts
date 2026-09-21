@@ -42,6 +42,7 @@ import { Ledger, PlannableCatalog, atomicWriteJSON, slotKey } from './ledger';
 import { OperationalEnvelope, ProviderBinding, buildOperationalEnvelope, isMetered } from './provider';
 import { SpendTracker, SpendingAuthorization } from './spending';
 import { PreRunIdentity } from './workspace-binding';
+import { IdentityAdmission, admissionStamp } from './identity-admission';
 import { WORKSPACE_REPEAT_IS_NOT_RETRY, WorkspaceRepeat } from './workspace-pack';
 import {
   WorkspaceCase, workspaceCaseDigest, workspaceComparabilityKey, workspaceInstructionText,
@@ -131,11 +132,21 @@ export interface WorkspaceDriverDisclosure extends Record<string, CanonicalValue
   unexpressed?: string[];
   /** True when this driver could not describe its own invocation. Stated rather than left blank. */
   invocationUndisclosed: boolean;
+  /** What `argv[0]` is called, so a preflight prints the tool's name rather than a driver id. */
+  commandName?: string;
+  /** The CLI version the driver's flags were read from. Absent when the driver states none. */
+  cliVersionVerifiedAgainst?: string;
 }
 
 export function discloseWorkspaceDriver(driver: WorkspaceAgentDriver, workspaceCase: WorkspaceCase): WorkspaceDriverDisclosure {
   const shortfalls = driverShortfalls(driver, workspaceCase.execution.tools, workspaceCase.execution.networkPolicy);
   const preflight = preflightOf(driver);
+  const described = driver as unknown as { commandName?: unknown; cliVersionVerifiedAgainst?: unknown };
+  const naming = {
+    commandName: typeof described.commandName === 'string' ? described.commandName : undefined,
+    cliVersionVerifiedAgainst: typeof described.cliVersionVerifiedAgainst === 'string'
+      ? described.cliVersionVerifiedAgainst : undefined,
+  };
   if (preflight === undefined) {
     return {
       driverID: driver.driverID,
@@ -143,6 +154,7 @@ export function discloseWorkspaceDriver(driver: WorkspaceAgentDriver, workspaceC
       capabilities: driver.capabilities as unknown as CanonicalValue,
       capabilityShortfalls: shortfalls,
       invocationUndisclosed: true,
+      ...naming,
     };
   }
   const plan = preflight.argumentsFor(workspaceCase.execution.tools, workspaceCase.execution.networkPolicy, {
@@ -162,6 +174,7 @@ export function discloseWorkspaceDriver(driver: WorkspaceAgentDriver, workspaceC
     notEnforceable: plan.notEnforceable,
     unexpressed: plan.unexpressed,
     invocationUndisclosed: false,
+    ...naming,
   };
 }
 
@@ -244,6 +257,14 @@ export interface WorkspaceCampaignInputs {
   binding: ProviderBinding;
   /** What was known about the route BEFORE the request. Sealed; never overwritten afterwards. */
   identity: PreRunIdentity;
+  /**
+   * The sealed authorization under which an unprovable route runs, when it runs under one.
+   *
+   * Frozen INTO THE MANIFEST, exactly as a prose campaign freezes it, so the record carries the
+   * authorization it ran under and a changed one breaks the seal. Required whenever the identity was
+   * resolved from an admission; refused when it was not.
+   */
+  identityAdmission?: IdentityAdmission;
   driver: WorkspaceAgentDriver;
   hardware: HardwareIdentity;
   runtimeVersion: string;
@@ -326,6 +347,10 @@ export interface WorkspaceDurableRecord extends Record<string, CanonicalValue | 
   bindingIdentityEvidence: string;
   bindingIdentityResolvedFrom: string;
   bindingIdentityProvenAt?: string;
+  /** The sealed admission this run was permitted under, when it was. Present exactly on an admitted run. */
+  identityAdmissionDigest?: string;
+  /** The one-line stamp every surface prints beside an admitted candidate. See `admissionStamp`. */
+  identityAdmissionStamp?: string;
   /** WHAT THIS EXECUTION ESTABLISHED. Written after; never written over the three fields above. */
   executionIdentityVerdict?: string;
   executionIdentityDetail?: string;
@@ -408,6 +433,18 @@ export class WorkspaceCampaign {
         + 'make it impossible to say which run produced which row. Name a different record.');
     }
 
+    // THE ADMISSION AND THE IDENTITY MUST AGREE. An admitted identity with no record to freeze would be
+    // an exception nobody can audit; a record beside a proven identity would freeze an authorization
+    // that authorised nothing.
+    if ((inputs.identity.resolvedFrom === 'identityAdmission') !== (inputs.identityAdmission !== undefined)) {
+      throw new WorkspaceCampaignError('identityAdmissionMismatch',
+        inputs.identityAdmission === undefined
+          ? 'this run\'s identity was resolved from an identity admission, and no admission record was given to freeze. '
+            + 'An exception that is not in the manifest is an exception nobody can audit.'
+          : 'an identity admission was given, and this run\'s identity was not resolved from it. Freezing an '
+            + 'authorization that authorised nothing would make the manifest claim an exception this run did not use.');
+    }
+
     const workspaceCase = inputs.case;
     const now = inputs.now ?? (() => new Date());
     const frozenAt = now().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -444,6 +481,7 @@ export class WorkspaceCampaign {
       runtimeVersion: inputs.runtimeVersion,
       execution: WORKSPACE_EXECUTION_POLICY,
       operationalEnvelope: envelope,
+      identityAdmission: inputs.identityAdmission,
       frozenAt,
     });
 
@@ -640,6 +678,7 @@ export class WorkspaceCampaign {
       bindingIdentityEvidence: this.inputs.identity.evidence,
       bindingIdentityResolvedFrom: this.inputs.identity.resolvedFrom,
       bindingIdentityProvenAt: this.inputs.identity.provenAt,
+      ...admissionFieldsOf(this.inputs.identityAdmission),
       executionIdentityVerdict: outcome.frontier.executionIdentityVerdict,
       executionIdentityDetail: outcome.frontier.executionIdentityDetail,
 
@@ -771,6 +810,7 @@ export class WorkspaceCampaign {
       bindingIdentityEvidence: this.inputs.identity.evidence,
       bindingIdentityResolvedFrom: this.inputs.identity.resolvedFrom,
       bindingIdentityProvenAt: this.inputs.identity.provenAt,
+      ...admissionFieldsOf(this.inputs.identityAdmission),
       executionIdentityVerdict: outcome.frontier.executionIdentityVerdict,
       executionIdentityDetail: outcome.frontier.executionIdentityDetail,
       reportedModelID: outcome.frontier.reportedModelID,
@@ -832,4 +872,17 @@ function envelopeDigestOf(envelope: OperationalEnvelope): string {
 
 export function isMeteredWorkspaceRun(binding: ProviderBinding): boolean {
   return isMetered(binding);
+}
+
+/**
+ * The admission fields a row and a record carry, or none. Empty on every run that was not admitted,
+ * so a record written before admissions existed and one written after without one are byte-identical.
+ */
+function admissionFieldsOf(admission: IdentityAdmission | undefined):
+  { identityAdmissionDigest?: string; identityAdmissionStamp?: string } {
+  if (admission === undefined) return {};
+  return {
+    identityAdmissionDigest: admission.admissionDigest,
+    identityAdmissionStamp: admission.admitted.map(admissionStamp).join(' · '),
+  };
 }

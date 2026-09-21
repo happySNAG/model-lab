@@ -18,6 +18,7 @@ import { workspaceCaseDigest, workspaceComparabilityKey } from '../../src/engine
 import { SpendTracker } from '../../src/engine/spending';
 import { buildWorkspaceDriver, providersWithWorkspaceDriver } from '../../src/engine/host-factory';
 import { CLAUDE_WORKSPACE_DRIVER_ID } from '../../src/engine/workspace-claude-driver';
+import { CODEX_WORKSPACE_DRIVER_ID } from '../../src/engine/workspace-codex-driver';
 import { meteredBinding, subscriptionBinding } from './frontier-harness';
 
 const FIXTURE_ROOT = path.resolve(__dirname, '../../fixtures');
@@ -219,14 +220,18 @@ describe('a driver that cannot do what the case requires is refused before anyth
 });
 
 describe('the registry names only the providers a workspace driver has actually been written for', () => {
-  it('builds a Claude workspace driver and nothing else', () => {
+  it('builds the Claude and Codex workspace drivers and nothing else', () => {
     const claude = buildWorkspaceDriver({ provider: 'claudeCLI', requestedModelID: 'claude-haiku-4-5', effort: 'none' });
     expect(claude?.driverID).toBe(CLAUDE_WORKSPACE_DRIVER_ID);
     expect(claude?.provider).toBe('claudeCLI');
-    for (const provider of ['codexCLI', 'opencodeCLI', 'anthropicAPI', 'openaiAPI', 'ollama'] as const) {
+    const codex = buildWorkspaceDriver({ provider: 'codexCLI', requestedModelID: 'gpt-5.6-sol', effort: 'medium' });
+    expect(codex?.driverID).toBe(CODEX_WORKSPACE_DRIVER_ID);
+    expect(codex?.provider).toBe('codexCLI');
+    // The metered OpenAI API is NOT a workspace route: nothing in this build runs an agent loop for it.
+    for (const provider of ['opencodeCLI', 'anthropicAPI', 'openaiAPI', 'ollama'] as const) {
       expect(buildWorkspaceDriver({ provider, requestedModelID: 'm', effort: 'none' })).toBeUndefined();
     }
-    expect(providersWithWorkspaceDriver()).toEqual(['claudeCLI']);
+    expect(providersWithWorkspaceDriver()).toEqual(['claudeCLI', 'codexCLI']);
   });
 });
 
