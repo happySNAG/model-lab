@@ -17,12 +17,13 @@ import {
   DevelopmentSuite, DevelopmentTask, developmentSuiteDigest, validateDevelopmentSuite,
 } from './development-benchmark';
 import { DevelopmentDimension, developmentContractDigest } from './development-scoring';
+import { multiFileEditSuite } from './development-suites/multi-file-edit';
 import { repositoryUnderstandingSuite } from './development-suites/repo-understanding';
 
 export const developmentFixtures: FixtureRepo[] = developmentFixtureRepos;
 
 /** Every development suite this engine can plan. Nothing dynamic; nothing discovered. */
-export const developmentSuites: DevelopmentSuite[] = [repositoryUnderstandingSuite];
+export const developmentSuites: DevelopmentSuite[] = [repositoryUnderstandingSuite, multiFileEditSuite];
 
 export function developmentSuiteByID(id: string): DevelopmentSuite | undefined {
   return developmentSuites.find((suite) => suite.id === id);

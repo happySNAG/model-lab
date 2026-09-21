@@ -24,7 +24,7 @@ import { diffSnapshots, snapshotOf } from '../../src/core/development-fixture';
 import { metricsForDimension } from '../../src/core/development-scoring';
 
 const SUITE_DIGEST = 'mldsu1:bd905f792764dfd8';
-const CATALOG_DIGEST = 'mldcat1:8aad3049612b14b5';
+const CATALOG_DIGEST = 'mldcat1:87d7267cce7e5764';
 
 /** The fixture's own ground truth, written out once so every test grades against the same answers. */
 const CORRECT_ANSWERS: Record<string, unknown> = {
@@ -87,12 +87,13 @@ const failedAssertions = (result: ReturnType<typeof grade>): string[] =>
   result.outcomes.filter((outcome) => !outcome.held).map((outcome) => outcome.id).sort();
 
 describe('the development catalog', () => {
-  it('validates, and registers the repository-understanding suite and nothing else yet', () => {
+  it('validates, and registers the repository-understanding suite among its suites', () => {
     expect(() => validateDevelopmentCatalog()).not.toThrow();
-    expect(developmentSuites.map((suite) => suite.id)).toEqual([REPO_UNDERSTANDING_SUITE_ID]);
+    expect(developmentSuites.map((suite) => suite.id)).toContain(REPO_UNDERSTANDING_SUITE_ID);
     expect(developmentSuiteByID(REPO_UNDERSTANDING_SUITE_ID)).toBe(repositoryUnderstandingSuite);
     expect(developmentSuiteByID('suite.nope')).toBeUndefined();
-    expect(developmentTaskCount()).toBe(7);
+    expect(repositoryUnderstandingSuite.tasks).toHaveLength(7);
+    expect(developmentTaskCount()).toBe(10);
   });
 
   it('seals the suite and the registry to pinned digests', () => {
