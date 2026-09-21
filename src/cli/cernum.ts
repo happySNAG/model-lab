@@ -43,7 +43,10 @@ import {
   allWorkspaceCases, assertSandboxRootIsSafe, billingLabel, buildWorkspaceBinding, buildWorkspaceDriver,
   describePreRunIdentity, describeScorecard, describeWorkspaceRequest, discloseWorkspaceDriver, isMetered,
   manifestSeal, providersWithWorkspaceDriver, readDiscoveryStore as readDiscoveryStoreForWorkspace,
-  resolvePreRunIdentity, sha256Text, validateWorkspaceCatalog, workspaceInstructionText,
+  describeWorkspaceDifficulty, registeredWorkspaceDifficultyProfiles, resolvePreRunIdentity, sha256Text,
+  validateWorkspaceCatalog, workspaceDifficultyProfileFor,
+  workspaceCapabilityEvidence, workspaceInstructionText, workspaceTierEvidence,
+  describeWorkspaceCapabilityEvidence, describeWorkspaceTierEvidence,
   workspacePromptRecordOf, workspaceRecordPaths, workspaceRecordRoot, workspaceTimeoutFor,
   CLAUDE_CLI_VERSION_VERIFIED_AGAINST,
   // The comparative matrix: one sealed pack, several models, several independent samples of each.
@@ -1651,6 +1654,16 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   say(`  fixture digest  ${workspaceCase.source.expectedTreeDigest ?? 'UNSEALED — this case accepts whatever is in that directory today'}`);
   say(`  sealed          ${workspaceCase.source.sealed ? 'yes — a drifted tree refuses the run before anything is sent' : 'NO'}`);
   say('');
+  // WHAT THIS CASE DEMANDS, from the sealed difficulty profile rather than from an adjective. A case
+  // this build has not judged prints that it has not been judged; nothing here infers a tier.
+  const caseProfile = workspaceDifficultyProfileFor(registeredWorkspaceDifficultyProfiles(), workspaceCase.id);
+  if (caseProfile === undefined) {
+    say(`  dimensions      ${workspaceCase.dimensions.join(', ')}`);
+    say('  tier            not judged by this build');
+  } else {
+    for (const line of describeWorkspaceDifficulty(caseProfile, workspaceCase.dimensions)) say(`  ${line}`);
+  }
+  say('');
   for (const line of describePreRunIdentity(identity)) say(`  ${line}`);
   say(`  binding         ${describeBinding(binding)}`);
   say(`  validation      PASS — this binding was validated by the same validateBinding every binding passes`);
@@ -1919,6 +1932,10 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       // PRIOR EVIDENCE ON THIS MACHINE, read for ONE purpose: estimating plan allowance before the
       // matrix runs. Nothing here scores anything from it.
       priorRuns: collectWorkspaceRunRows(root),
+      // THE DIFFICULTY CLAIMS THIS BUILD MAKES, so the preview states the tier it is about to run
+      // and every cell carries the `cwd1:` it ran under. `validateWorkspaceCatalog` above has
+      // already refused any profile that does not hold up against its case.
+      difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
       now: () => now,
     });
   } catch (error) {
@@ -2039,6 +2056,28 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
     say(`  ${UNPRODUCTIVE_SPEND_DEFINITION}`);
     say('');
   }
+
+  // 6. THE SAME RUNS, READ BY DIFFICULTY AND BY CAPABILITY. Two more views of the table above, not
+  //    two more measurements: no composite is averaged across cases, nothing is ranked, and a rate
+  //    with an empty denominator stays unavailable. See `workspace-routing-evidence.ts`.
+  const profiles = registeredWorkspaceDifficultyProfiles();
+  const tierRows = workspaceTierEvidence(cells, profiles);
+  if (tierRows.length > 0) {
+    say('by difficulty tier:');
+    say('candidate                       tier      pass      rate        cases clean        unanimous       time'
+      + '           allowance');
+    for (const row of tierRows) say(describeWorkspaceTierEvidence(row));
+    say('');
+    const capabilityRows = workspaceCapabilityEvidence(cells, allWorkspaceCases(), profiles);
+    say('by capability dimension (a case counts under every dimension it declared, so these rows overlap):');
+    for (const row of capabilityRows) say(describeWorkspaceCapabilityEvidence(row));
+    say('');
+    say(`  ${tierRows[0].evidenceDisclosure}`);
+    say('');
+    say(`  ${tierRows[0].tierDisclosure}`);
+    say('');
+  }
+
   say(`  ${plan.repeatDisclosure}`);
 
   if (options.aggregate !== undefined) {
@@ -2052,6 +2091,14 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
         + 'averaged as a zero. There is deliberately no overall winner score.',
       packID: plan.packID,
       packVersion: plan.packVersion,
+      // The difficulty claim this table was produced under, beside the experiment's own identity and
+      // never folded into it. A reader of this file can tell which tier these rows describe without
+      // having to find the build that wrote them.
+      difficultyTier: plan.difficultyTier,
+      packDifficultyDigest: plan.packDifficultyDigest,
+      difficultyProfiles: plan.difficultyProfiles,
+      byTier: workspaceTierEvidence(cells, registeredWorkspaceDifficultyProfiles()),
+      byCapability: workspaceCapabilityEvidence(cells, allWorkspaceCases(), registeredWorkspaceDifficultyProfiles()),
       packDigest: plan.packDigest,
       repeatDisclosure: plan.repeatDisclosure,
       // WHAT WAS PLANNED, BESIDE WHAT RAN. A reader handed only the cells cannot tell a matrix that

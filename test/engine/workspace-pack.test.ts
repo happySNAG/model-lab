@@ -182,9 +182,14 @@ describe('a benchmark pack is a sealed experiment, not a folder of cases', () =>
     for (const workspaceCase of allWorkspaceCases()) {
       const instruction = workspaceInstructionText(workspaceCase);
       expect(instruction).toContain('You may change only these paths: src/**.');
-      expect(instruction).toContain('You must not change these paths: test/**.');
+      // Every case forbids its own tests. Some also forbid `docs/`, because the document IS the
+      // contract they are judged against — so the list is read off the case rather than assumed,
+      // and what is asserted is that the agent is TOLD exactly what the verdict will check.
+      expect(workspaceCase.task.scope.forbidden).toContain('test/**');
+      expect(instruction)
+        .toContain(`You must not change these paths: ${workspaceCase.task.scope.forbidden.join(', ')}.`);
       // The forbidden list is enforced twice, and both lists must name the same thing.
-      expect(workspaceCase.verification.forbiddenChanges).toEqual(['test/**']);
+      expect(workspaceCase.verification.forbiddenChanges).toEqual(workspaceCase.task.scope.forbidden);
     }
   });
 });

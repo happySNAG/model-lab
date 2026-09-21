@@ -18,6 +18,10 @@ import {
 import {
   WorkspaceBenchmarkPack, makeWorkspaceBenchmarkPack, validateWorkspaceBenchmarkPack,
 } from './workspace-pack';
+import { hiddenScript } from './workspace-hidden-script';
+import { workspaceTierTwoSuite } from './workspace-catalog-tier-two';
+import { workspaceTierThreeSuite } from './workspace-catalog-tier-three';
+import { validateWorkspaceDifficultyCatalogue } from './workspace-difficulty-catalog';
 
 export const WORKSPACE_SUITE_FOUNDATION = 'suite.cernum.workspace.foundation';
 export const WORKSPACE_SUITE_FOUNDATION_VERSION = '1';
@@ -102,27 +106,8 @@ export const BROKEN_SUM_MEAN: WorkspaceCase = makeWorkspaceCase({
 
 
 // MARK: - A hidden check is a `node -e` script, not a file in the tree
-
-/**
- * WHY EVERY HIDDEN CHECK BELOW IS AN INLINE SCRIPT.
- *
- * `WorkspaceVerification.hiddenCommands` are the checks the agent is never TOLD about — they are
- * absent from the instruction and from the visible command list. A hidden check written as a file
- * under `test/` would still be sitting in the tree the model was handed, so the fastest way to see
- * it is `ls test/`, and "hidden" would mean nothing. `node -e` puts the script in the ARGUMENT
- * VECTOR of a command this engine runs after the agent has stopped, so it is in the frozen case, in
- * the record and in the transcript, and never in the workspace.
- *
- * Each one is written as an array of lines so it can be read in this file, and requires the package
- * by its published path exactly as a consumer would — `node -e` resolves `./src/…` against the
- * working directory, which the runner sets to the workspace root.
- *
- * THEY ARE NOT SECRET AFTER THE FACT. A hidden check that fails is quoted back verbatim in the
- * retry briefing the next attempt receives, which is exactly what makes a recovery case measure
- * recovery rather than resampling. Hidden means undisclosed in advance, not withheld from the
- * record.
- */
-const hiddenScript = (lines: string[]): string => lines.join('\n');
+//
+// `workspace-hidden-script.ts` says why, once, for every case in this catalogue.
 
 /** An old record, written before `priority` existed, must still load — `docs/FORMAT.md` says so. */
 const TASK_PRIORITY_LEGACY_RECORD_CHECK = hiddenScript([
@@ -413,7 +398,9 @@ export const workspaceFoundationSuite: WorkspaceSuite = makeWorkspaceSuite(
   [BROKEN_SUM_MEAN, TASK_PRIORITY_PROPAGATE, RECEIPT_REFUNDS_SIGN, REGISTRY_ISOLATION_RECOVER],
 );
 
-export const registeredWorkspaceSuites: WorkspaceSuite[] = [workspaceFoundationSuite];
+export const registeredWorkspaceSuites: WorkspaceSuite[] = [
+  workspaceFoundationSuite, workspaceTierTwoSuite, workspaceTierThreeSuite,
+];
 
 // MARK: - Packs
 
@@ -455,7 +442,72 @@ export const foundationFourPack: WorkspaceBenchmarkPack = makeWorkspaceBenchmark
   repeatsPerCase: 3,
 });
 
-export const registeredWorkspacePacks: WorkspaceBenchmarkPack[] = [foundationFourPack];
+/**
+ * TIER 2: four cases the foundation pack was too small to ask.
+ *
+ * WHY IT IS A SECOND PACK AND NOT A LONGER FIRST ONE. `foundation-four` has been RUN — forty-eight
+ * sealed records on this machine carry its `cwp1:` — and a pack digest is the identity of one
+ * experiment. Adding cases to it would move that digest and make the completed matrix a record of
+ * an experiment that no longer exists. A pack is cheap; a result is not.
+ *
+ * SAME SHAPE, SO THE TWO TABLES CAN BE READ SIDE BY SIDE. Four cases, three repeats, four different
+ * capabilities. Across four models that is forty-eight independent runs again — the same run count
+ * the foundation matrix produced, which is what makes "Haiku 9/12 at Tier 1" and whatever this
+ * produces comparable as counts.
+ *
+ * ONE OF THE FOUR — `ws.t2.cache-eviction.recover` — allows a second attempt, so a four-model matrix
+ * is at most sixty provider requests. Foundation carried two retry-capable cases and so ran to at
+ * most seventy-two: the RUNS are the same arithmetic, the REQUESTS are not, and a reader budgeting
+ * an evening wants the second number rather than the first.
+ */
+export const WORKSPACE_PACK_TIER_TWO = 'pack.cernum.workspace.tier-two';
+
+export const tierTwoPack: WorkspaceBenchmarkPack = makeWorkspaceBenchmarkPack({
+  id: WORKSPACE_PACK_TIER_TWO,
+  version: '1',
+  title: 'Tier two',
+  description: 'Four sealed workspace cases at tier2 — a five-layer feature, a symptom two modules from '
+    + 'its cause, three failures with one defect under them, and a recovery whose obvious fix breaks a '
+    + 'documented promise — sampled three times each.',
+  caseIDs: [
+    'ws.t2.ledger-currency.propagate', 'ws.t2.schedule-window.diagnose',
+    'ws.t2.text-normalize.cluster', 'ws.t2.cache-eviction.recover',
+  ],
+  repeatsPerCase: 3,
+});
+
+/**
+ * TIER 3: the cases meant to separate strong frontier agents.
+ *
+ * Same size and same sampling as the two packs below it, for the same reason: a reader comparing
+ * three tables wants the difference between them to be the DIFFICULTY and not the arithmetic. One
+ * of these four — `ws.t3.import-pipeline.finish` — allows a second attempt, so this too is
+ * forty-eight runs and at most sixty requests per four-model matrix.
+ *
+ * THERE IS DELIBERATELY NO COMBINED TWELVE-CASE PACK. Each tier runs on its own, so a matrix can be
+ * stopped after Tier 2 without a half-finished experiment, and so a Tier 3 table is never quietly
+ * averaged with a Tier 1 one — which `workspacePackTier` refuses outright for a pack whose members
+ * do not share a tier.
+ */
+export const WORKSPACE_PACK_TIER_THREE = 'pack.cernum.workspace.tier-three';
+
+export const tierThreePack: WorkspaceBenchmarkPack = makeWorkspaceBenchmarkPack({
+  id: WORKSPACE_PACK_TIER_THREE,
+  version: '1',
+  title: 'Tier three',
+  description: 'Four sealed workspace cases at tier3 — an authorization boundary that has to be built, '
+    + 'two interacting defects, a refactor with the behaviour held byte-identical, and a pipeline to '
+    + 'finish — sampled three times each.',
+  caseIDs: [
+    'ws.t3.permission-gate.centralize', 'ws.t3.event-replay.pair',
+    'ws.t3.validator-rules.refactor', 'ws.t3.import-pipeline.finish',
+  ],
+  repeatsPerCase: 3,
+});
+
+export const registeredWorkspacePacks: WorkspaceBenchmarkPack[] = [
+  foundationFourPack, tierTwoPack, tierThreePack,
+];
 
 export function workspacePackByID(id: string): WorkspaceBenchmarkPack | undefined {
   return registeredWorkspacePacks.find((pack) => pack.id === id);
@@ -469,9 +521,16 @@ export function allWorkspaceCases(): WorkspaceCase[] {
   return registeredWorkspaceSuites.flatMap((suite) => suite.cases);
 }
 
-/** Fail-closed at import time is too eager; callers validate before planning, exactly as the core does. */
+/**
+ * Fail-closed at import time is too eager; callers validate before planning, exactly as the core does.
+ *
+ * ONE FUNCTION FOR THE WHOLE CATALOGUE, including the difficulty claims. A second entry point that
+ * checked only the cases would be one a caller could reach for by accident, and a matrix planned
+ * without checking the tiers would print a difficulty nobody verified.
+ */
 export function validateWorkspaceCatalog(): void {
   for (const suite of registeredWorkspaceSuites) validateWorkspaceSuite(suite);
   const cases = allWorkspaceCases();
   for (const pack of registeredWorkspacePacks) validateWorkspaceBenchmarkPack(pack, cases);
+  validateWorkspaceDifficultyCatalogue();
 }

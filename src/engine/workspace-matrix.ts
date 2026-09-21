@@ -43,7 +43,12 @@ import { WorkspaceRunRow } from './workspace-aggregate';
 import {
   WorkspaceCampaign, WorkspaceDriverDisclosure, discloseWorkspaceDriver, workspaceRecordPaths, workspaceRecordRoot,
 } from './workspace-campaign';
-import { WorkspaceCase, workspaceCaseDigest, workspaceComparabilityKey } from './workspace-case';
+import { WorkspaceCase, WorkspaceDimension, workspaceCaseDigest, workspaceComparabilityKey } from './workspace-case';
+import {
+  WORKSPACE_TIER_IS_A_PROPERTY_OF_THE_TASK, WorkspaceDifficultyProfile, WorkspaceDifficultyTier,
+  describeWorkspaceDifficulty, workspaceDifficultyDigest, workspaceDifficultyProfileFor,
+  workspacePackDifficultyDigest, workspacePackTier,
+} from './workspace-difficulty';
 import { ALWAYS_ALLOWED_ENVIRONMENT_NAMES } from './workspace-agent';
 import {
   WORKSPACE_REPEAT_IS_NOT_RETRY, WorkspaceBenchmarkPack, WorkspaceRepeat, planWorkspaceRepeats,
@@ -115,6 +120,15 @@ export interface WorkspaceMatrixRequest {
   runLabel: string;
   /** Prior sealed runs on this machine, used ONLY to estimate allowance. Never to score anything. */
   priorRuns?: WorkspaceRunRow[];
+  /**
+   * The difficulty claims this build makes, so a preview can print the tier it is about to run.
+   *
+   * OPTIONAL, AND ABSENT MEANS ABSENT. A plan built without them prints no tier rather than a
+   * default one: `pack.cernum.workspace.foundation-four@1` was planned and run before difficulty
+   * profiles existed, and a plan that invented `tier1` for a pack nobody had judged would be
+   * asserting something this build had not checked.
+   */
+  difficultyProfiles?: WorkspaceDifficultyProfile[];
   /** Injected by the tests, so a matrix can be planned and run without a provider's CLI installed. */
   driverFactory?: (binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>)
   => WorkspaceAgentDriver | undefined;
@@ -159,6 +173,12 @@ export interface WorkspaceMatrixCell {
   /** What this run may actually use: the case's own, narrowed by the operator's cap if there is one. */
   effectiveAttemptCeiling: number;
   timeoutMilliseconds: number;
+  /** What the sealed case claims to measure. Read from the case, never decided by a surface. */
+  dimensions: WorkspaceDimension[];
+  /** The tier this case was judged at, when this build carries a judgement. Never inferred. */
+  difficultyTier?: WorkspaceDifficultyTier;
+  /** `cwd1:` of that judgement, so a cell says which difficulty claim it ran under. */
+  difficultyDigest?: string;
   /** Empty means this cell runs. Non-empty means it is refused, and every reason is named. */
   refusals: string[];
   runnable: boolean;
@@ -233,6 +253,29 @@ export interface WorkspaceMatrixPlan {
   marginalAPIChargeMicroUSD: Quantity;
   allowanceEstimate: WorkspaceAllowanceEstimate;
   repeatDisclosure: string;
+
+  /**
+   * The ONE tier every case in this pack was judged at, or `undefined` when this build carries no
+   * judgement for them.
+   *
+   * `workspacePackTier` refuses a pack whose members do not share a tier, so a plan either states
+   * one difficulty for the whole table or states none. It never averages.
+   */
+  difficultyTier?: WorkspaceDifficultyTier;
+  /** `cwd1:` over every member's profile. Separate from `packDigest`; see `workspace-difficulty.ts`. */
+  packDifficultyDigest?: string;
+  /** Each member's profile, in the pack's own order. Empty when none were supplied. */
+  difficultyProfiles: WorkspaceDifficultyProfile[];
+  /** Said on the plan rather than left to a reader: a tier describes the task, never a model. */
+  difficultyDisclosure: string;
+  /**
+   * Whether the run loop will stop this matrix on a provider session throttle.
+   *
+   * ALWAYS TRUE IN THIS BUILD, and printed anyway. An operator about to spend an evening on
+   * forty-eight runs wants to see in the preview that a throttle three runs in will not silently
+   * produce forty-five runs recorded as failures of the models.
+   */
+  throttleProtectionArmed: boolean;
 }
 
 const slug = (value: string): string => value.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
@@ -328,6 +371,13 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
       : measuredQuantity(0),
     allowanceEstimate: estimateAllowance(runnable, request.priorRuns ?? []),
     repeatDisclosure: WORKSPACE_REPEAT_IS_NOT_RETRY,
+    difficultyTier: workspacePackTier(request.difficultyProfiles ?? [], packCases.map((entry) => entry.id)),
+    packDifficultyDigest: workspacePackDifficultyDigest(request.difficultyProfiles ?? [], packCases.map((entry) => entry.id)),
+    difficultyProfiles: packCases
+      .map((entry) => workspaceDifficultyProfileFor(request.difficultyProfiles ?? [], entry.id))
+      .filter((profile): profile is WorkspaceDifficultyProfile => profile !== undefined),
+    difficultyDisclosure: WORKSPACE_TIER_IS_A_PROPERTY_OF_THE_TASK,
+    throttleProtectionArmed: true,
   };
 }
 
@@ -387,6 +437,7 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
 
 function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, workspaceCase: WorkspaceCase,
                   repeat: WorkspaceRepeat, recordRootPrefix: string): WorkspaceMatrixCell {
+  const profile = workspaceDifficultyProfileFor(request.difficultyProfiles ?? [], workspaceCase.id);
   const caseAllows = workspaceCase.execution.maximumAttempts;
   const effectiveAttemptCeiling = request.attemptCeiling === undefined
     ? caseAllows : Math.max(1, Math.min(request.attemptCeiling, caseAllows));
@@ -409,6 +460,9 @@ function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, 
     caseMaximumAttempts: caseAllows,
     effectiveAttemptCeiling,
     timeoutMilliseconds: workspaceTimeoutFor(workspaceCase, request.timeoutMilliseconds),
+    dimensions: [...workspaceCase.dimensions],
+    difficultyTier: profile?.tier,
+    difficultyDigest: profile === undefined ? undefined : workspaceDifficultyDigest(profile),
     refusals: model.refusals,
     runnable: model.runnable,
   };
@@ -524,6 +578,12 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   const lines: string[] = [];
   lines.push(`pack            ${plan.packID}@${plan.packVersion}  ${plan.packTitle}`);
   lines.push(`pack digest     ${plan.packDigest}`);
+  lines.push(`difficulty      ${plan.difficultyTier === undefined
+    ? 'NOT JUDGED — this build carries no difficulty profile for these cases, so no tier is claimed'
+    : `${plan.difficultyTier} for every case in this pack`}`);
+  if (plan.packDifficultyDigest !== undefined) {
+    lines.push(`difficulty dig. ${plan.packDifficultyDigest}  (separate from the pack digest, by design)`);
+  }
   lines.push(`provider        ${plan.provider}${plan.effort === 'none' ? '' : ` · effort ${plan.effort}`}`);
   lines.push(`models          ${plan.modelIDs.length}: ${plan.modelIDs.join(', ')}`);
   lines.push(`cases           ${plan.caseIDs.length}: ${plan.caseIDs.join(', ')}`);
@@ -552,6 +612,15 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
       + `${cell.effectiveAttemptCeiling < cell.caseMaximumAttempts
         ? ` (operator cap; the case allows ${cell.caseMaximumAttempts})` : ' (the case\'s own ceiling)'}`
       + ` · timeout ${cell.timeoutMilliseconds} ms`);
+    const profile = plan.difficultyProfiles.find((entry) => entry.caseID === cell.caseID);
+    if (profile !== undefined) {
+      for (const line of describeWorkspaceDifficulty(profile, cell.dimensions)) {
+        lines.push(`  ${''.padEnd(32)} ${line}`);
+      }
+    } else {
+      lines.push(`  ${''.padEnd(32)} dimensions    ${cell.dimensions.join(', ')}`);
+      lines.push(`  ${''.padEnd(32)} tier          not judged by this build`);
+    }
   }
   lines.push('');
 
@@ -604,7 +673,14 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   for (const cell of plan.cells.slice(0, 3)) lines.push(`  ${workspaceRecordPaths(cell.recordRoot).manifest}`);
   if (plan.cells.length > 3) lines.push(`  … and ${plan.cells.length - 3} more, one directory per run`);
   lines.push('');
+  lines.push(`throttle guard  ${plan.throttleProtectionArmed
+    ? 'ARMED — a provider session throttle stops the matrix at the run that established it, and every cell after '
+      + 'it is recorded as deferred rather than as a failure of the model'
+    : 'NOT ARMED'}`);
+  lines.push('');
   lines.push(plan.repeatDisclosure);
+  lines.push('');
+  lines.push(plan.difficultyDisclosure);
   return lines;
 }
 

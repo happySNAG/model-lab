@@ -18,7 +18,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { allWorkspaceCases, foundationFourPack } from '../../src/engine/workspace-catalog';
-import { workspacePackDigest } from '../../src/engine/workspace-pack';
+import { resolveWorkspacePack, workspacePackDigest } from '../../src/engine/workspace-pack';
 import { workspaceCaseDigest } from '../../src/engine/workspace-case';
 import { discoveryStorePath } from '../../src/engine/discovery-store';
 import { provenModel } from './frontier-harness';
@@ -119,8 +119,10 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expect(result.output).toContain(`${PACK}@1`);
     expect(result.output).toContain(workspacePackDigest(foundationFourPack, allWorkspaceCases()));
 
-    // EVERY CASE, WITH ITS OWN DIGEST AND ITS OWN FIXTURE SEAL.
-    for (const workspaceCase of allWorkspaceCases()) {
+    // EVERY CASE OF THIS PACK, WITH ITS OWN DIGEST AND ITS OWN FIXTURE SEAL. The pack's members,
+    // not the catalogue's — a preview that printed cases the pack does not name would be describing
+    // a different experiment from the one it is about to run.
+    for (const workspaceCase of resolveWorkspacePack(foundationFourPack, allWorkspaceCases())) {
       expect(result.output).toContain(`${workspaceCase.id}@${workspaceCase.version}`);
       expect(result.output).toContain(workspaceCaseDigest(workspaceCase));
       expect(result.output).toContain(workspaceCase.source.expectedTreeDigest!);

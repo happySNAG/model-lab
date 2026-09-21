@@ -704,6 +704,101 @@ retry: attempts belong to the runner, because each one needs a fresh workspace a
 boundary. `ScriptedWorkspaceAgent` implements the contract with no provider involved, so every branch
 of the runner is reachable in a test without a request leaving the machine.
 
+### Difficulty tiers: what "harder" means, in numbers
+
+`pack.cernum.workspace.foundation-four@1` was run across four Claude models, three samples of each of
+four cases — forty-eight runs. Sonnet, Fable and Opus each scored 12/12; Haiku scored 9/12, losing
+`ws.receipt-refunds.sign` three times out of three. That is a real result, and it is also the end of
+what that pack can say: a benchmark three of four models saturate has stopped separating the three.
+
+So cases now carry a **difficulty tier**, and a tier is a measurement of the TASK rather than an
+adjective or a hint about which model to send it to.
+
+| | |
+|---|---|
+| **tier1** | Small, localized work. One to three source files, a verification path usually obvious from the failure, little architectural ambiguity. The floor: a model that cannot pass these cannot be measured on the rest. |
+| **tier2** | Moderate repository understanding. Several interacting files, a symptom that may be misleading or several plausible fixes, diagnosis that may need the tools rather than the instruction, and one case worth recovering from. |
+| **tier3** | Substantial repository understanding. Architectural or cross-cutting work, several invariants that must hold at once, longer dependency chains, and several answers that are plausible and incomplete. |
+
+**A tier never describes a model and never selects one.** Every candidate in a matrix receives exactly
+the same sealed case; `WORKSPACE_TIER_IS_A_PROPERTY_OF_THE_TASK` travels on every plan and every
+aggregate saying so, and there is a test asserting that nothing in the difficulty modules mentions a
+provider, a model identifier or a binding. Tier 3 is not "the Opus case".
+
+**Difficulty is not token count.** A repository can be enormous and trivial — a thousand files and a
+typo — and small and hard, which is what every Tier 3 case here is. The descriptors are about
+*relationships*, and `fixtureFileCount` and `fixtureByteCount` are deliberately excluded from the
+axes a case may escalate on, so no case reaches a tier by adding files nobody has to read.
+
+#### What a profile carries
+
+A `WorkspaceDifficultyProfile` has two halves, and the split is the point.
+
+- **measured** — derived from the sealed case by `measureWorkspaceCase` and refused if a profile
+  disagrees: visible checks, hidden checks, invariants, attempts, briefing paths, change ceilings.
+  Three fixture figures (files, source files, bytes) are declared beside them and checked against the
+  sealed tree by `workspace-tier-packs.test.ts`.
+- **declared** — the judgements a person makes, each with a definition a second reader can apply to
+  the same repository and get the same number: `relevantFileCount`, `expectedMinimumEditFiles`,
+  `dependencyDepth`, `diagnosticDistance`, `architecturalConstraintCount`, `hiddenInvariantCount`,
+  `irrelevantContextFileCount`, `independentDefectCount`.
+
+Several of the declared numbers are cross-checked rather than trusted: `expectedMinimumEditFiles`
+against the reference solution under `test/engine/fixtures/workspace-solutions/`,
+`architecturalConstraintCount` against the invariants the case actually carries, and
+`hiddenInvariantCount` against whether there are hidden checks at all. A number nobody can check is
+fake precision; the answer is to make each one answerable, not to publish fewer.
+
+#### What a tier requires
+
+Each tier declares **floors** every member meets, **ceilings** no member exceeds, and one more rule
+that stops a tier being the tier below with more files in it: a case must go beyond the previous
+tier's ceiling on at least **three independent axes**. Three, because one is a coincidence and two
+tend to move together. A case is *not* required to be hard in every way at once —
+`ws.t2.text-normalize.cluster` is a one-file fix whose difficulty is that four consumers fail four
+different-looking ways, and `ws.t2.ledger-currency.propagate` is five files with no misdirection at
+all. A band demanding both would have excluded both.
+
+`validateWorkspaceDifficultyProfile` refuses a claim that does not hold up, and
+`validateWorkspaceCatalog` calls it — so a preview or a matrix refuses before anything is sent rather
+than printing a difficulty nobody checked.
+
+#### Why the profile is a separate sealed object
+
+It is sealed under its own scheme, `cwd1:`, and is deliberately **not** inside `cwc1:` or `cwp1:`.
+
+- **A field on the case would move every existing digest.** `workspaceCaseDigest` seals the whole
+  struct, so adding `difficulty` to it changes `cwc1:` for a case whose text did not change by one
+  character — and therefore `cwk1:`, and therefore `foundation-four`'s `cwp1:`. Forty-eight sealed
+  records carry those three digests. A completed, valid matrix would become unreadable in order to
+  record a label that changes nothing about what any model was asked to do.
+- **It is not part of the experiment.** `cwc1:` answers "what was this model asked to do, in what
+  tree, checked how". Recount `diagnosticDistance` and nothing a model did is different. An assertion
+  *about* a thing does not belong inside that thing's identity.
+
+It is sealed all the same, and `cwd1:` travels on the matrix plan and on every cell — so a result
+says which difficulty claim it was published under, and a profile cannot be quietly retuned after the
+fact to make a model look better or worse.
+
+#### Reading a matrix by tier and by capability
+
+`workspace-routing-evidence.ts` groups finished cells two ways, under rules the per-cell aggregate
+already lives by:
+
+- **no composite is averaged across cases** — a composite weighs the dimensions inside one case under
+  weights that case froze, so a tier row carries success *counts* and rates derived from them, plus
+  per-case detail. There is no tier score;
+- **nothing is ranked** — a reader ranks, this publishes;
+- **a tier a candidate never ran is absent, not zero** — "did not attempt Tier 3" and "failed Tier 3"
+  are different facts;
+- **consistency is a column** — with three repeats, "passed" and "passed every time" are different
+  claims, and `unanimousCaseCount` is the gap between them.
+
+`observedAdequacy` answers a threshold question a *caller* asks, with the evidence attached and a
+plain statement when the sample is too small. There is no routing policy here: `adequate: false` and
+`meets: false` are different findings, and a rule that treated them alike would be routing on absence
+of evidence.
+
 ---
 
 ## The terminal command
