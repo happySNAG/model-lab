@@ -125,11 +125,35 @@ export const FREE_OPENCODE_POOL_ADDITIONS: RequestedConfiguration[] =
   })));
 
 /**
+ * Claude Opus 5.5, authorised for the V1 final qualification schedule.
+ *
+ * ITS OWN LIST, for the reason every list above gives: each authorisation stays legible as the thing
+ * somebody actually granted, and the frozen Pass 5C request stays frozen.
+ *
+ * ON WHOSE AUTHORITY. The repository owner, in writing, in the Pass 9 release prompt: "Claude Opus
+ * 5.5 was released today and is intentionally part of this final qualification schedule… If Opus 5.5
+ * is discovered and accessible: add it to the frontier qualification cohort."
+ *
+ * THE IDENTIFIER WAS DISCOVERED, NOT TAKEN FROM THAT PROMPT, which instructed the opposite in the
+ * same breath — do NOT hard-code the CLI model id. The `claude` CLI publishes no model list, so the
+ * bare alias `opus` was used as the instrument and `--output-format json` reported, in its own
+ * metadata, that `claude-opus-5-5` served the request. An identity smoke test then returned
+ * verified: the provider named `claude-opus-5-5` as the model that answered.
+ *
+ * WHAT THIS AUTHORISES IS A PLAN, NOT A CAPABILITY. As with every entry here, presence makes the row
+ * legal in the ladder and nothing else; only discovery makes it selectable.
+ */
+export const CLAUDE_OPUS_5_5_ADDITIONS: RequestedConfiguration[] = [
+  { provider: 'claudeCLI', modelID: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', effort: 'none' },
+];
+
+/**
  * Everything the ladder is allowed to contain: the frozen request, plus what was added since, each
  * authorisation in its own list and in the order it arrived.
  */
 export const AUTHORIZED_COHORT: RequestedConfiguration[] = [
   ...REQUESTED_COHORT, ...CERNUM_V2_ADDITIONS, ...OPENAI_API_IDENTITY_ADDITIONS, ...FREE_OPENCODE_POOL_ADDITIONS,
+  ...CLAUDE_OPUS_5_5_ADDITIONS,
 ];
 
 /**

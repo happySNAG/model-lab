@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { COMMAND_SPECS, acceptedOptions, spendingCommands } from '../../src/cli/command-spec';
+import { PRODUCT } from '../../src/shared/product';
 import { DEVELOPMENT_ANSWER_PATH } from '../../src/core/development-benchmark';
 import { developmentSuites } from '../../src/core/development-catalog';
 import { allGovernedSuites, canonicalPolicies, registeredSuites } from '../../src/core/catalog';
@@ -135,7 +136,7 @@ describe('develop --dry-run: the plan, and nothing else', () => {
     const result = cernum('develop', 'preview', '--synthetic', '--repeats', '2', '--dry-run');
     expect(result.status, result.output).toBe(0);
     for (const expected of ['DRY RUN', 'plan digest', 'synthetic:scripted', `attempts          ${TOTAL_TASKS * 2}`,
-      'repeats           2', 'machine', 'benchmark         0.2.4 at', 'cost      local', 'identity  verified',
+      'repeats           2', 'machine', `benchmark         ${PRODUCT.version} at`, 'cost      local', 'identity  verified',
       'EXECUTION ELIGIBILITY', 'NOTHING WAS SENT']) {
       expect(result.output).toContain(expected);
     }

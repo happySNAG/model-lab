@@ -24,6 +24,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { COMMAND_SPECS, acceptedOptions, commandSpec, spendingCommands } from '../../src/cli/command-spec';
+import { DESIRED_CANDIDATE_LADDER } from '../../src/engine/discovery';
 
 const root = path.resolve(__dirname, '..', '..');
 let campaigns: string;
@@ -197,8 +198,14 @@ describe('v0.2.3 · --dry-run shows the requests and sends none', () => {
 
     expect(result.status).toBe(0);
     expect(result.output).toContain('DRY RUN');
-    // The six requests the incident actually paid for, named before any are sent.
-    expect(result.output).toContain('requests to be sent   6');
+    // The v0.2.3 incident paid for SIX of these before anything named them. The ladder has grown
+    // since — Opus 5.5 was authorised for the V1 qualification schedule — so the count is derived
+    // from the ladder rather than frozen at the number the incident happened to cost. What the test
+    // asserts is unchanged: every request is named, and none is sent.
+    const claudeConfigurations = DESIRED_CANDIDATE_LADDER
+      .filter((entry) => entry.provider === 'claudeCLI')
+      .reduce((total, entry) => total + entry.desiredEfforts.length, 0);
+    expect(result.output).toContain(`requests to be sent   ${claudeConfigurations}`);
     expect(result.output).toContain('claude-haiku-4-5');
     expect(result.output).toContain('No request was sent');
     expect(invocations('claude')).toEqual([]);
