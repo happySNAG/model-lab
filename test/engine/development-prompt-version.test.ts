@@ -30,6 +30,7 @@ import { DEFAULT_RETRY } from '../../src/engine/provider';
 import { DEVELOPMENT_ANSWER_PATH, DevelopmentTask, developmentTaskDigest } from '../../src/core/development-benchmark';
 import { developmentSuites, developmentTaskByID } from '../../src/core/development-catalog';
 import { gradeRepositoryQuestion } from '../../src/core/development-evaluation';
+import { contract1EquivalentTask } from '../../src/engine/development-reinterpretation';
 import { ledgerlite } from '../../src/core/development-fixtures/ledgerlite';
 import { CORRECT_ANSWERS } from './fixtures/ledgerlite-solutions';
 
@@ -107,9 +108,13 @@ describe('a read-only repository-understanding prompt', () => {
     }
   });
 
-  it('did not change any task: every task digest is the one dev-cohort-1 recorded', () => {
+  it('did not change any task: every task, read as contract 1 sealed it, has the digest dev-cohort-1 recorded', () => {
+    // Contract 2 changes every task digest by design (the contract version is in it) and adds each
+    // question task's answer shape. Neither is the prompt or the answer key, which is what this pins.
     expect(Object.keys(DEV_COHORT_1_TASK_DIGESTS).sort()).toEqual(ALL_TASKS.map((task) => task.id).sort());
-    for (const task of ALL_TASKS) expect(developmentTaskDigest(task), task.id).toBe(DEV_COHORT_1_TASK_DIGESTS[task.id]);
+    for (const task of ALL_TASKS) {
+      expect(developmentTaskDigest(contract1EquivalentTask(task)), task.id).toBe(DEV_COHORT_1_TASK_DIGESTS[task.id]);
+    }
   });
 });
 

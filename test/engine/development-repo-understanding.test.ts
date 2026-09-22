@@ -23,9 +23,12 @@ import { ledgerlite } from '../../src/core/development-fixtures/ledgerlite';
 import { diffSnapshots, snapshotOf } from '../../src/core/development-fixture';
 import { metricsForDimension } from '../../src/core/development-scoring';
 import { CORRECT_ANSWERS } from './fixtures/ledgerlite-solutions';
+import { contract1EquivalentTask } from '../../src/engine/development-reinterpretation';
 
-const SUITE_DIGEST = 'mldsu1:bd905f792764dfd8';
-const CATALOG_DIGEST = 'mldcat1:87d7267cce7e5764';
+const SUITE_DIGEST = 'mldsu1:4ea08ff350a8e21d';
+const CATALOG_DIGEST = 'mldcat1:e1b1b0c3743be9e1';
+/** What `dev-cohort-1` and `dev-cohort-2` recorded, under contract 1. */
+const CONTRACT_1_SUITE_DIGEST = 'mldsu1:bd905f792764dfd8';
 
 
 const identityOf = (task: DevelopmentTask) => ({
@@ -58,6 +61,13 @@ describe('the development catalog', () => {
   it('seals the suite and the registry to pinned digests', () => {
     expect(developmentSuiteDigest(repositoryUnderstandingSuite)).toBe(SUITE_DIGEST);
     expect(developmentCatalogDigest()).toBe(CATALOG_DIGEST);
+  });
+
+  it('changed nothing under contract 2 but the contract version and the declared answer shapes', () => {
+    // Take those two back out and the suite is, digest for digest, the one the cohorts were graded on:
+    // same prompts, same assertions, same held-out answer key.
+    const asContract1 = { ...repositoryUnderstandingSuite, tasks: repositoryUnderstandingSuite.tasks.map(contract1EquivalentTask) };
+    expect(developmentSuiteDigest(asContract1)).toBe(CONTRACT_1_SUITE_DIGEST);
   });
 
   it('gives every task a distinct comparability key', () => {

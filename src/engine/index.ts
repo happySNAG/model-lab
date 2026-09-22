@@ -59,14 +59,20 @@ export {
 } from './development-plan';
 export type { DevelopmentCampaignPlan, DevelopmentCandidateRequest } from './development-plan';
 export {
-  DevelopmentCampaignError, createDevelopmentCampaign, openDevelopmentCampaign, promptVersionRefusal,
-  runDevelopmentCampaign, unrunnableAttempts,
+  DevelopmentCampaignError, contractVersionRefusal, createDevelopmentCampaign, openDevelopmentCampaign,
+  promptVersionRefusal, runDevelopmentCampaign, unrunnableAttempts,
 } from './development-campaign';
 export type { DevelopmentProgressEvent } from './development-campaign';
 export {
   buildDevelopmentCampaignReport, describeDevelopmentCampaignReport, readDevelopmentCampaignState,
 } from './development-report';
 export type { DevelopmentCampaignReport } from './development-report';
+export {
+  DEVELOPMENT_REINTERPRETATIONS_DIRECTORY, describeDevelopmentReinterpretation, listDevelopmentReinterpretations,
+  reinterpretDevelopmentCampaign,
+} from './development-reinterpretation';
+export type { DevelopmentReinterpretation } from './development-reinterpretation';
+export { readBenchmarkCommit, readWorkingTreeDirty } from './development-provenance';
 export {
   DEVELOPMENT_EXECUTABLE_PROVIDERS, DevelopmentEligibilityError, SYNTHETIC_DEVELOPMENT_PROVIDER,
   SyntheticDevelopmentAdapter, developmentExecutionRefusals, parseSyntheticDevelopmentScript,

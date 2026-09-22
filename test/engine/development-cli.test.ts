@@ -366,12 +366,13 @@ const PRE_PASS_D_COMMANDS: [string, string, string][] = [
 ];
 
 describe('the text benchmark path is unchanged', () => {
-  it('keeps every pre-existing command exactly as it was declared, and adds only the development three', () => {
+  it('keeps every pre-existing command exactly as it was declared, and adds only the development commands', () => {
     const current = COMMAND_SPECS.map((spec): [string, string, string] =>
       [spec.name, spec.effect, acceptedOptions(spec).map((option) => option.name).join(',')]);
     expect(current.filter(([name]) => !name.startsWith('develop'))).toEqual(PRE_PASS_D_COMMANDS);
     expect(current.filter(([name]) => name.startsWith('develop')).map(([name, effect]) => [name, effect])).toEqual([
       ['develop', 'spendsAllowance'], ['develop-resume', 'spendsAllowance'], ['develop-status', 'readOnly'],
+      ['develop-reinterpret', 'writesLocal'],
     ]);
     expect(spendingCommands().sort()).toEqual(['develop', 'develop-resume', 'resume', 'run', 'smoke']);
   });

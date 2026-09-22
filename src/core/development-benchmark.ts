@@ -21,6 +21,7 @@
 import { seal, fnv1a64Hex, compareCodePoints } from './digest';
 import { DevelopmentAssertion, assertionsDigest } from './development-assertions';
 import { FixtureRepo, fixtureRepoDigest, validateFixtureRepo } from './development-fixture';
+import { AnswerShape } from './json';
 import {
   DEVELOPMENT_SCORING_CONTRACT_ID, DEVELOPMENT_SCORING_CONTRACT_VERSION, DevelopmentDimension,
   MINIMUM_REQUIRED_FILES_FOR_MULTI_FILE_EDIT, METRIC_SPEC_BY_ID, isDevelopmentMetricID,
@@ -74,6 +75,13 @@ export interface DevelopmentTask {
    */
   permittedPaths: string[];
   assertions: DevelopmentAssertion[];
+  /**
+   * The exact shape a `repositoryQuestion` answer must have: every key, and only those keys, with
+   * their types. It is the shape the prompt already states, written down so a grader can check it
+   * rather than infer it. Required on a question task and refused on an edit task. It is part of the
+   * task digest, so declaring it is a change to the task's identity, never a silent one.
+   */
+  answerShape?: AnswerShape;
   executionBudgetMilliseconds: number;
   plannedRepetitions: number;
   scoringContractID: string;
@@ -215,6 +223,12 @@ export function validateDevelopmentSuite(suite: DevelopmentSuite, repos: Fixture
       }
     }
 
+    if (task.kind === 'repositoryQuestion') validateAnswerShape(task);
+    else if (task.answerShape !== undefined) {
+      throw new DevelopmentValidationFailure('editTaskDeclaresAnswerShape',
+        `edit task ${task.id} declares an answer shape; an edit task produces no answer to shape`);
+    }
+
     const inScope = new Set([...task.requiredPaths, ...task.permittedPaths, DEVELOPMENT_ANSWER_PATH]);
 
     if (task.assertions.length === 0) {
@@ -248,6 +262,34 @@ export function validateDevelopmentSuite(suite: DevelopmentSuite, repos: Fixture
             `task ${task.id} assertion ${assertion.id} names ${path}, which is neither in fixture repository ${repo.id} nor among the task's required or permitted paths`);
         }
       }
+    }
+  }
+}
+
+/**
+ * A question task's declared shape must BE the shape its prompt states, and must cover every key its
+ * assertions read. Either mismatch would let the shape check refuse an answer the prompt asked for,
+ * or accept one the assertions cannot read — so both are refused where the task is authored.
+ */
+function validateAnswerShape(task: DevelopmentTask): void {
+  const shape = task.answerShape;
+  if (shape === undefined || Object.keys(shape).length === 0) {
+    throw new DevelopmentValidationFailure('questionTaskWithoutAnswerShape',
+      `read-only task ${task.id} declares no answer shape; the grading contract checks every answer against one`);
+  }
+  for (const key of Object.keys(shape)) {
+    if (!task.prompt.user.includes(`"${key}"`)) {
+      throw new DevelopmentValidationFailure('answerShapeNotInPrompt',
+        `read-only task ${task.id} declares answer key "${key}", which its prompt never states`);
+    }
+  }
+  for (const assertion of task.assertions) {
+    const predicate = assertion.predicate as { path?: string; pointer?: string };
+    if (predicate.path !== DEVELOPMENT_ANSWER_PATH || typeof predicate.pointer !== 'string') continue;
+    const key = predicate.pointer.split('/')[1] ?? '';
+    if (!(key in shape)) {
+      throw new DevelopmentValidationFailure('assertionOutsideAnswerShape',
+        `read-only task ${task.id} assertion ${assertion.id} reads "${key}", which its answer shape does not declare`);
     }
   }
 }

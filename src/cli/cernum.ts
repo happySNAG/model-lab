@@ -50,7 +50,9 @@ import {
   SyntheticDevelopmentAdapter, acquireCampaignLock, buildDevelopmentCampaignReport, buildDevelopmentPlan,
   createDevelopmentCampaign, describeDevelopmentCampaignReport, describeDevelopmentPlan, developmentExecutionRefusals,
   openDevelopmentCampaign, parseSyntheticDevelopmentScript, promptVersionRefusal, readDevelopmentCampaignState, runDevelopmentCampaign,
-  unrunnableAttempts,
+  unrunnableAttempts, contractVersionRefusal,
+  DEVELOPMENT_REINTERPRETATIONS_DIRECTORY, describeDevelopmentReinterpretation, listDevelopmentReinterpretations,
+  reinterpretDevelopmentCampaign, readBenchmarkCommit, readWorkingTreeDirty,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
@@ -1886,6 +1888,7 @@ function commandGeneralHelp(): void {
   say('                                  --dry-run first; --synthetic runs it with no provider at all');
   say('  develop-resume <name>           continue a development campaign where it stopped');
   say('  develop-status <name>           task coverage, repeat completeness and grades');
+  say('  develop-reinterpret <name>      re-grade recorded answers under the current contract, offline');
   say('');
   say('  adjudicate <results.jsonl...> --out <dir> --key-out <dir>');
   say('                                  build the blinded human-review packet, the blank answer sheet');
@@ -2488,6 +2491,8 @@ async function commandDevelopResume(positional: string[], options: Options, invo
   // resume would then refuse to send would be describing a run that cannot happen.
   const promptRefusal = promptVersionRefusal(state.plan);
   if (promptRefusal !== undefined) fail(`${name} cannot be resumed: ${promptRefusal}`, 2);
+  const contractRefusal = contractVersionRefusal(state.plan);
+  if (contractRefusal !== undefined) fail(`${name} cannot be resumed: ${contractRefusal}`, 2);
   const done = new Set(state.rows.map((row) => row.slotKey));
   const pending = state.plan.attempts.filter((attempt) => !done.has(attempt.slotKey));
   const refusals = synthetic ? [] : developmentExecutionRefusals(state.plan);
@@ -2534,6 +2539,43 @@ async function commandDevelopStatus(positional: string[], options: Options): Pro
   }
   sayLines(describeDevelopmentCampaignReport(report));
   if (state.unreadableLines > 0) say(`\n  ${state.unreadableLines} unreadable line(s) in results.jsonl were skipped, not repaired.`);
+  const reinterpretations = listDevelopmentReinterpretations(directory);
+  if (reinterpretations.length > 0) {
+    say(`\n  ${reinterpretations.length} reinterpretation(s) recorded beside this campaign, in `
+      + `${DEVELOPMENT_REINTERPRETATIONS_DIRECTORY}/: ${reinterpretations.join(', ')}. The figures above are the recorded ones.`);
+  }
+}
+
+/**
+ * Re-read a campaign's recorded answers under the current contract, beside it and never over it.
+ * Sends nothing: every byte it grades was already on disk.
+ */
+async function commandDevelopReinterpret(positional: string[], options: Options): Promise<void> {
+  const [name] = positional;
+  if (!name) fail(`usage: ${TERMINAL_COMMAND} develop-reinterpret <name> [--dry-run] [--json]`);
+  const directory = campaignDirectory(String(options.root ?? defaultCampaignRoot()), name);
+  let outcome;
+  try {
+    outcome = reinterpretDevelopmentCampaign({
+      root: directory,
+      producedAt: isoSecondsNow(),
+      benchmarkVersion: PRODUCT.version,
+      benchmarkCommit: readBenchmarkCommit(CERNUM_SOURCE_ROOT),
+      workingTreeDirty: readWorkingTreeDirty(CERNUM_SOURCE_ROOT),
+      write: options['dry-run'] !== true,
+    });
+  } catch (error) {
+    if (error instanceof DevelopmentCampaignError) return fail(error.message, 2);
+    throw error;
+  }
+  if (options.json === true) {
+    process.stdout.write(JSON.stringify(outcome.reinterpretation, null, 2) + '\n');
+    return;
+  }
+  sayLines(describeDevelopmentReinterpretation(outcome.reinterpretation));
+  say('');
+  say(outcome.writtenTo ? `written: ${outcome.writtenTo} — the campaign's own files are unchanged`
+    : 'DRY RUN — nothing was written.');
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -2605,6 +2647,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'develop': return commandDevelop(positional, options, invocationLine);
     case 'develop-resume': return commandDevelopResume(positional, options, invocationLine);
     case 'develop-status': return commandDevelopStatus(positional, options);
+    case 'develop-reinterpret': return commandDevelopReinterpret(positional, options);
     case 'help': return commandHelp();
     // Unreachable: an unknown command was refused by the gate above, and every name in
     // COMMAND_SPECS has a case here — `cli-argument-safety.test.ts` walks the table to prove it.

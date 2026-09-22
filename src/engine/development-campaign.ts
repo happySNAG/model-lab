@@ -28,6 +28,7 @@ import * as path from 'node:path';
 import { DevelopmentTask, DevelopmentProvenance } from '../core/development-benchmark';
 import { developmentFixtureByID, developmentTaskByID } from '../core/development-catalog';
 import { FixtureRepo } from '../core/development-fixture';
+import { DEVELOPMENT_SCORING_CONTRACT_VERSION } from '../core/development-scoring';
 import { CanonicalValue } from './canonical';
 import { AttemptDisposition, NON_ANSWER_TERMINAL_STATUS } from './attempt-disposition';
 import { DevelopmentCampaignPlan, DevelopmentPlannedAttempt, DevelopmentPlanError } from './development-plan';
@@ -123,6 +124,24 @@ export function promptVersionRefusal(plan: DevelopmentCampaignPlan,
 }
 
 /**
+ * Why this build may not GRADE any more of a campaign, or undefined when it may.
+ *
+ * THE SAME RULE AS THE PROMPT, FOR THE SAME REASON. A campaign's plan names the scoring contract its
+ * rows were graded under, and every row carries it. A build under another contract would grade the
+ * remaining attempts differently while stamping them with the recorded version, and one rate would
+ * be computed over two rulebooks. An old campaign is re-read under a new contract by
+ * `develop-reinterpret`, beside the original and never inside it.
+ */
+export function contractVersionRefusal(plan: DevelopmentCampaignPlan,
+                                       current: string = DEVELOPMENT_SCORING_CONTRACT_VERSION): string | undefined {
+  if (plan.contractVersion === current) return undefined;
+  return `campaign ${plan.label} was graded under scoring contract ${plan.contractID}@${plan.contractVersion}, and this `
+    + `build grades under @${current}. Running its remaining attempts would grade one campaign by two contracts. `
+    + 'It is left exactly as recorded; `develop-reinterpret` re-reads its recorded answers under the current '
+    + 'contract without touching it, and a new campaign measures under the current contract.';
+}
+
+/**
  * Open an existing campaign, refusing a plan that is not the one it was created with.
  *
  * The digest covers the registry, the contract, the candidate list and every run id, so any change
@@ -149,6 +168,8 @@ export function openDevelopmentCampaign(root: string, clock?: () => string,
   }
   const refusal = promptVersionRefusal(plan, currentPromptVersion);
   if (refusal !== undefined) throw new DevelopmentCampaignError('promptVersionDrift', refusal);
+  const contractRefusal = contractVersionRefusal(plan);
+  if (contractRefusal !== undefined) throw new DevelopmentCampaignError('contractVersionDrift', contractRefusal);
   return { ledger, plan };
 }
 
@@ -340,6 +361,14 @@ export function developmentResultRow(options: {
     answerStrictlyParsed: graded.result?.answer?.strictlyParsed,
     answerSemanticallyParsed: graded.result?.answer?.semanticallyParsed,
     answerFenceRemoved: graded.result?.answer?.fenceRemoved,
+    // Contract 2: which reading was graded, and why a reading was refused. `answerStrictlyParsed`
+    // above stays the compliance fact; these say how the graded object was reached.
+    answerReadingRules: graded.result?.answer?.rules,
+    answerReading: graded.result?.answer?.reading,
+    answerTerminalObjectExtracted: graded.result?.answer?.terminalObjectExtracted,
+    answerTerminalExtractionRefusedBecause: graded.result?.answer?.terminalExtractionRefusedBecause,
+    answerShapeValid: graded.result?.answer?.shapeValid,
+    answerShapeViolations: graded.result?.answer?.shapeViolations,
 
     touchedPaths: graded.touchedPaths,
     readOnlyViolationPaths: graded.readOnlyViolationPaths,
@@ -356,12 +385,17 @@ export function developmentResultRow(options: {
   };
 }
 
+/** The file one slot's debugging artefact is written to, inside `DEVELOPMENT_ARTEFACTS_DIRECTORY`. */
+export function developmentArtefactFileName(slotKey: string): string {
+  return `${slotKey.replace(/[^A-Za-z0-9._-]/g, '_')}.json`;
+}
+
 /** The debugging artefact: what was asked, what came back, and what the reader complained about. */
 function writeArtefact(root: string, attempt: DevelopmentPlannedAttempt, outcome: DevelopmentExecutionOutcome,
                        graded: DevelopmentAttemptResult): void {
   const directory = path.join(root, DEVELOPMENT_ARTEFACTS_DIRECTORY);
   fs.mkdirSync(directory, { recursive: true });
-  atomicWriteJSON(path.join(directory, `${attempt.slotKey.replace(/[^A-Za-z0-9._-]/g, '_')}.json`),
+  atomicWriteJSON(path.join(directory, developmentArtefactFileName(attempt.slotKey)),
     redactValue({
       runID: attempt.runID,
       slotKey: attempt.slotKey,
@@ -420,6 +454,8 @@ export async function runDevelopmentCampaign(
   // run a campaign's remaining attempts under a prompt its recorded attempts were never sent.
   const refusal = promptVersionRefusal(plan, options.currentPromptVersion);
   if (refusal !== undefined) throw new DevelopmentCampaignError('promptVersionDrift', refusal);
+  const contractRefusal = contractVersionRefusal(plan);
+  if (contractRefusal !== undefined) throw new DevelopmentCampaignError('contractVersionDrift', contractRefusal);
 
   const byKey = new Map(plan.attempts.map((attempt) => [attempt.slotKey, attempt]));
   const pending: PlanSlot[] = ledger.pending();

@@ -293,6 +293,23 @@ export const COMMAND_SPECS: CommandSpec[] = [
     options: [...ROOT, { name: 'json', takesValue: false, summary: 'print the report as JSON' }],
   },
   {
+    name: 'develop-reinterpret', effect: 'writesLocal', positional: '<name>',
+    summary: 're-grade a development campaign\'s recorded answers under the current contract — offline',
+    options: [...ROOT, { name: 'json', takesValue: false, summary: 'print the reinterpretation as JSON' }],
+    supportsDryRun: true,
+    detail: [
+      'Sends nothing and runs nothing. Each recorded repository-understanding answer is first graded',
+      'under the contract it was originally graded under and must reproduce its recorded row exactly;',
+      'only then is it graded under the current contract. Multi-file-edit rows are carried unchanged,',
+      'because the workspaces they were graded from no longer exist.',
+      '',
+      'The result is written to reinterpretations/<id>.json beside the campaign. The campaign\'s results,',
+      'plan, meta and artefacts are hashed before and after, and are never modified.',
+      '',
+      '  --dry-run           compute and print the reinterpretation, and write nothing.',
+    ],
+  },
+  {
     name: 'help', effect: 'readOnly', positional: '[<command>]',
     summary: 'this help, or the full help for one command',
     options: [],

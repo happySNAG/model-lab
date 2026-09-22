@@ -123,6 +123,62 @@ export function developmentRepeatFromRow(row: Row): DevelopmentRepeatRecord {
   return { ...base, result };
 }
 
+/**
+ * How a candidate's repository-understanding answers were read, over graded answers only.
+ *
+ * `strict` IS THE COMPLIANCE RATE: the reply was the object and nothing else, which is what the
+ * prompt asked for. The other readings are what the grading contract accepted beyond that. The two
+ * are reported side by side because a candidate that knows the answer and ignores the output
+ * instruction has told you two things, and a score alone says only one of them.
+ */
+export interface DevelopmentAnswerFormat {
+  gradedAnswers: number;
+  strict: number;
+  singleFence: number;
+  terminalObject: number;
+  /** No reading produced an accepted object — unparseable, refused, or the wrong shape. */
+  unread: number;
+  /** Of `unread`: an object was read but refused because its shape was not the task's. */
+  shapeRefused: number;
+  /** Rows written before the reading was recorded, whose reading is inferred from their parse flags. */
+  inferredFromLegacyColumns: number;
+}
+
+/** The reading one graded row's answer took, from its own columns. */
+export function answerReadingOfRow(row: Record<string, CanonicalValue | undefined>): { reading: string; legacy: boolean } {
+  if (typeof row.answerReading === 'string') return { reading: row.answerReading, legacy: false };
+  const reading = row.answerStrictlyParsed === true ? 'strict'
+    : row.answerSemanticallyParsed === true && row.answerFenceRemoved === true ? 'singleFence' : 'none';
+  return { reading, legacy: true };
+}
+
+export function answerFormatOf(rows: Record<string, CanonicalValue | undefined>[]): DevelopmentAnswerFormat {
+  const format: DevelopmentAnswerFormat = {
+    gradedAnswers: 0, strict: 0, singleFence: 0, terminalObject: 0, unread: 0, shapeRefused: 0, inferredFromLegacyColumns: 0,
+  };
+  for (const row of rows) {
+    if (row.dimension !== 'repositoryUnderstanding' || row.measurementState !== 'graded') continue;
+    format.gradedAnswers += 1;
+    const { reading, legacy } = answerReadingOfRow(row);
+    if (legacy) format.inferredFromLegacyColumns += 1;
+    if (reading === 'strict') format.strict += 1;
+    else if (reading === 'singleFence') format.singleFence += 1;
+    else if (reading === 'terminalObject') format.terminalObject += 1;
+    else format.unread += 1;
+    if (row.answerShapeValid === false) format.shapeRefused += 1;
+  }
+  return format;
+}
+
+/** The one line `develop-status` prints for it. */
+export function describeAnswerFormat(format: DevelopmentAnswerFormat): string {
+  const rate = (n: number) => `${n}/${format.gradedAnswers} (${((n * 100) / format.gradedAnswers).toFixed(1)}%)`;
+  return `JSON-only (strict) ${rate(format.strict)} · single fence ${format.singleFence}`
+    + ` · terminal object after prose ${format.terminalObject} · unread ${format.unread}`
+    + (format.shapeRefused > 0 ? ` (${format.shapeRefused} refused on shape)` : '')
+    + (format.inferredFromLegacyColumns > 0 ? ` · ${format.inferredFromLegacyColumns} inferred from contract-1 columns` : '');
+}
+
 export interface DevelopmentCandidateReport {
   candidate: string;
   provider: string;
@@ -154,6 +210,8 @@ export interface DevelopmentCandidateReport {
     subscriptionAllowanceMicroUSD: number;
   };
   evidence: DevelopmentEvidence;
+  /** How repository-understanding answers were read. Strict is the compliance rate. */
+  answerFormat: DevelopmentAnswerFormat;
   roles: DevelopmentRole[];
   eligibility: DevelopmentEligibility;
   /** True only when every planned task has every required repeat graded, on every dimension the plan covers. */
@@ -166,6 +224,8 @@ export interface DevelopmentCampaignReport {
   planDigest: string;
   /** The prompt contract the campaign's attempts were sent under. See `DEVELOPMENT_PROMPT_VERSION`. */
   promptVersion: string;
+  /** The scoring contract the campaign's rows were graded under. */
+  contract: string;
   benchmarkVersion: string;
   benchmarkCommit: string;
   workingTreeDirty?: boolean;
@@ -298,6 +358,7 @@ export function buildDevelopmentCampaignReport(options: {
       retries,
       telemetry,
       evidence,
+      answerFormat: answerFormatOf(rows),
       roles: assessDevelopmentRoles(evidence),
       eligibility: assessDevelopmentEligibility(evidence),
       coverageComplete,
@@ -309,6 +370,7 @@ export function buildDevelopmentCampaignReport(options: {
     label: plan.label,
     planDigest: plan.planDigest,
     promptVersion: recordedPromptVersion(plan),
+    contract: `${plan.contractID}@${plan.contractVersion} (${plan.contractDigest})`,
     benchmarkVersion: plan.benchmarkVersion,
     benchmarkCommit: plan.benchmarkCommit,
     workingTreeDirty: plan.workingTreeDirty,
@@ -378,6 +440,7 @@ export function describeDevelopmentCampaignReport(report: DevelopmentCampaignRep
     '',
     `  plan digest       ${report.planDigest}`,
     `  prompt            ${report.promptVersion}`,
+    `  contract          ${report.contract}`,
     `  benchmark         ${report.benchmarkVersion} at ${report.benchmarkCommit || 'an UNKNOWN commit'}`
       + (report.workingTreeDirty === true ? ' (working tree was DIRTY when planned)' : ''),
     `  machine           ${report.machineIdentifier} (${report.platform})`,
@@ -424,6 +487,9 @@ export function describeDevelopmentCampaignReport(report: DevelopmentCampaignRep
         lines.push(`        ${task.taskID.padEnd(52)} ${task.measured ? 'measured  ' : 'INCOMPLETE'} `
           + `graded [${task.gradedRepeats.join(',')}] excluded [${task.excludedRepeats.join(',')}] missing [${task.missingRepeats.join(',')}] `
           + `score ${percent(task.structuralScoreMilli)} ${task.stability}`);
+      }
+      if (entry.dimension === 'repositoryUnderstanding' && candidate.answerFormat.gradedAnswers > 0) {
+        lines.push(`        answer format ${describeAnswerFormat(candidate.answerFormat)}`);
       }
       if (!entry.executedTierMeasured && entry.dimension === 'multiFileEditing') {
         lines.push(`        executed tier NOT MEASURED — ${entry.executedTierBecause}`);

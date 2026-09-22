@@ -30,6 +30,7 @@ import {
 import { DEVELOPMENT_SCORING_CONTRACT_ID, DEVELOPMENT_SCORING_CONTRACT_VERSION } from '../development-scoring';
 import { ledgerlite } from '../development-fixtures/ledgerlite';
 import { fixtureRepoDigest } from '../development-fixture';
+import { AnswerShape } from '../json';
 
 export const REPO_UNDERSTANDING_SUITE_ID = 'suite.cernum.development.repo-understanding';
 export const REPO_UNDERSTANDING_SUITE_VERSION = '1';
@@ -50,6 +51,8 @@ function task(fields: {
   slug: string;
   capabilityUnderTest: string;
   user: string;
+  /** The shape the prompt's "Answer with exactly this shape" line states, written down for the grader. */
+  answerShape: AnswerShape;
   assertions: DevelopmentAssertion[];
   tags: string[];
 }): DevelopmentTask {
@@ -67,6 +70,7 @@ function task(fields: {
     requiredPaths: [DEVELOPMENT_ANSWER_PATH],
     permittedPaths: [],
     assertions: fields.assertions,
+    answerShape: fields.answerShape,
     // Five minutes. A seventeen-file repository is readable well inside that, and a budget generous
     // enough to remove "it ran out of time" as an explanation is what makes a wrong answer legible
     // as a wrong answer.
@@ -103,6 +107,7 @@ const locateImplementation = task({
     + 'wrapper that forwards the call, but the function that runs the steps.\n\n'
     + 'Answer with exactly this shape:\n'
     + '{"file": "<repository-relative path>", "symbol": "<the name of that function>"}',
+  answerShape: { file: 'string', symbol: 'string' },
   assertions: [
     equals('locate.file', '/file', 'src/core/charge-pipeline.js', 'answerAccuracy',
       'the implementation is the pipeline, not the facade in src/api/charges.js that forwards to it'),
@@ -129,6 +134,7 @@ const traceFlow = task({
     + 'field list.\n\n'
     + 'Answer with exactly this shape:\n'
     + '{"files": ["<path>", "<path>", ...]}',
+  answerShape: { files: 'stringArray' },
   assertions: [
     equals('trace.order', '/files', [
       'src/index.js',
@@ -165,6 +171,7 @@ const impactSet = task({
     + 'edit directly.\n\n'
     + 'Answer with exactly this shape:\n'
     + '{"mustChange": ["<path>", ...], "mustNotEditByHand": ["<path>", ...]}',
+  answerShape: { mustChange: 'stringArray', mustNotEditByHand: 'stringArray' },
   assertions: [
     contains('impact.pipeline', '/mustChange', 'src/core/charge-pipeline.js', 'answerAccuracy',
       'a new stage has to be run from somewhere, and the pipeline is the only place that runs stages'),
@@ -194,6 +201,7 @@ const sourceOfTruth = task({
     + 'other is produced from it.\n\n'
     + 'Answer with exactly this shape:\n'
     + '{"sourceOfTruth": "<path>", "derived": "<path>", "generator": "<path of the file that produces the derived one>"}',
+  answerShape: { sourceOfTruth: 'string', derived: 'string', generator: 'string' },
   assertions: [
     equals('sot.source', '/sourceOfTruth', 'src/schema/charge.schema.json', 'answerAccuracy',
       'the schema is the authoritative description of a charge'),
@@ -221,6 +229,7 @@ const relevantTests = task({
     + '  otherTestsAffected  — any OTHER existing test files that would have to change as well\n\n'
     + 'Answer with exactly this shape:\n'
     + '{"caseFile": "<path>", "testModule": "<path>", "otherTestsAffected": ["<path>", ...]}',
+  answerShape: { caseFile: 'string', testModule: 'string', otherTestsAffected: 'stringArray' },
   assertions: [
     equals('tests.case-file', '/caseFile', 'test/cases/rounding.cases.json', 'answerAccuracy',
       'the convention is stated in the case table itself and in the test module that reads it'),
@@ -249,6 +258,7 @@ const explainBug = task({
     + '  evidence  — the repository files your diagnosis rests on\n\n'
     + 'Answer with exactly this shape:\n'
     + '{"file": "<path>", "symbol": "<name>", "cause": "<one sentence>", "evidence": ["<path>", ...]}',
+  answerShape: { file: 'string', symbol: 'string', cause: 'string', evidence: 'stringArray' },
   assertions: [
     equals('bug.file', '/file', 'src/util/money.js', 'answerAccuracy',
       'the defect is in the arithmetic helper, not in the rounding stage that calls it'),
@@ -285,6 +295,7 @@ const absentFeature = task({
     + '  files    — the files that implement it. If it does not do currency conversion, this list must be empty.\n\n'
     + 'Answer with exactly this shape:\n'
     + '{"present": <true or false>, "files": ["<path>", ...]}',
+  answerShape: { present: 'boolean', files: 'stringArray' },
   assertions: [
     equals('absent.present', '/present', false, 'answerAccuracy',
       'nothing in this repository converts currencies, and saying so is the correct answer'),

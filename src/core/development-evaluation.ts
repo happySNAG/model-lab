@@ -16,41 +16,133 @@
 // convention producing an entire apparent ordering. So the strict reading is recorded as a fact
 // about the integration, the semantic reading is what the assertions judge, and neither is quietly
 // substituted for the other.
+//
+// CONTRACT 2 ADDS A THIRD READING, AND KEEPS THE FIRST ONE ON THE RECORD. `dev-cohort-2` showed one
+// candidate prefacing a correct object with a sentence of narration on 6 of 14 attempts; every one
+// scored zero under contract 1. The terminal-object reading accepts exactly that shape and nothing
+// looser (see `extractTerminalJSONObject`), every accepted object must have the task's declared
+// shape, and `strictlyParsed` stays false on such an answer — so a report can say both "it knew" and
+// "it did not follow the output instruction", which are two different facts about a candidate.
 
-import { parseJSONObject, parseJSONObjectAfterSingleFence } from './json';
+import {
+  AnswerShape, answerShapeViolations, extractTerminalJSONObject, parseJSONObject, parseJSONObjectAfterSingleFence,
+} from './json';
 import { AssertionOutcome, evaluateAssertions } from './development-assertions';
 import { FixtureRepo, RepoSnapshot, snapshotDigest, snapshotOf } from './development-fixture';
 import { DEVELOPMENT_ANSWER_PATH, DevelopmentTask, DevelopmentProvenance } from './development-benchmark';
-import { DevelopmentTaskGrade, gradeTask } from './development-scoring';
+import {
+  ANSWER_READING_RULES_BY_CONTRACT_VERSION, AnswerReadingRules, DEVELOPMENT_SCORING_CONTRACT_VERSION,
+  DevelopmentTaskGrade, gradeTask,
+} from './development-scoring';
+
+/** Which reading produced the object the assertions judged. */
+export type AnswerReadingKind =
+  /** The whole reply was the object. The only reading that is also transport-compliant. */
+  | 'strict'
+  /** One fence enclosing the whole reply was removed. */
+  | 'singleFence'
+  /** Prose, then one terminal object (contract 2 onward). */
+  | 'terminalObject'
+  /** No reading produced an acceptable object. */
+  | 'none';
 
 export interface AnswerReading {
   /** Exactly what the candidate produced, untouched. */
   raw: string;
   /** What was written to the answer path, and therefore what the assertions read. */
   recorded: string;
-  /** Would `JSON.parse` take the raw text as an object? The transport-compliance fact. */
+  /** Would `JSON.parse` take the raw text as an object? THE COMPLIANCE FACT, never relaxed. */
   strictlyParsed: boolean;
-  /** Does it parse after at most one enclosing fence is removed? The semantic fact. */
+  /**
+   * Did the grading contract accept an object as the answer, by any of its readings and with the
+   * task's shape? Under contract 1 this was exactly "parses after at most one enclosing fence".
+   */
   semanticallyParsed: boolean;
   fenceRemoved: boolean;
   /** Why a fence was not removed from text that looked fenced. Absent when there was nothing to do. */
   fenceRefusedBecause?: string;
+  /** The rules this answer was read under — a function of the contract version. */
+  rules: AnswerReadingRules;
+  /** Which reading produced the judged object, or `none`. */
+  reading: AnswerReadingKind;
+  /** True when the object was found only by terminal extraction: prose came before it. */
+  terminalObjectExtracted: boolean;
+  /** Why terminal extraction found nothing. Absent when it succeeded or was never attempted. */
+  terminalExtractionRefusedBecause?: string;
+  /** Whether the read object has the task's declared shape. Absent with no object or no shape. */
+  shapeValid?: boolean;
+  shapeViolations: string[];
+  /**
+   * Why the grading contract refused an object it did read. Set only for a shape refusal: every
+   * assertion then fails with this reason, rather than with a misleading "does not parse".
+   */
+  refusedBecause?: string;
 }
 
-export function readAnswer(rawText: string): AnswerReading {
+export interface ReadAnswerOptions {
+  /** The shape the task declares. Without one, no shape is checked. */
+  shape?: AnswerShape;
+  /** The contract version whose reading rules apply. The current contract when absent. */
+  contractVersion?: string;
+}
+
+export function answerReadingRulesFor(contractVersion: string): AnswerReadingRules {
+  const rules = ANSWER_READING_RULES_BY_CONTRACT_VERSION[contractVersion];
+  if (rules === undefined) throw new Error(`no answer reading rules are registered for contract version ${contractVersion}`);
+  return rules;
+}
+
+export function readAnswer(rawText: string, options: ReadAnswerOptions = {}): AnswerReading {
+  const rules = answerReadingRulesFor(options.contractVersion ?? DEVELOPMENT_SCORING_CONTRACT_VERSION);
   const trimmed = rawText.trim();
-  const { object, unwrap } = parseJSONObjectAfterSingleFence(rawText);
-  const semanticallyParsed = object !== undefined;
+  const strictlyParsed = parseJSONObject(trimmed) !== undefined;
+  const { object: fencedObject, unwrap } = parseJSONObjectAfterSingleFence(rawText);
+
+  let object = fencedObject;
+  let text = unwrap.text;
+  let reading: AnswerReadingKind = object === undefined ? 'none' : strictlyParsed ? 'strict' : 'singleFence';
+  let terminalObjectExtracted = false;
+  let terminalExtractionRefusedBecause: string | undefined;
+  if (object === undefined && rules === 'strictSingleFenceOrTerminalObject') {
+    const extraction = extractTerminalJSONObject(rawText);
+    if (extraction.object !== undefined) {
+      object = extraction.object;
+      text = extraction.text;
+      reading = 'terminalObject';
+      terminalObjectExtracted = true;
+    } else {
+      terminalExtractionRefusedBecause = extraction.refusedBecause;
+    }
+  }
+
+  // THE SHAPE IS CHECKED ON EVERY READING, not only the permissive one. One rule for "this is the
+  // answer" whichever way it was reached; a terminal object held to a stricter bar than a bare one
+  // would make the reading, not the answer, decide the grade. Contract 1 checked no shape.
+  const shapeViolations = object !== undefined && options.shape !== undefined && rules !== 'strictOrSingleFence'
+    ? answerShapeViolations(object, options.shape) : [];
+  const shapeValid = object === undefined || options.shape === undefined || rules === 'strictOrSingleFence'
+    ? undefined : shapeViolations.length === 0;
+  const accepted = object !== undefined && shapeValid !== false;
+
   return {
     raw: rawText,
     // A document that does not parse either way is recorded verbatim rather than discarded: an
     // assertion then reports "does not parse as JSON", which is a truthful reading of what happened
-    // and leaves the bytes in the evidence for whoever has to look at them.
-    recorded: semanticallyParsed ? unwrap.text : trimmed,
-    strictlyParsed: parseJSONObject(trimmed) !== undefined,
-    semanticallyParsed,
+    // and leaves the bytes in the evidence for whoever has to look at them. A shape refusal records
+    // the object it refused, so the evidence shows what was rejected.
+    recorded: object !== undefined ? text : trimmed,
+    strictlyParsed,
+    semanticallyParsed: accepted,
     fenceRemoved: unwrap.fenceRemoved,
     fenceRefusedBecause: unwrap.refusedBecause,
+    rules,
+    reading: accepted ? reading : 'none',
+    terminalObjectExtracted: accepted && terminalObjectExtracted,
+    terminalExtractionRefusedBecause,
+    shapeValid,
+    shapeViolations,
+    refusedBecause: shapeValid === false
+      ? `the answer object does not have the shape the task states: ${shapeViolations.join('; ')}` : undefined,
   };
 }
 
@@ -97,12 +189,31 @@ function resultFor(task: DevelopmentTask, baseline: RepoSnapshot, result: RepoSn
 export function gradeRepositoryQuestion(
   task: DevelopmentTask, repo: FixtureRepo, answerText: string,
   identity: { taskDigest: string; comparabilityKey: string },
+  options: { contractVersion?: string } = {},
 ): DevelopmentTaskResult {
   const baseline = snapshotOf(repo);
-  const answer = readAnswer(answerText);
+  const answer = readAnswer(answerText, { shape: task.answerShape, contractVersion: options.contractVersion });
   const result = new Map(baseline);
   result.set(DEVELOPMENT_ANSWER_PATH, answer.recorded);
-  return { ...resultFor(task, baseline, result, {}), ...identity, answer };
+  if (answer.refusedBecause === undefined) {
+    return { ...resultFor(task, baseline, result, {}), ...identity, answer };
+  }
+  // REFUSED ON SHAPE: the object parsed, but it is not the answer the task asked for, so nothing in
+  // it is judged. Every assertion fails and says why, and the grade is computed from those outcomes
+  // by the same `gradeTask` as every other answer.
+  const outcomes = evaluateAssertions(task.assertions, { baseline, result })
+    .map((outcome) => ({ ...outcome, held: false, detail: answer.refusedBecause! }));
+  return {
+    taskID: task.id,
+    suiteID: task.suiteID,
+    dimension: task.dimension,
+    baselineSnapshotDigest: snapshotDigest(baseline),
+    resultSnapshotDigest: snapshotDigest(result),
+    outcomes,
+    grade: gradeTask(task.dimension, outcomes, {}),
+    ...identity,
+    answer,
+  };
 }
 
 /** Grade an edit task from the repository the attempt left behind. */

@@ -25,6 +25,7 @@ import { gradeRepositoryEdit } from '../../src/core/development-evaluation';
 import { ledgerlite } from '../../src/core/development-fixtures/ledgerlite';
 import { MINIMUM_REQUIRED_FILES_FOR_MULTI_FILE_EDIT } from '../../src/core/development-scoring';
 import { createIsolatedWorkspace } from '../../src/engine/isolation';
+import { contract1EquivalentTask } from '../../src/engine/development-reinterpretation';
 import {
   MAX_WORKSPACE_FILE_BYTES, isRefusedContent, materializeFixture, readWorkspaceSnapshot,
 } from '../../src/engine/development-workspace';
@@ -33,8 +34,10 @@ import {
   solveHonourRoundingMode,
 } from './fixtures/ledgerlite-solutions';
 
-const SUITE_DIGEST = 'mldsu1:80a769c6475321da';
-const CATALOG_DIGEST = 'mldcat1:87d7267cce7e5764';
+const SUITE_DIGEST = 'mldsu1:78f9d09d98ffe36e';
+const CATALOG_DIGEST = 'mldcat1:e1b1b0c3743be9e1';
+/** What `dev-cohort-2` recorded under contract 1. Contract 2 changed no edit task but its version. */
+const CONTRACT_1_SUITE_DIGEST = 'mldsu1:80a769c6475321da';
 
 const SURCHARGE = 'task.dev.multi-file-edit.add-region-surcharge';
 const ROUNDING = 'task.dev.multi-file-edit.fix-negative-rounding';
@@ -66,6 +69,8 @@ describe('the multi-file-editing suite', () => {
     expect(developmentTaskCount()).toBe(10);
     expect(developmentSuiteDigest(multiFileEditSuite)).toBe(SUITE_DIGEST);
     expect(developmentCatalogDigest()).toBe(CATALOG_DIGEST);
+    expect(developmentSuiteDigest({ ...multiFileEditSuite, tasks: multiFileEditSuite.tasks.map(contract1EquivalentTask) }))
+      .toBe(CONTRACT_1_SUITE_DIGEST);
   });
 
   it('makes every task genuinely multi-file, and tells the candidate what is out of bounds', () => {

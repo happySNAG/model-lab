@@ -145,7 +145,36 @@ export function isDevelopmentMetricID(value: unknown): value is DevelopmentMetri
 export const MINIMUM_REQUIRED_FILES_FOR_MULTI_FILE_EDIT = 3;
 
 export const DEVELOPMENT_SCORING_CONTRACT_ID = 'contract.cernum.development';
-export const DEVELOPMENT_SCORING_CONTRACT_VERSION = '1';
+/**
+ * The contract's version. It is in every task digest and every comparability key, so a result
+ * graded under one version is never ranked beside a result graded under another.
+ *
+ *   1   a repository-understanding answer is read strictly, or after removing at most one fence
+ *       that encloses the whole reply. Prose before the answer made it unreadable.
+ *   2   adds the TERMINAL-OBJECT reading: optional prose, then exactly one JSON object ending the
+ *       reply (see `extractTerminalJSONObject`). Every accepted reading must also have the exact
+ *       shape the task states. The strict reading is still recorded on every row, separately, as
+ *       the compliance fact. The metrics, their bars and multi-file-edit grading are unchanged.
+ */
+export const DEVELOPMENT_SCORING_CONTRACT_VERSION = '2';
+
+/** How a repository-understanding answer may be read under a contract version. */
+export type AnswerReadingRules = 'strictOrSingleFence' | 'strictSingleFenceOrTerminalObject';
+
+export const ANSWER_READING_RULES_BY_CONTRACT_VERSION: Record<string, AnswerReadingRules> = {
+  '1': 'strictOrSingleFence',
+  '2': 'strictSingleFenceOrTerminalObject',
+};
+
+/** The reading rules of the current contract, sealed into its digest. */
+export const DEVELOPMENT_ANSWER_READING = {
+  rules: ANSWER_READING_RULES_BY_CONTRACT_VERSION[DEVELOPMENT_SCORING_CONTRACT_VERSION],
+  readings: ['strict', 'singleFence', 'terminalObject'],
+  terminalObject: 'optional prose containing no JSON object and no fence, a line break, then exactly one JSON '
+    + 'object (optionally in the reply\'s only fence) as the last thing in the reply; nothing after it',
+  shape: 'every accepted reading must carry exactly the keys the task declares, with the declared types',
+  strictReadingRecorded: true,
+};
 
 /** `mldc1:` — the sealed identity of the whole contract. Bound into every verdict. */
 export function developmentContractDigest(): string {
@@ -154,6 +183,7 @@ export function developmentContractDigest(): string {
     version: DEVELOPMENT_SCORING_CONTRACT_VERSION,
     metrics: DEVELOPMENT_METRICS,
     minimumRequiredFiles: MINIMUM_REQUIRED_FILES_FOR_MULTI_FILE_EDIT,
+    answerReading: DEVELOPMENT_ANSWER_READING,
   }, 'mldc1:');
 }
 

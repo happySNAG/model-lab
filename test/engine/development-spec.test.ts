@@ -32,7 +32,7 @@ import { allGovernedSuites, registeredSuites } from '../../src/core/catalog';
 // The fixture as sealed at authoring time. A change to any byte of `ledgerlite` changes this, and a
 // change to the fixture under a task that did not change is exactly what the drift check catches.
 const LEDGERLITE_DIGEST = 'mldr1:69aebcb7bc9d6d03';
-const CONTRACT_DIGEST = 'mldc1:cafc30af44a5f467';
+const CONTRACT_DIGEST = 'mldc1:9460e0f75d836fa9';
 
 describe('the ledgerlite fixture repository', () => {
   it('validates, and seals to the digest the tasks are written against', () => {
@@ -291,7 +291,7 @@ describe('the development scoring contract', () => {
   it('seals to a pinned digest, so a silent change to a metric table is visible', () => {
     expect(developmentContractDigest()).toBe(CONTRACT_DIGEST);
     expect(DEVELOPMENT_SCORING_CONTRACT_ID).toBe('contract.cernum.development');
-    expect(DEVELOPMENT_SCORING_CONTRACT_VERSION).toBe('1');
+    expect(DEVELOPMENT_SCORING_CONTRACT_VERSION).toBe('2');
   });
 
   it('covers both dimensions, and gives every metric a tier, a bar and a summary', () => {
@@ -516,7 +516,8 @@ describe('development task and suite validation', () => {
   });
 
   it('refuses a scoring contract this engine does not register', () => {
-    expect(() => validate(editTask({ scoringContractVersion: '2' }))).toThrow(/registers only/);
+    expect(() => validate(editTask({ scoringContractVersion: '1' }))).toThrow(/registers only/);
+    expect(() => validate(editTask({ scoringContractVersion: '3' }))).toThrow(/registers only/);
     expect(() => validate(editTask({ scoringContractID: 'contract.other' }))).toThrow(/registers only/);
   });
 
@@ -531,12 +532,32 @@ describe('development task and suite validation', () => {
       id: 'task.dev.question.probe', kind: 'repositoryQuestion', dimension: 'repositoryUnderstanding',
       suiteID: 'suite.cernum.development.repo-understanding',
       requiredPaths: [DEVELOPMENT_ANSWER_PATH], permittedPaths: [],
+      prompt: { system: 'system', user: 'Answer with exactly this shape:\n{"file": "<path>"}' },
+      answerShape: { file: 'string' },
       assertions: [assertion({ metric: 'answerAccuracy', predicate: { kind: 'jsonHasPointer', path: DEVELOPMENT_ANSWER_PATH, pointer: '/file' } })],
     });
     expect(() => validate(question)).not.toThrow();
     expect(() => validate({ ...question, requiredPaths: ['src/index.js'] })).toThrow(/must require exactly/);
     expect(() => validate({ ...editTask(), requiredPaths: [...editTask().requiredPaths, DEVELOPMENT_ANSWER_PATH] }))
       .toThrow(/judged by what it did to the repository/);
+  });
+
+  it('holds a read-only task to an answer shape its prompt states and its assertions stay inside', () => {
+    const question = editTask({
+      id: 'task.dev.question.probe', kind: 'repositoryQuestion', dimension: 'repositoryUnderstanding',
+      suiteID: 'suite.cernum.development.repo-understanding',
+      requiredPaths: [DEVELOPMENT_ANSWER_PATH], permittedPaths: [],
+      prompt: { system: 'system', user: 'Answer with exactly this shape:\n{"file": "<path>"}' },
+      answerShape: { file: 'string' },
+      assertions: [assertion({ metric: 'answerAccuracy', predicate: { kind: 'jsonEquals', path: DEVELOPMENT_ANSWER_PATH, pointer: '/file', value: 'x' } })],
+    });
+    expect(() => validate(question)).not.toThrow();
+    expect(() => validate({ ...question, answerShape: undefined })).toThrow(/declares no answer shape/);
+    expect(() => validate({ ...question, answerShape: {} })).toThrow(/declares no answer shape/);
+    expect(() => validate({ ...question, answerShape: { file: 'string', symbol: 'string' } })).toThrow(/its prompt never states/);
+    expect(() => validate({ ...question, answerShape: { symbol: 'string' },
+      prompt: { system: 'system', user: '{"symbol": "<name>"}' } })).toThrow(/does not declare/);
+    expect(() => validate(editTask({ answerShape: { file: 'string' } }))).toThrow(/produces no answer to shape/);
   });
 
   it('refuses a fixture that already occupies the reserved answer path', () => {
@@ -568,7 +589,7 @@ describe('development task and suite validation', () => {
 
     const key = developmentComparabilityKey(task);
     expect(key.startsWith('mldk1:')).toBe(true);
-    expect(developmentComparabilityKey({ ...task, scoringContractVersion: '2' })).not.toBe(key);
+    expect(developmentComparabilityKey({ ...task, scoringContractVersion: '1' })).not.toBe(key);
     expect(developmentComparabilityKey({ ...task, fixtureRepoDigest: 'mldr1:other' })).not.toBe(key);
 
     const suite = suiteOf(task);
