@@ -24,7 +24,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CanonicalValue, digestObject } from './canonical';
 import { Ledger, LedgerError, PlanSlot, PlannableCandidate, Reconciliation, TerminalSlotStatus, atomicWriteJSON } from './ledger';
-import { AttemptDisposition, DISPOSITION_EXPLANATION, NON_ANSWER_TERMINAL_STATUS } from './attempt-disposition';
+import {
+  AttemptDisposition, DISPOSITION_EXPLANATION, NON_ANSWER_TERMINAL_STATUS,
+  dispositionForFailure, isAllowanceExhaustion, isScoreableDisposition,
+} from './attempt-disposition';
 import { EngineCatalogue, buildEngineCatalogue, evaluatorBindings } from './catalogue';
 import { FrozenManifest, HardwareIdentity, ManifestCandidate, VerificationReport, deriveRetestManifest, freezeManifest, manifestSeal, verifyManifest } from './manifest';
 import { DEFAULT_GUARD_POLICY, GuardPolicy, GuardVerdict, StoreBaseline, SystemReading, describeBreach, evaluateGuards } from './guards';
@@ -44,6 +47,7 @@ import { OperationalEnvelope, ProviderBinding, bindingFor, isLocal } from './pro
 import { FrontierAttemptRecord, FrontierCandidateMetrics, aggregateFromRows } from './frontier-metrics';
 import { MIXED_EXECUTION_REASONS } from './provider';
 import { SpendingAuthorization } from './spending';
+import { CostPolicyOverride, ZeroMarginalCostConfirmation } from './cost-eligibility';
 import {
   ADMISSION_STAMP_LONG, AdmittedCandidateEvidence, IdentityAdmission,
   REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionProvenance, admissionStamp,
@@ -119,6 +123,26 @@ export function isProviderThrottle(failureCode: string): boolean {
   return (PROVIDER_THROTTLE_FAILURES as readonly string[]).includes(kind);
 }
 
+/**
+ * The same question, asked of the whole failure rather than only its label.
+ *
+ * WHY THIS EXISTS AND THE CODE TEST ALONE DOES NOT SUFFICE. Pass 11's sixty-nine usage-limit
+ * failures reached here as `codexCLI.transport`, because the provider announced the exhausted
+ * allowance in a `turn.failed` envelope with no HTTP status and the adapter had only the status to
+ * go on. `isProviderThrottle('codexCLI.transport')` is false, so the campaign did not abort, and it
+ * ran the remaining sixty-nine slots into a wall it had already hit and recorded every one of them
+ * as a result.
+ *
+ * The adapter now labels that message `rateLimited` at source, so the code test would catch it
+ * today. This is deliberately kept as a SECOND, INDEPENDENT test on the provider's own sentence:
+ * the adapter's classifier is the component that has now been wrong twice, and the consequence of
+ * it being wrong a third time is spending an allowance that has already run out and publishing the
+ * result as a model's quality.
+ */
+export function isThrottleFailure(failure: { code: string; detail: string }): boolean {
+  return isProviderThrottle(failure.code) || isAllowanceExhaustion(failure.detail);
+}
+
 export interface CampaignHost {
   /** Ask the runtime what it currently has loaded for this model. */
   observeIdentity(candidate: PlannableCandidate): Promise<ObservedModelIdentity>;
@@ -191,6 +215,25 @@ export interface CampaignConfiguration {
    * campaign that was authorised.
    */
   identityAdmission?: IdentityAdmission;
+  /**
+   * The project cost policy this campaign was created under, and the evidence it may consult.
+   *
+   * PRESENCE IS THE OPT-IN, AND IT IS RECORDED AT CREATE TIME RATHER THAN READ FROM A FLAG. The gate
+   * in `RoutingHost.authorizeAttempt` is unenforced when this is absent, which is what keeps every
+   * campaign already on disk resuming exactly as it did — a frozen campaign whose second half
+   * refused what its first half ran is not the campaign that was authorised. A campaign created
+   * after the policy exists carries it here, so its resume is governed by what it was created under
+   * and not by whatever the surface believes today.
+   *
+   * DELIBERATELY NOT IN THE MANIFEST DIGEST. Cost eligibility is a fact about an ACCOUNT at a moment,
+   * not about what was measured; freezing it would make a campaign re-verified after a billing change
+   * fail its own digest check for a reason that has nothing to do with the benchmark. The structural
+   * `billingBasis` stays in the envelope, where it is frozen and where it belongs.
+   */
+  costPolicy?: {
+    confirmations?: ZeroMarginalCostConfirmation[];
+    overrides?: CostPolicyOverride[];
+  };
 }
 
 export type CampaignState = 'created' | 'running' | 'paused' | 'aborted' | 'complete';
@@ -890,7 +933,7 @@ export class Campaign {
     // up after the allowance resets and re-verifies the manifest first, and the abort is superseded
     // rather than deleted. No other model is substituted: this candidate's remaining work is
     // this candidate's, and answering it with a different one would silently change the experiment.
-    if (outcome.failure && isProviderThrottle(outcome.failure.code)) {
+    if (outcome.failure && isThrottleFailure(outcome.failure)) {
       const blocked = this.ledger.pending().map((pending) => pending.slotKey);
       this.ledger.event('providerThrottled', {
         candidate: slot.candidate,
@@ -952,12 +995,18 @@ export class Campaign {
       // both are deterministic: the filter will refuse the same prompt every time, and `cernum
       // resume` re-running them forever would be a loop, not a recovery. The slot is finished, the
       // row is unscoreable, and the loss is counted in the provider-reliability rates instead.
+      //
+      // PASS 11 WIDENED THIS FROM TWO NAMED KINDS TO THE WHOLE FAILURE. It used to test for
+      // `contentFiltered` and `toolContaminated` by name and call everything else `runtimeError`,
+      // which is how a transport fault, a missing CLI and an exhausted allowance all became
+      // model-quality failures. The decision now lives in `attempt-disposition.ts` and is made from
+      // the kind AND the provider's own sentence, so one rule governs a row being written here and
+      // the same row being re-read out of a sealed ledger later.
       const kind = outcome.failure.code.includes('.')
         ? outcome.failure.code.slice(outcome.failure.code.lastIndexOf('.') + 1)
         : outcome.failure.code;
-      if (kind === 'contentFiltered') disposition = 'providerRefusedContent';
-      else if (kind === 'toolContaminated') disposition = 'interfaceContaminated';
-      status = disposition === 'modelAnswered' ? 'runtimeError' : NON_ANSWER_TERMINAL_STATUS;
+      disposition = dispositionForFailure(kind, `${outcome.failure.code}: ${outcome.failure.detail}`);
+      status = isScoreableDisposition(disposition) ? 'runtimeError' : NON_ANSWER_TERMINAL_STATUS;
       detail = `${outcome.failure.code}: ${outcome.failure.detail}`;
       if (disposition !== 'modelAnswered') {
         detail = `${detail} — recorded as ${disposition}: ${DISPOSITION_EXPLANATION[disposition]}`;
@@ -972,9 +1021,21 @@ export class Campaign {
       }
     } else if (!suppliedContextIsUsable(suppliedContext)) {
       // A measurement fault is recorded as one. Scoring it would report the harness's bug as the
-      // model's failure, which is the single most misleading thing a benchmark can do.
-      status = 'runtimeError';
-      detail = `supplied context ${suppliedContext.state}: ${suppliedContext.detail}`;
+      // model's failure, which is the single most misleading thing a benchmark can do — which is
+      // precisely what happened until Pass 11, because `runtimeError` alone was counted as a fail.
+      // The sentence was right and the arithmetic underneath it was not; now the row carries a
+      // disposition that keeps it out of the rate the sentence says it does not belong in.
+      disposition = 'measurementFault';
+      status = NON_ANSWER_TERMINAL_STATUS;
+      detail = `supplied context ${suppliedContext.state}: ${suppliedContext.detail}`
+        + ` — recorded as ${disposition}: ${DISPOSITION_EXPLANATION[disposition]}`;
+      this.ledger.event(disposition, {
+        candidate: slot.candidate,
+        provider: binding?.provider ?? 'unknown',
+        caseID: slot.caseID,
+        slotKey: slot.slotKey,
+        suppliedContextState: suppliedContext.state,
+      });
     } else {
       const scored = await this.host.score(slot, outcome.answerText);
       status = scored.status;

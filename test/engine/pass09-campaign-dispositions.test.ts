@@ -117,14 +117,31 @@ describe('a contaminated turn is recorded as one', () => {
 });
 
 describe('what has NOT changed', () => {
-  it('an ordinary transport fault is still a runtimeError and still counts against nobody\'s provider', async () => {
-    // The new axis must not become a general excuse. A transport fault is a real runtime error, it
-    // keeps its status, and it is `modelAnswered` — which means the ranking still counts it.
+  it('a transport fault is now `transportFailed` too — see Pass 11, which widened this rule', async () => {
+    // WHAT THIS TEST USED TO ASSERT, and why it changed. Pass 9 held that a transport fault kept its
+    // `runtimeError` status and stayed `modelAnswered`, so that the new axis could not become a
+    // general excuse. Pass 11 found the flaw in that: the sixty-nine attempts that sank
+    // `gpt-6-astra@max` arrived labelled `transport`, and under this rule every one of them counted
+    // as a failure of the model. The same reasoning that exempts a content filter exempts a dead
+    // connection — no model was asked, so there is no answer to score.
+    //
+    // The guard Pass 9 wanted is still here; it has just moved to the right place. It is the test
+    // below: a model that answers badly is still scored, whatever its answer says.
     const { rows } = await runWith({ kind: 'transport', detail: 'connection reset by peer' });
     for (const row of rows) {
-      expect(row.status).toBe('runtimeError');
-      expect(dispositionOf(row)).toBe('modelAnswered');
+      expect(row.status).toBe('envelopeFailure');
+      expect(dispositionOf(row)).toBe('transportFailed');
     }
+  });
+
+  it('a model that answers badly is still scored, which is the line the axis may never cross', async () => {
+    const adapter = scriptedAdapter('claudeCLI', {}, { answerText: 'no.' });
+    const { host } = routingHost({ envelope: SUBSCRIPTION, adapters: { claudeCLI: adapter } });
+    const campaign = Campaign.create(root, configurationFor(SUBSCRIPTION), host);
+    await campaign.run({ campaignRootDirectory: campaignRoot });
+    const rows = [...campaign.ledger.results.values()];
+    expect(rows.some((row) => row.status === 'fail')).toBe(true);
+    for (const row of rows) expect(dispositionOf(row)).toBe('modelAnswered');
   });
 
   it('every ordinary row carries the disposition too, so its absence never means two things', async () => {

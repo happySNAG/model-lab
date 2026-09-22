@@ -22,7 +22,7 @@ import { LiveResidency, ResidencyController } from './residency';
 import { ObservedModelIdentity } from './verification';
 import { StreamEvent } from './attempt-telemetry';
 import { digestObject } from './canonical';
-import { freeDiskBytes, readListeners, swapUsedBytes } from './machine';
+import { availableMemoryBytes, freeDiskBytes, readListeners, swapUsedBytes } from './machine';
 
 export { readListeners };
 
@@ -253,7 +253,7 @@ export class LiveHost implements CampaignHost {
     return {
       freeDiskBytes: await freeDiskBytes(this.options.diskPath ?? os.tmpdir()),
       swapUsedBytes: await swapUsedBytes(),
-      freeMemoryBytes: os.freemem(),
+      freeMemoryBytes: await availableMemoryBytes(),
       totalMemoryBytes: os.totalmem(),
       listeners: await readListeners(),
       modelStoreListingDigest: baseline.listingDigest,

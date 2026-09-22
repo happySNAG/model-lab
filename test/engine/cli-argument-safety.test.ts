@@ -233,7 +233,10 @@ describe('v0.2.3 · the command table is the contract', () => {
     // requests to a model. The list is asserted rather than derived so that a command gaining a
     // spending effect is a deliberate edit to a test — and `workspace-benchmark` is the one that most
     // needed the deliberation, because one careless invocation of it is forty-eight runs rather than one.
-    expect(spendingCommands().sort()).toEqual(['resume', 'run', 'smoke', 'workspace', 'workspace-benchmark']);
+    // Pass D added the development runner's two spenders; both are gated by --dry-run and --yes.
+    expect(spendingCommands().sort()).toEqual([
+      'develop', 'develop-resume', 'resume', 'run', 'smoke', 'workspace', 'workspace-benchmark',
+    ]);
   });
 
   it('gives every command --help, so none can be built without one', () => {

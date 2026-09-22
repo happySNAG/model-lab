@@ -957,9 +957,10 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
 /**
  * Decide one route's admission position, and the pre-run identity it runs under.
  *
- * STRONGER EVIDENCE WINS: a verified route is returned untouched and needs nothing. Otherwise, for the
- * one admissible provider, the route runs only if the sealed matrix admission names it EXACTLY and this
- * machine holds unexpired evidence that the provider accepted the request (the identity smoke's row in
+ * STRONGER EVIDENCE WINS: a verified route is returned untouched and needs nothing. Otherwise, for a
+ * provider the identity exception admits (in practice Codex: OpenCode is admissible too, but has no
+ * workspace driver and is refused as `driverUnavailable` before this point), the route runs only if
+ * the sealed matrix admission names it EXACTLY and this machine holds unexpired evidence that the provider accepted the request (the identity smoke's row in
  * the discovery store). An admission never makes a route nobody has ever sent a request on runnable.
  */
 function admitRoute(request: WorkspaceMatrixRequest, route: {

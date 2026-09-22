@@ -1,6 +1,6 @@
 # Third-party notices
 
-Model Lab itself is MIT licensed (see [`LICENSE`](LICENSE)). It has **no runtime npm
+Cernum itself is MIT licensed (see [`LICENSE`](LICENSE)). It has **no runtime npm
 dependencies** — `package.json` declares an empty `dependencies` block, and everything under
 `devDependencies` is build or test tooling.
 
@@ -10,7 +10,7 @@ Two kinds of third-party code nevertheless reach an end user:
 
 | Component | Version | License | Notes |
 | --- | --- | --- | --- |
-| [Electron](https://github.com/electron/electron) | 44.x | MIT | Ships inside `Model Lab.app` / the Windows build. Electron in turn embeds **Chromium** (BSD-3-Clause and a large set of compatible third-party licenses), **Node.js** (MIT) and **V8** (BSD-3-Clause). Electron's own `LICENSE` and its complete `LICENSES.chromium.html` are copied into every packaged build by electron-builder and are viewable inside the application bundle. |
+| [Electron](https://github.com/electron/electron) | 44.x | MIT | Ships inside `Cernum.app` / the Windows build. Electron in turn embeds **Chromium** (BSD-3-Clause and a large set of compatible third-party licenses), **Node.js** (MIT) and **V8** (BSD-3-Clause). Electron's own `LICENSE` and its complete `LICENSES.chromium.html` are copied into every packaged build by electron-builder and are viewable inside the application bundle. |
 | [React](https://github.com/facebook/react) | 18.3.1 | MIT | Compiled into the renderer bundle. |
 | [React DOM](https://github.com/facebook/react) | 18.3.1 | MIT | Compiled into the renderer bundle. |
 
@@ -21,8 +21,8 @@ another project, so nothing here is relicensed.
 
 | Component | License | Relationship |
 | --- | --- | --- |
-| [Ollama](https://github.com/ollama/ollama) | MIT | Model Lab talks to Ollama over its local HTTP API. Ollama is **not** bundled, redistributed, modified or installed by Model Lab; you install it yourself and Model Lab only detects and (on request) starts the copy you already have. |
-| The language models you benchmark | Each model's own licence | Models are downloaded and stored by Ollama, never by Model Lab, and never copied into Model Lab's evidence store. Their licences are between you and the model publisher. |
+| [Ollama](https://github.com/ollama/ollama) | MIT | Cernum talks to Ollama over its local HTTP API. Ollama is **not** bundled, redistributed, modified or installed by Cernum; you install it yourself and Cernum only detects and (on request) starts the copy you already have. |
+| The language models you benchmark | Each model's own licence | Models are downloaded and stored by Ollama, never by Cernum, and never copied into Cernum's evidence store. Their licences are between you and the model publisher. |
 
 ## Build and test tooling
 

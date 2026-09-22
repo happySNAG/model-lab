@@ -116,7 +116,7 @@ export class LabService extends EventEmitter {
     rows.sort((a, b) => compareCodePoints(a.name, b.name));
     rows.push({
       key: REFERENCE_MODEL_KEY, kind: 'reference', name: displayModelName(deterministicFake.displayName),
-      readiness: 'referenceOnly', readinessDetail: 'Built into Model Lab. Produces the same fixed answers every time, so you can try the whole workflow without Ollama. Its answers are not a real model\'s.',
+      readiness: 'referenceOnly', readinessDetail: 'Built into Cernum. Produces the same fixed answers every time, so you can try the whole workflow without Ollama. Its answers are not a real model\'s.',
       runsInHistory: runsByModel.get(deterministicFake.exactModelIdentity) ?? 0,
     });
     return rows;
@@ -186,11 +186,11 @@ export class LabService extends EventEmitter {
       suites: suites.map((s) => ({ id: s.id.raw, title: displaySuiteTitle(s.title), caseCount: s.cases.length })),
       endpoint: settings.ollamaEndpoint,
       statements: [
-        `Model Lab will send ${attemptsPerModel} synthetic prompts to each selected model${ollamaKeys.length > 0 ? ` through Ollama at ${settings.ollamaEndpoint}` : ''}. Nothing leaves ${HERE}.`,
+        `Cernum will send ${attemptsPerModel} synthetic prompts to each selected model${ollamaKeys.length > 0 ? ` through Ollama at ${settings.ollamaEndpoint}` : ''}. Nothing leaves ${HERE}.`,
         'Every prompt is an invented fixture. No personal data is read, sent, or stored.',
         `Every attempt — success, failure, or timeout — is recorded permanently in the evidence store on ${HERE} and never overwritten.`,
         `Model "thinking" is ${settings.thinkingMode === 'disabled' ? 'explicitly disabled' : settings.thinkingMode === 'enabled' ? 'explicitly enabled (only final answers are judged; reasoning is never stored)' : "left to Ollama's default (recorded as such)"} on every request.`,
-        'Results are evidence for your own decision. Model Lab changes nothing about how any model is used anywhere.',
+        'Results are evidence for your own decision. Cernum changes nothing about how any model is used anywhere.',
       ],
     };
   }

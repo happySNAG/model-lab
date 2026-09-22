@@ -16,7 +16,7 @@ digests, the same plans, the same judgments and the same bytes on disk. Two inde
 implementations agreeing to the byte is much stronger evidence of that than either one's own tests.
 
 The Swift implementation is the older of the two and belongs to a private project. It is **not** part
-of this repository and is not required to build, run, test or package Model Lab.
+of this repository and is not required to build, run, test or package Cernum.
 
 ## What the corpus pins
 
@@ -44,7 +44,7 @@ vintage.
 So, concretely:
 
 - The corpus proves the TypeScript engine is byte-equivalent to the Swift engine **as it stood when
-  the corpus was captured**. That is a real and complete proof for every behaviour Model Lab ships.
+  the corpus was captured**. That is a real and complete proof for every behaviour Cernum ships.
 - It is **not** a live conformance check against whatever the Swift implementation does today.
 - The fixtures are therefore **never regenerated and never hand-edited**. They are treated as sealed
   test data. A change to `src/core/` that moves any of these bytes is a change to the engine's

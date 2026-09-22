@@ -102,15 +102,55 @@ export type EffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhig
 export const EFFORT_LEVELS: EffortLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
- * The one provider the Pass 6 identity exception may ever apply to.
+ * The providers the identity exception may ever apply to. TWO, as of Pass 7.
  *
  * Declared here, next to the state itself, so `validateBinding` can enforce it without importing
  * `identity-admission` — which imports this module, and a cycle between the two would make the
  * enforcement depend on module evaluation order. `ADMISSIBLE_PROVIDERS` there is the authority a
  * person reads; this is the same fact where the binding validator can reach it, and a test asserts
  * the two never drift apart.
+ *
+ * THE BAR FOR MEMBERSHIP, which is narrow and is not "this candidate is hard to prove". A provider
+ * belongs here only when its interface STRUCTURALLY cannot name the model that answered — so that a
+ * candidate on it being unproven is a property of the tool rather than a fault in this engine or a
+ * gap in someone's evidence. `claudeCLI` names its model, so a Claude candidate that cannot be proven
+ * has a different problem and this exception would hide it. That is the test each entry has to pass,
+ * and `IDENTITY_UNNAMEABLE_BECAUSE` is where each one shows its work.
  */
-export const IDENTITY_ADMISSIBLE_PROVIDER: ProviderID = 'codexCLI';
+export const IDENTITY_ADMISSIBLE_PROVIDERS: ProviderID[] = ['codexCLI', 'opencodeCLI'];
+
+/**
+ * WHY each admissible provider cannot name the model that answered, in its own terms.
+ *
+ * Per provider rather than one sentence for both, because the two are not the same fault and a
+ * message that described Codex's silence would be false about OpenCode's. Every refusal and every
+ * evidence string reads the reason from here, so a reader is told which tool did what, not merely
+ * that the exception applies.
+ *
+ * THE DIFFERENCE WORTH KNOWING BEFORE TRUSTING EITHER. Codex names no model in ANY reply, so its
+ * silence is total and declared. OpenCode HAS the field and routes it away from the JSON stream, so a
+ * substituted model would return byte-identical output and `modelMismatch` cannot fire — substitution
+ * on that path is UNDETECTABLE rather than merely unproven. Both are admissible; they are not
+ * equally informative, and neither is verified identity.
+ */
+export const IDENTITY_UNNAMEABLE_BECAUSE: Partial<Record<ProviderID, string>> = {
+  codexCLI:
+    '`codex exec --json` names no model in any event it emits — not `thread.started`, not '
+    + '`item.completed`, not `turn.completed`. The silence is total, so a Codex reply can establish '
+    + 'that the identifier was accepted and something answered, and never which model did.',
+  opencodeCLI:
+    '`opencode run --format json` emits no assistant message, which is the only place OpenCode names '
+    + 'the model that answered: `run` reads that event solely in its non-JSON branch, to print it for '
+    + 'a person. Captured 2026-09-20 from a live request. Because the field is absent rather than '
+    + 'contradicted, a SUBSTITUTED model would return the same bytes and no mismatch check can catch '
+    + 'it — this path cannot detect substitution at all, which is a strictly weaker position than '
+    + 'Codex\'s and must not be read as an equivalent one.',
+};
+
+/** Whether the identity exception may apply to this provider at all. The greppable form of the rule. */
+export function isIdentityAdmissibleProvider(provider: ProviderID): boolean {
+  return IDENTITY_ADMISSIBLE_PROVIDERS.includes(provider);
+}
 
 /**
  * The name of the Pass 6 admission state, in one place.
@@ -127,12 +167,13 @@ export const REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE = 'requestAcceptedIdentityUn
  * There is no `assumed`. A provider that did not confirm which model answered leaves the binding
  * `unverifiable`, and that word appears on every artefact the run produces.
  *
- * `requestAcceptedIdentityUnverifiable` — ADDED IN PASS 6 — is weaker than `unverifiable`, not
- * stronger. `unverifiable` is what a binding gets when nothing established an identity; this third
- * state says that AND that the campaign carried a sealed, campaign-bound authorization to run the
- * candidate anyway. It records one fact and one only: THE PROVIDER ACCEPTED THIS IDENTIFIER AND
- * SOMETHING ANSWERED. It is never a claim about which model answered, it never reaches
- * `verifiedModelID`, and it is not routable or promotable. See `identity-admission.ts`.
+ * `requestAcceptedIdentityUnverifiable` — ADDED IN PASS 6, EXTENDED TO OPENCODE IN PASS 7 — is
+ * weaker than `unverifiable`, not stronger. `unverifiable` is what a binding gets when nothing
+ * established an identity; this third state says that AND that the campaign carried a sealed,
+ * campaign-bound authorization to run the candidate anyway. It records one fact and one only: THE
+ * PROVIDER ACCEPTED THIS IDENTIFIER AND SOMETHING ANSWERED. It is never a claim about which model
+ * answered, it never reaches `verifiedModelID`, and it is not routable or promotable. It applies only
+ * to `IDENTITY_ADMISSIBLE_PROVIDERS`. See `identity-admission.ts`.
  */
 export type BindingIdentityState = 'verified' | 'unverifiable' | typeof REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
 
@@ -481,14 +522,15 @@ export function validateBinding(binding: ProviderBinding, options: BindingValida
   }
   if (binding.identityState === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE) {
     // The two refusals that keep the exception from becoming a way to launder an identity: it
-    // applies to one provider, and its returned-model field stays empty forever. Enforced HERE,
-    // in the validator every binding passes through, rather than only in the builder that writes
-    // one — a binding assembled by any other route is refused on exactly the same terms.
-    if (binding.provider !== IDENTITY_ADMISSIBLE_PROVIDER) {
+    // applies to a closed list of providers, and its returned-model field stays empty forever.
+    // Enforced HERE, in the validator every binding passes through, rather than only in the builder
+    // that writes one — a binding assembled by any other route is refused on exactly the same terms.
+    if (!isIdentityAdmissibleProvider(binding.provider)) {
       throw new ProviderBindingError('identityAdmissionProviderNotAdmissible',
-        `${binding.candidate}: the accepted-request identity state applies only to ${IDENTITY_ADMISSIBLE_PROVIDER}, `
-        + `whose CLI names no model in its reply. ${binding.provider} does report identity, so a candidate on it `
-        + 'that could not be proven has a different problem, and recording it under this state would conceal that.');
+        `${binding.candidate}: the accepted-request identity state applies only to `
+        + `${IDENTITY_ADMISSIBLE_PROVIDERS.join(', ')}, whose interfaces structurally cannot name the model that `
+        + `answered. ${binding.provider} does report identity, so a candidate on it that could not be proven has a `
+        + 'different problem, and recording it under this state would conceal that.');
     }
     if (binding.verifiedModelID.length > 0) {
       throw new ProviderBindingError('identityAdmissionWithReturnedIdentity',

@@ -16,12 +16,26 @@
 // fixtures shaped from the generated types the tool ships. The fixtures cover a success, a reply
 // that names nobody, a substitution, a refusal, a timeout, unreadable output, and a secret in an
 // error message.
+//
+// -- v0.2.5: WHICH FRAMING THESE FIXTURES ARE, WHICH IS NOT THE ONE OPENCODE WRITES ------------
+//
+// The `message.updated` / `message.part.updated` fixtures below are the SERVER event framing. A real
+// `opencode run --format json` writes `{type, timestamp, sessionID, part|error}` with underscored
+// type names and NO assistant message, so the `proven` verdicts in this file describe a reply that
+// names its model — which that mode never sends. They are kept because the verdict LOGIC they pin is
+// framing-independent and still correct, and because the mismatch and identity branches have no other
+// coverage. `opencode-run-json-envelope.test.ts` drives the captured bytes and records the real
+// outcome: the answer parses, and identity is unverifiable.
+//
+// The one thing this file therefore must NOT be read as: evidence that a live OpenCode smoke reaches
+// `proven`. On the path Cernum invokes, it reaches `unverifiable`.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { OpenCodeAdapter } from '../../src/engine/opencode-adapter';
+import { REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE } from '../../src/engine/identity-admission';
 import { buildSmokeBinding } from '../../src/engine/smoke-binding';
 import { identitySmokeTest } from '../../src/engine/identity-smoke';
 import { modelsFromSmokes, supersedeStaleOpenCodeEvidence } from '../../src/engine/discovery-store';
@@ -45,6 +59,7 @@ function fakeOpenCode(body: string): string {
 const textPart = (text: string) =>
   JSON.stringify({ type: 'message.part.updated', properties: { part: { id: 'prt_1', type: 'text', text } } });
 
+/** SERVER framing. `run --format json` emits no assistant message; see the header. */
 const assistant = (modelID: string, extra: Record<string, unknown> = {}) => JSON.stringify({
   type: 'message.updated',
   properties: {
@@ -64,7 +79,7 @@ async function smoke(body: string, modelID = UNION_ALPHA_MODEL_ID, timeoutMillis
   return identitySmokeTest(frozen, adapter);
 }
 
-describe('v0.2.4 · Union Alpha, driven through a fake executable, verdict by verdict', () => {
+describe('v0.2.4 · Union Alpha, driven through a fake executable, verdict by verdict (server framing)', () => {
   it('SUCCESS — the reply names the model that was asked for, so identity is proven', async () => {
     const result = await smoke(`echo '${textPart('ok')}'; echo '${assistant('union-alpha')}'`);
 
@@ -88,10 +103,18 @@ describe('v0.2.4 · Union Alpha, driven through a fake executable, verdict by ve
     expect(result.verdict).toBe('unverifiable');
     expect(result.reportedModelID).toBe('');
     expect(result.requestedModelID).toBe(UNION_ALPHA_MODEL_ID);
-    // OpenCode is not the admissible provider: it DOES report identity, so a silence here is a
-    // different problem from Codex's, and it is never laundered into the Pass 6 admission state.
-    expect(result.identityState).toBe('unverifiable');
+    // PASS 7 CHANGED THIS LINE, and the reason it changed is the whole decision. It used to read
+    // `unverifiable`, on the premise that OpenCode "DOES report identity, so a silence here is a
+    // different problem from Codex's". The captured envelope disproved the premise: `run --format json`
+    // emits no assistant message, so the silence is structural and identical in kind to Codex's. An
+    // accepted, answered OpenCode request therefore lands on the admission state.
+    //
+    // WHAT THAT STATE IS NOT: proven, selectable, promotable or routable. The verdict above is still
+    // `unverifiable` and the returned model is still empty — see the Pass 7 governance tests.
+    expect(result.identityState).toBe(REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE);
+    expect(result.verdict).not.toBe('proven');
     expect(result.evidence).toMatch(/rather than assumed to be the model that was requested/);
+    expect(result.evidence).toMatch(/emits no assistant message/);
   });
 
   it('MODEL MISMATCH — a real answer from a different model is refused, not accepted', async () => {

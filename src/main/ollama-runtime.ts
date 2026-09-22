@@ -58,7 +58,7 @@ export async function detectOllama(endpoint: string): Promise<OllamaStatus> {
     validateLoopbackEndpoint(endpoint);
   } catch (error) {
     return { state: 'unreachable', endpoint, endpointValid: false, endpointProblem: error instanceof Error ? error.message : String(error),
-             detail: 'The configured endpoint is not a loopback address. Model Lab benchmarks the runtime on this PC only.', checkedAt };
+             detail: 'The configured endpoint is not a loopback address. Cernum benchmarks the local runtime on this PC only.', checkedAt };
   }
   try {
     const version = await statusTransport(endpoint).version();

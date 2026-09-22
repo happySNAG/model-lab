@@ -5,4 +5,4 @@ contact_links:
     about: Please report these privately rather than in a public issue. See SECURITY.md.
   - name: Ollama itself is not working
     url: https://github.com/ollama/ollama
-    about: Model Lab does not install or manage Ollama. If Ollama will not start or a model will not run, start there.
+    about: Cernum does not install or manage Ollama. If Ollama will not start or a model will not run, start there.

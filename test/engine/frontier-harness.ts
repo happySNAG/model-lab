@@ -6,6 +6,7 @@
 // default adapter is scripted. That is not a convenience — it is the requirement, because the code
 // paths under test are the ones that spend money.
 
+import { CostPolicyOverride, ZeroMarginalCostConfirmation } from '../../src/engine/cost-eligibility';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -157,6 +158,8 @@ export interface HarnessOptions {
   repeats?: number;
   /** Prior ledger rows, for a resumed campaign's spend total. */
   priorRows?: Record<string, unknown>[];
+  /** Opt the host into the project cost policy. Absent leaves it unenforced, as in life. */
+  costPolicy?: { confirmations?: ZeroMarginalCostConfirmation[]; overrides?: CostPolicyOverride[] };
 }
 
 /** A routing host whose local half is the deterministic synthetic host and whose frontier half is scripted. */
@@ -189,6 +192,7 @@ export function routingHost(options: HarnessOptions): { host: RoutingHost; spend
       shouldCancel: options.shouldCancel,
       sleep: async () => undefined,
       readMachine: async () => HEALTHY_MACHINE,
+      costPolicy: options.costPolicy,
     }),
     spend,
     adapters,

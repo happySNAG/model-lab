@@ -19,7 +19,7 @@ body:
     id: proposal
     attributes:
       label: What would help
-      description: What would Model Lab do differently?
+      description: What would Cernum do differently?
     validations:
       required: true
   - type: textarea

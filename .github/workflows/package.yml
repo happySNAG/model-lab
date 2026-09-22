@@ -28,7 +28,7 @@ jobs:
         run: npm run smoke:mac
       - uses: actions/upload-artifact@v4
         with:
-          name: model-lab-macos
+          name: cernum-macos
           path: |
             dist/*.dmg
             dist/*.zip
@@ -51,13 +51,13 @@ jobs:
       - name: Check artifacts
         shell: pwsh
         run: |
-          $setup = Get-ChildItem dist -Filter 'Model-Lab-Setup-*-x64.exe'
-          $portable = Get-ChildItem dist -Filter 'Model-Lab-Portable-*-x64.exe'
+          $setup = Get-ChildItem dist -Filter 'Cernum-Setup-*-x64.exe'
+          $portable = Get-ChildItem dist -Filter 'Cernum-Portable-*-x64.exe'
           if (-not $setup) { throw 'NSIS installer was not produced' }
           if (-not $portable) { throw 'portable executable was not produced' }
           $setup, $portable | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
       - uses: actions/upload-artifact@v4
         with:
-          name: model-lab-windows
+          name: cernum-windows
           path: dist/*.exe
           retention-days: 14

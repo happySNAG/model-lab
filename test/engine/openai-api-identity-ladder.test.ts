@@ -23,7 +23,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  DESIRED_CANDIDATE_LADDER, ProviderStatus, parseModelListing, selectableModels,
+  DESIRED_CANDIDATE_LADDER, FREE_OPENCODE_DEVELOPMENT_POOL, ProviderStatus, parseModelListing, selectableModels,
 } from '../../src/engine/discovery';
 import { modelsFromSmokes } from '../../src/engine/discovery-store';
 import {
@@ -107,7 +107,11 @@ describe('the OpenAI API smoke ladder is exactly what was approved', () => {
     expect(ladderFor('codexCLI').map((entry) => `${entry.modelID}:${entry.desiredEfforts.join('+')}`)).toEqual([
       'gpt-5.6-luna:max', 'gpt-5.6-terra:medium', 'gpt-5.6-sol:medium+max', 'gpt-6-astra:medium+max',
     ]);
-    expect(ladderFor('opencodeCLI').map((entry) => entry.modelID)).toEqual(['opencode/union-alpha']);
+    // The free OpenCode pool arrived on the Mac mini line under its own authorisation; this pass left
+    // the OpenCode ladder as that line defined it, and asserts it is exactly Union Alpha plus that pool.
+    expect(ladderFor('opencodeCLI').map((entry) => entry.modelID)).toEqual([
+      'opencode/union-alpha', ...FREE_OPENCODE_DEVELOPMENT_POOL.map((entry) => entry.modelID),
+    ]);
   });
 
   it('keeps the two routes to the same name apart, so proving one never proves the other', () => {

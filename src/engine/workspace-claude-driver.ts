@@ -63,6 +63,7 @@
 // `Bash` command is a shell STRING, not an argv, so the executable is parsed out conservatively and
 // `CLAUDE_COMMAND_REPORTING_IS_A_STRING` says so on every run. None of it is invented.
 
+import { isAllowanceExhaustion } from './attempt-disposition';
 import { sha256Text } from './canonical';
 import { CLIResult, CLIRunOptions, findExecutable, runCLI } from './cli-process';
 import { redactSecrets } from './redaction';
@@ -78,6 +79,14 @@ import {
 } from './workspace-agent';
 import { WorkspaceAgentUsage } from './workspace-host';
 import { EventProvenance, TranscriptEvent, TranscriptEventKind } from './workspace-transcript';
+
+/**
+ * Throttle wording the workspace drivers recognise ON TOP OF the shared `ALLOWANCE_EXHAUSTION_MARKERS`.
+ * Kept out of that list on purpose: it re-reads sealed prose-campaign rows, and a bare `429` or a
+ * "try again in" there would reclassify evidence already written. Workspace records carry their
+ * failure kind as recorded, so the extra reach here moves no historical row.
+ */
+export const WORKSPACE_ONLY_THROTTLE = /429|try again (?:in|at)/i;
 
 export const CLAUDE_WORKSPACE_DRIVER_ID = 'driver.claude-cli.workspace';
 
@@ -820,7 +829,7 @@ export class ClaudeWorkspaceDriver implements WorkspaceAgentDriver {
     if (result.failure) {
       const both = `${result.stdout}\n${result.stderr}`;
       const unauthenticated = /not (?:logged|signed) in|unauthenticated|please (?:log|sign) in|no active session/i.test(both);
-      const rateLimited = /rate.?limit|too many requests|429|quota|usage limit/i.test(both);
+      const rateLimited = isAllowanceExhaustion(both) || WORKSPACE_ONLY_THROTTLE.test(both);
       const kind: WorkspaceAgentFailureKind = unauthenticated ? 'notAuthenticated' : rateLimited ? 'rateLimited' : 'exitFailure';
       return finish(kind, `${redactSecrets(result.failure.detail)}`
         + `${result.stderr ? ` — ${redactSecrets(result.stderr).slice(0, 500)}` : ''}`);

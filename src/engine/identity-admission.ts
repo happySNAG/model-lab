@@ -1,8 +1,9 @@
-// Benchmark engine · the narrow exception by which a Codex candidate is admitted WITHOUT its
-// identity ever having been proven.
+// Benchmark engine · the narrow exception by which a candidate is admitted WITHOUT its identity ever
+// having been proven.
 //
 // ============================================================================================
-// APPROVED AND ACTIVE AS OF PASS 6 — Decision 1(b).
+// APPROVED AND ACTIVE AS OF PASS 6 — Decision 1(b), for codexCLI.
+// EXTENDED TO opencodeCLI IN PASS 7, on the same terms and by a separate written approval.
 //
 // Pass 5C wrote this module inert, as a design, so that Pass 6 could be approved or declined
 // against the real thing rather than against a paragraph describing it. Pass 6 approved it. What
@@ -12,10 +13,26 @@
 // candidate exactly as it did before — see `admissionFor`, whose default is refusal.
 // ============================================================================================
 //
-// THE PROBLEM IT ADDRESSES. `codex exec --json` names no model in any event it emits. Not in
-// `thread.started`, not in `item.completed`, not in `turn.completed`. All six requested Codex
-// configurations answer, the requested identifier is accepted, and the tool will still not say who
-// replied. So every Codex candidate is `unverifiable`, and the campaign builder refuses an unproven
+// THE PROBLEM IT ADDRESSES. Some tools answer a request perfectly and will not say who answered.
+//
+//   CODEX. `codex exec --json` names no model in any event it emits. Not in `thread.started`, not in
+//   `item.completed`, not in `turn.completed`. All six requested Codex configurations answer, the
+//   requested identifier is accepted, and the tool will still not say who replied.
+//
+//   OPENCODE, ADDED IN PASS 7. `opencode run --format json` emits no assistant message, which is the
+//   only event carrying `providerID`/`modelID`; `run` reads it solely in its non-JSON branch, to print
+//   it for a person. One authorized live request on 2026-09-20 confirmed it: `opencode/big-pickle` was
+//   accepted, answered, and fully measured — answer, tokens, cost, finish state all readable — and
+//   named nobody. The 922 captured bytes are in `test/engine/fixtures/opencode-run-json.ts`.
+//
+//   THEY ARE NOT THE SAME FAULT, and the difference is recorded rather than smoothed over. Codex's
+//   silence is total and declared. OpenCode HAS the field and routes it away from stdout, so a
+//   substituted model returns byte-identical output and `modelMismatch` cannot fire: on that path
+//   substitution is UNDETECTABLE, not merely unproven. Both are admissible; the OpenCode position is
+//   strictly weaker, the approval was given knowing that, and `IDENTITY_UNNAMEABLE_BECAUSE` says so on
+//   every surface that quotes a reason.
+//
+// So candidates on these providers are `unverifiable`, and the campaign builder refuses an unproven
 // candidate by design. That refusal remains the default. This module is the only way past it, and
 // it costs a person a written, sealed, per-campaign authorization to use.
 //
@@ -33,8 +50,9 @@
 //
 //   · fail-closed is still the default. No record, a record for another campaign, a broken seal, a
 //     candidate the record does not name: refused, every time, with the reason said out loud.
-//   · claudeCLI can never be admitted. That CLI names its model, so an unprovable Claude candidate
-//     has a different fault and this exception would hide it.
+//   · claudeCLI can never be admitted, nor an anthropicAPI or openaiAPI candidate. Those name the model
+//     that answered, so an unprovable candidate on one has a different fault and this exception would
+//     hide it. Membership takes a STRUCTURAL inability to name the model, not a difficult case.
 //   · the returned-model field stays empty. Forever. On every artefact.
 //   · routing never consults an admitted candidate — `isRoutable`.
 //   · promotion never consults one either — `isPromotable`, added in Pass 6, because a retention
@@ -43,7 +61,8 @@
 
 import { CanonicalValue, digestObject } from './canonical';
 import {
-  EffortLevel, IDENTITY_ADMISSIBLE_PROVIDER, ProviderID, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE,
+  EffortLevel, IDENTITY_ADMISSIBLE_PROVIDERS, IDENTITY_UNNAMEABLE_BECAUSE, ProviderID,
+  REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isIdentityAdmissibleProvider,
 } from './provider';
 
 /**
@@ -58,13 +77,19 @@ export { REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE };
 export type IdentityAdmissionState = typeof REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
 
 /**
- * The ONLY provider this exception may ever apply to.
+ * The ONLY providers this exception may ever apply to.
  *
  * Not a default, not a starting value — a hard restriction, enforced in `authorizeIdentityAdmission`
  * and asserted by tests. The Claude CLI names the model that answered, so a Claude candidate that
  * cannot be proven has a different problem, and this exception would hide it.
+ *
+ * The list is the same object `validateBinding` enforces, read from `provider.ts` rather than
+ * restated, so the authority a person reads and the authority the validator applies cannot drift.
+ * `IDENTITY_UNNAMEABLE_BECAUSE` carries each provider's reason for being on it.
  */
-export const ADMISSIBLE_PROVIDERS: ProviderID[] = [IDENTITY_ADMISSIBLE_PROVIDER];
+export const ADMISSIBLE_PROVIDERS: ProviderID[] = [...IDENTITY_ADMISSIBLE_PROVIDERS];
+
+export { IDENTITY_UNNAMEABLE_BECAUSE, isIdentityAdmissibleProvider };
 
 /**
  * Whether the exception exists at all. Approved in Pass 6; true.
@@ -77,7 +102,16 @@ export const ADMISSIBLE_PROVIDERS: ProviderID[] = [IDENTITY_ADMISSIBLE_PROVIDER]
  */
 export const ADMISSION_IS_ACTIVE = true;
 
-/** What approved it, when, and on whose authority. Written into every artefact that discloses one. */
+/**
+ * What approved the EXCEPTION ITSELF, when, and on whose authority. Written into every artefact that
+ * discloses one.
+ *
+ * This is the Pass 6 decision that created the exception and remains its origin. Extending it to a
+ * second provider in Pass 7 did not re-approve it — see `ADMISSION_PROVIDER_APPROVALS`, which records
+ * per provider who approved that provider and on what evidence. The two are kept apart because "the
+ * exception is approved" and "this provider is inside it" are different claims, and a reader
+ * checking the second should not be handed the first.
+ */
 export const ADMISSION_APPROVAL = {
   pass: 'Cernum Pass 6',
   decision: '1(b) — admit Codex candidates under the narrowly scoped, recorded identity exception '
@@ -86,6 +120,41 @@ export const ADMISSION_APPROVAL = {
   approvedBy: 'the repository owner, in writing, in the Pass 6 approval prompt',
   designedIn: 'Pass 5C, and activated without alteration: the refusals approved were the refusals shipped',
 } as const;
+
+/**
+ * WHO APPROVED EACH ADMISSIBLE PROVIDER, and on what evidence.
+ *
+ * A provider is not admitted because its interface happens to be quiet. It is admitted because a
+ * person looked at what the tool actually returns, saw that identity is structurally absent, and said
+ * yes in writing. This is that record, per provider, so that adding a third provider later is
+ * visibly a decision somebody made rather than an entry that appeared in a list.
+ */
+export const ADMISSION_PROVIDER_APPROVALS: Partial<Record<ProviderID, {
+  readonly pass: string; readonly approvedAt: string; readonly approvedBy: string;
+  readonly decision: string; readonly evidence: string;
+}>> = {
+  codexCLI: {
+    pass: 'Cernum Pass 6',
+    approvedAt: '2026-09-13',
+    approvedBy: 'the repository owner, in writing, in the Pass 6 approval prompt',
+    decision: '1(b) — admit Codex candidates under the recorded identity exception designed in Pass 5C',
+    evidence: 'all six requested Codex configurations answered and `codex exec --json` named no model in '
+      + 'any event it emits',
+  },
+  opencodeCLI: {
+    pass: 'Cernum Pass 7',
+    approvedAt: '2026-09-20',
+    approvedBy: 'the repository owner, in writing, approving the Pass 7 governance decision put to them '
+      + 'after the first live OpenCode request was measured',
+    decision: 'grant opencodeCLI the existing requestAcceptedIdentityUnverifiable treatment, analogous to '
+      + 'codexCLI: measured but not promotable or routable without stronger identity proof',
+    evidence: 'one authorized live request to opencode/big-pickle on 2026-09-20 was accepted, answered, and '
+      + 'fully measured — answer, tokens, cost and finish state all read from the envelope — and carried no '
+      + 'identity field, because `opencode run --format json` emits no assistant message. The 922 captured '
+      + 'bytes are committed at test/engine/fixtures/opencode-run-json.ts. The approval was given in the '
+      + 'knowledge that substitution is UNDETECTABLE on this path, not merely unproven.',
+  },
+};
 
 /**
  * What this exception must never reach. Not a note — each one is asserted by a test.
@@ -258,12 +327,12 @@ export function authorizeIdentityAdmission(options: AuthorizeAdmissionOptions): 
   }
 
   for (const entry of options.admitted) {
-    if (!ADMISSIBLE_PROVIDERS.includes(entry.provider)) {
+    if (!isIdentityAdmissibleProvider(entry.provider)) {
       throw new IdentityAdmissionError('providerNotAdmissible',
         `${entry.provider} cannot be admitted under this exception. It applies only to `
-        + `${ADMISSIBLE_PROVIDERS.join(', ')}, whose CLI names no model in its reply. A candidate on a `
-        + 'provider that DOES report identity and still could not be proven has a different problem, '
-        + 'and admitting it here would conceal that.');
+        + `${ADMISSIBLE_PROVIDERS.join(', ')}, whose interfaces structurally cannot name the model that `
+        + 'answered. A candidate on a provider that DOES report identity and still could not be proven '
+        + 'has a different problem, and admitting it here would conceal that.');
     }
     if (entry.returnedModelID !== '') {
       // Guards the exact backfill Pass 5B forbade: the requested identifier must never become the

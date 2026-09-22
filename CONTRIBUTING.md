@@ -1,6 +1,6 @@
-# Contributing to Model Lab
+# Contributing to Cernum
 
-Thanks for taking a look. Model Lab is a small, deliberately conservative codebase: it records
+Thanks for taking a look. Cernum is a small, deliberately conservative codebase: it records
 evidence that people use to make decisions, so correctness and honesty matter more here than
 features. Bug reports and small, well-tested changes are very welcome.
 

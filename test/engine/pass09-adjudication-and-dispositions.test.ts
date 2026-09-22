@@ -537,14 +537,18 @@ describe('reinterpreting a sealed campaign without touching it', () => {
     { slotKey: 'codexCLI:x|s|1|case:b', status: 'runtimeError', caseID: 'case:b', candidate: 'codexCLI:x', detail: 'codexCLI.transport: connection reset' },
   ];
 
-  it('reclassifies exactly the two kinds it is meant to, and leaves real failures alone', () => {
+  it('reclassifies every row on which no model answered, and leaves real failures alone', () => {
+    // WIDENED BY PASS 11, and this test records the widening rather than hiding it. `case:b` is an
+    // ordinary transport error — a connection that died — and Pass 9 deliberately left it counting
+    // as a model-quality fail. Pass 11 found that the same reasoning that exempts a content filter
+    // exempts a dead socket: no model was asked, so there is no answer to score, and a blank is not
+    // a wrong answer. `case:a` is a genuine wrong answer and is still untouched, which is the line
+    // that matters.
     const report = reinterpretDispositions(sealed, 'fixture', '2026-09-14T00:00:00Z');
-    expect(report.reinterpreted).toHaveLength(2);
+    expect(report.reinterpreted).toHaveLength(3);
     expect(report.reinterpreted.map((row) => row.correctedDisposition).sort())
-      .toEqual(['interfaceContaminated', 'providerRefusedContent']);
-    // A genuine fail and an ordinary transport error are untouched.
+      .toEqual(['interfaceContaminated', 'providerRefusedContent', 'transportFailed']);
     expect(report.reinterpreted.map((row) => row.caseID)).not.toContain('case:a');
-    expect(report.reinterpreted.map((row) => row.caseID)).not.toContain('case:b');
   });
 
   it('counts the requests the old classification spent re-asking a settled question', () => {

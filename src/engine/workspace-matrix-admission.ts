@@ -65,6 +65,14 @@ export const MATRIX_IDENTITY_LIMITATION =
   + 'absence of a reroute report is not evidence that the requested model answered.';
 
 /**
+ * The providers `MATRIX_IDENTITY_LIMITATION` actually describes. The identity exception itself admits
+ * more than one provider (`ADMISSIBLE_PROVIDERS`), but this sealed sentence is about `codex exec` and
+ * would be false about any other tool, so a matrix admission refuses a route it does not describe
+ * rather than sealing a limitation that misstates what that route can and cannot prove.
+ */
+export const MATRIX_IDENTITY_LIMITATION_DESCRIBES: ProviderID[] = ['codexCLI'];
+
+/**
  * What every admitted run still records, printed before the matrix runs so the operator knows what the
  * admission does and does not buy.
  */
@@ -313,6 +321,12 @@ export function sealWorkspaceMatrixAdmission(request: WorkspaceMatrixAdmissionRe
         `${route.provider} cannot be admitted under this exception. It applies only to ${ADMISSIBLE_PROVIDERS.join(', ')}, `
         + 'whose CLI names no model. A route on a provider that DOES report identity, or on a metered API that proves it, '
         + 'has no use for this exception, and admitting it here would conceal whatever is actually wrong.');
+    }
+    if (!MATRIX_IDENTITY_LIMITATION_DESCRIBES.includes(route.provider)) {
+      throw new WorkspaceMatrixAdmissionError('providerNotAdmissible',
+        `${route.provider} is admissible to the identity exception, but not to a workspace MATRIX admission: the `
+        + `limitation a matrix admission seals describes ${MATRIX_IDENTITY_LIMITATION_DESCRIBES.join(', ')} only, and `
+        + 'sealing it over another tool would record a false account of what that route can prove.');
     }
     if (!EFFORT_LEVELS.includes(route.requestedEffort)) {
       throw new WorkspaceMatrixAdmissionError('unknownEffort',

@@ -4,7 +4,7 @@
 //   • Construction REQUIRES a `LiveExecutionAuthorization`, obtainable only by acknowledging both
 //     facts it names (the desktop application mints it when the user presses Start on a run whose
 //     pre-flight summary states them).
-//   • Endpoints must be LOOPBACK (127.0.0.1 / localhost / ::1): Model Lab benchmarks the runtime
+//   • Endpoints must be LOOPBACK (127.0.0.1 / localhost / ::1): Cernum benchmarks the runtime
 //     on THIS machine, so the hardware evidence stays truthful.
 //   • Only the read/describe/generate surface exists here. No pull, create, copy, push, or delete.
 //
@@ -44,7 +44,7 @@ export function validateLoopbackEndpoint(endpoint: string): URL {
   if (!url.hostname) throw new LiveTransportConfigurationFailure('missingHost', 'endpoint has no host');
   if (!PERMITTED_LOOPBACK_HOSTS.has(url.hostname.toLowerCase())) {
     throw new LiveTransportConfigurationFailure('endpointNotLoopback',
-      `endpoint host '${url.hostname}' is not loopback — Model Lab benchmarks the runtime on this machine only (127.0.0.1, localhost, ::1)`);
+      `endpoint host '${url.hostname}' is not loopback — Cernum benchmarks the local runtime on this machine only (127.0.0.1, localhost, ::1)`);
   }
   return url;
 }

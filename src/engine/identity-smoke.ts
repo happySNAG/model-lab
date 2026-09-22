@@ -39,7 +39,7 @@
 import { CanonicalValue } from './canonical';
 import { FrontierAdapter, FrontierRequest, FrontierResponse, totalInputTokens } from './frontier-adapter';
 import {
-  BindingIdentityState, IDENTITY_ADMISSIBLE_PROVIDER, ProviderBinding,
+  BindingIdentityState, IDENTITY_UNNAMEABLE_BECAUSE, ProviderBinding, isIdentityAdmissibleProvider,
   REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isMetered,
 } from './provider';
 import {
@@ -324,12 +324,20 @@ function meteredChargeFrom(binding: ProviderBinding, input: Quantity, visible: Q
 /**
  * What this request established about identity, as a binding state rather than only as a verdict.
  *
- * THE CODEX CASE IS THE REASON THIS FUNCTION EXISTS. `codex exec` answers and names no model, so a
- * Codex smoke can never reach `verified` — and recording it as plain `unverifiable` loses the one
- * fact it DID establish: the provider accepted this identifier and something answered. That is
- * exactly what `requestAcceptedIdentityUnverifiable` means, and it is the state the Pass 6 admission
- * machinery reads. It is never a claim about which model answered, it never reaches
- * `verifiedModelID`, and it never makes a candidate selectable on its own.
+ * THE CODEX CASE IS WHY THIS FUNCTION EXISTS, AND OPENCODE IS NOW THE SECOND. `codex exec` answers and
+ * names no model; `opencode run --format json` answers and emits no assistant message. Neither can
+ * ever reach `verified` — and recording either as plain `unverifiable` loses the one fact it DID
+ * establish: the provider accepted this identifier and something answered. That is exactly what
+ * `requestAcceptedIdentityUnverifiable` means, and it is the state the admission machinery reads. It
+ * is never a claim about which model answered, it never reaches `verifiedModelID`, and it never makes
+ * a candidate selectable on its own.
+ *
+ * THE THREE GATES BELOW, IN ORDER, AND WHY THE ORDER MATTERS. A proven identity is `verified`. A
+ * verdict that is anything other than `unverifiable` — refused, substituted — is NOT upgraded by this
+ * function, because a rejection and a substitution are findings rather than acceptances. And a request
+ * that FAILED established nothing, not even acceptance: a timeout, a malformed reply or a transport
+ * fault stays plain `unverifiable` and can never be admitted as evidence, however much telemetry came
+ * back beside it.
  */
 function identityStateFrom(binding: ProviderBinding, response: FrontierResponse,
                            verdict: IdentityVerdict): BindingIdentityState {
@@ -337,7 +345,7 @@ function identityStateFrom(binding: ProviderBinding, response: FrontierResponse,
   if (verdict !== 'unverifiable') return 'unverifiable';
   // A request that never completed established nothing, not even acceptance.
   if (response.failure) return 'unverifiable';
-  if (binding.provider !== IDENTITY_ADMISSIBLE_PROVIDER) return 'unverifiable';
+  if (!isIdentityAdmissibleProvider(binding.provider)) return 'unverifiable';
   return REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE;
 }
 
@@ -355,15 +363,18 @@ function judge(binding: ProviderBinding, response: FrontierResponse): { verdict:
     };
   }
   if (response.reportedModelID.length === 0) {
+    // On an admissible provider this is the strongest TRUE statement available: the provider ACCEPTED
+    // the identifier and something answered. It is recorded as `requestAcceptedIdentityUnverifiable`,
+    // which is weaker than unverifiable rather than stronger, and it is never a claim that the model
+    // asked for is the model that answered. The REASON the tool could not name one is quoted from
+    // `IDENTITY_UNNAMEABLE_BECAUSE` rather than written here, so the sentence stays true per provider
+    // instead of describing Codex's silence and being wrong about OpenCode's.
+    const because = IDENTITY_UNNAMEABLE_BECAUSE[binding.provider];
     return {
       verdict: 'unverifiable',
-      evidence: binding.provider === IDENTITY_ADMISSIBLE_PROVIDER
-        // The Codex CLI names no model in any reply, so this is the strongest true statement there is
-        // about a Codex request: the provider ACCEPTED the identifier and something answered. It is
-        // recorded as `requestAcceptedIdentityUnverifiable`, which is weaker than unverifiable rather
-        // than stronger, and it is never a claim that the model asked for is the model that answered.
+      evidence: because !== undefined
         ? `${binding.requestedModelID} was accepted and something answered, but the provider named no model in its `
-          + 'reply — `codex exec` never does. WHICH model produced this answer is not known, and it is recorded as '
+          + `reply. ${because} WHICH model produced this answer is not known, and it is recorded as `
           + 'unverifiable rather than assumed to be the model that was requested. The state is '
           + 'requestAcceptedIdentityUnverifiable: the request was ACCEPTED and the identity is UNVERIFIABLE. That is '
           + 'not proof, it makes nothing selectable, and putting such a candidate under measurement takes a separate '

@@ -91,6 +91,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { isAllowanceExhaustion } from './attempt-disposition';
 import { sha256Text } from './canonical';
 import { CLIResult, CLIRunOptions, findExecutable, runCLI } from './cli-process';
 import {
@@ -103,7 +104,7 @@ import { EffortLevel, ProviderID } from './provider';
 import { redactSecrets } from './redaction';
 import { verifyProviderIdentity } from './verification';
 import { NetworkPolicy, ToolPolicy } from './workspace-case';
-import { commandInvocations, shellWords } from './workspace-claude-driver';
+import { WORKSPACE_ONLY_THROTTLE, commandInvocations, shellWords } from './workspace-claude-driver';
 import {
   WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, WorkspaceAgentCapabilities, WorkspaceAgentDriver,
   WorkspaceAgentFailureKind, WorkspaceAgentRequest, WorkspaceAgentResult,
@@ -1108,8 +1109,14 @@ function isUnauthenticated(text: string): boolean {
   return /not (?:logged|signed) in|unauthori[sz]ed|please (?:log|sign) in|401|login required|token (?:expired|revoked)/i.test(text);
 }
 
+/**
+ * The account, not the model. The shared marker list in `attempt-disposition` is the authority, so a
+ * workspace attempt and a prose attempt call the same sentence the same thing; the pattern kept here
+ * adds only what that list deliberately leaves out, because it re-reads sealed prose rows on every
+ * read and widening it would reclassify evidence already on disk.
+ */
 function isRateLimited(text: string): boolean {
-  return /rate.?limit|too many requests|429|usage limit|quota|try again (?:in|at)/i.test(text);
+  return isAllowanceExhaustion(text) || WORKSPACE_ONLY_THROTTLE.test(text);
 }
 
 /** The lines a preflight prints about what this driver will do, before it does any of it. */

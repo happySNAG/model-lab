@@ -298,7 +298,11 @@ describe('supplied-context verification', () => {
     const affected = [...campaign.ledger.results.values()].filter((result) => result.suppliedContextState === 'absent');
     expect(affected.length).toBeGreaterThan(0);
     for (const result of affected) {
-      expect(result.status).toBe('runtimeError');
+      // Pass 11. This test's own name has said `measurement fault` since it was written, and until
+      // Pass 11 the row it asserted was `runtimeError` — which the ranking counted as a model-quality
+      // fail. The sentence was always right; the arithmetic under it was not.
+      expect(result.status).toBe('envelopeFailure');
+      expect(result.disposition).toBe('measurementFault');
       expect(String(result.detail)).toMatch(/supplied context absent/);
       expect(String(result.detail)).toMatch(/measures guessing rather than retrieval/);
     }

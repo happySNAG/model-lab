@@ -48,14 +48,25 @@ import { Provenance, Quantity, estimatedQuantity, measuredQuantity, reportedQuan
 import { redactError, redactSecrets } from './redaction';
 import { requireCredential, CredentialLookupOptions } from './credentials';
 import { OTLPTurnObservation, OTLPTurnSource } from './otlp-observer';
-import { isContentFilterRefusal } from './attempt-disposition';
+import { isAllowanceExhaustion, isContentFilterRefusal, isPlanExhausted } from './attempt-disposition';
 
-export type FrontierFailureKind =
-  | 'notInstalled' | 'notAuthenticated' | 'timeout' | 'cancelled' | 'rateLimited'
-  | 'refused' | 'transport' | 'malformedResponse' | 'modelMismatch' | 'budgetRefused'
+/**
+ * Every way an attempt can fail short of an answer.
+ *
+ * A runtime array rather than a bare union, so `attempt-disposition.ts`'s map from kind to
+ * disposition can be PROVEN total by a test. Pass 9 and Pass 11 were both a kind that nothing
+ * downstream had decided what to do with; a kind added here with no disposition beside it is now a
+ * failing test rather than a leaderboard entry.
+ */
+export const FRONTIER_FAILURE_KINDS = [
+  'notInstalled', 'notAuthenticated', 'timeout', 'cancelled', 'rateLimited',
+  'refused', 'transport', 'malformedResponse', 'modelMismatch', 'budgetRefused',
   // Pass 9. Both were `transport` and `malformedResponse` respectively, and both were wrong in a
   // way that reached the leaderboard — see `attempt-disposition.ts`.
-  | 'contentFiltered' | 'toolContaminated';
+  'contentFiltered', 'toolContaminated',
+] as const;
+
+export type FrontierFailureKind = (typeof FRONTIER_FAILURE_KINDS)[number];
 
 /**
  * Which failures a retry could plausibly fix. A refusal and a mismatch are not among them.
@@ -152,6 +163,25 @@ export interface FrontierResponse {
   otlpTurn?: OTLPTurnObservation;
 }
 
+/**
+ * A DISPOSABLE REPOSITORY THE REQUEST RUNS INSIDE. Present only on a development attempt.
+ *
+ * Every text attempt leaves this absent, and absent is byte-for-byte the behaviour this adapter has
+ * always had: an empty temp directory is created here, used, and removed. When it IS present, the
+ * caller owns the directory — it is an `IsolatedWorkspace` that has already had a sealed fixture
+ * copied into it — so this adapter points the child at it and NEVER removes it. Disposal belongs to
+ * whoever materialized it, because the snapshot has to be read back before it goes.
+ *
+ * `writable` is the task's own permission, not a convenience. A repository-understanding task is
+ * read-only by construction and is given no editing tool at all; an edit task is given them and is
+ * still confined to this directory by the tool's own `--restricted` mode.
+ */
+export interface DevelopmentWorkspaceRequest {
+  /** Absolute path to the isolated workspace root. Becomes the child's working directory. */
+  root: string;
+  writable: boolean;
+}
+
 export interface FrontierRequest {
   binding: ProviderBinding;
   promptText: string;
@@ -159,6 +189,8 @@ export interface FrontierRequest {
   /** Return true to stop: a pause or an abort. Polled, and it reaches a child process. */
   shouldCancel?: () => boolean;
   now?: () => number;
+  /** Set only by the development runner. See `DevelopmentWorkspaceRequest`. */
+  developmentWorkspace?: DevelopmentWorkspaceRequest;
 }
 
 export interface FrontierAdapter {
@@ -230,6 +262,16 @@ export async function withRetry(binding: ProviderBinding, attempt: () => Promise
     }
     wasted += usedTokens;
     if (!RETRYABLE_FAILURES.includes(response.failure.kind)) break;
+    // A SPENT PLAN IS NOT A TRANSIENT FAULT, whatever kind it arrived under. Pass 11's sixty-nine
+    // usage-limit rows each carry `retryCount: 2`, so the engine sent 207 requests to be told the
+    // same thing 207 times, against an allowance that had already run out. A limit that names the
+    // hour it resets is a schedule, not a flake; the campaign's throttle abort is what handles it,
+    // and re-asking here only delays that.
+    //
+    // A BURST LIMIT IS STILL RETRIED, which is why this tests the narrow predicate and not the
+    // broad one. Waiting out a per-minute 429 is exactly what the backoff is for; refusing to
+    // retry it would trade one defect for a smaller one in the opposite direction.
+    if (isPlanExhausted(response.failure.detail)) break;
     if (shouldCancel?.()) break;
     if (index === binding.retry.maxRetries) break;
     retries += 1;
@@ -266,6 +308,37 @@ const CLI_NAME: Partial<Record<ProviderID, string>> = { claudeCLI: 'claude', cod
 export const CLAUDE_CLI_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
+ * THE TOOLS A DEVELOPMENT TURN IS GIVEN, AND THE ONES IT IS NOT.
+ *
+ * Verified against the installed `claude` 2.1.278's own `--help`, in the same way every other flag
+ * in this file was verified, and not guessed. `--tools` documents `""` to disable all tools,
+ * `default` for all of them, or an explicit list.
+ *
+ * NEITHER LIST CONTAINS `Bash`, AND THAT IS THE LOAD-BEARING PART. `development-scoring.ts` refuses
+ * to report the executed tier because `isolation.ts` is a temp directory and a path fence rather
+ * than an OS sandbox, and says plainly that it cannot stop a child process from opening a socket.
+ * Giving a development turn a shell would be exactly that child process. So the candidate reads and
+ * edits FILES and can start nothing — which keeps the unmeasured executed tier honestly unmeasured
+ * instead of quietly running candidate code under a weaker guarantee than the contract claims.
+ */
+export const DEVELOPMENT_READ_ONLY_TOOLS = 'Read,Glob,Grep';
+export const DEVELOPMENT_EDIT_TOOLS = 'Read,Glob,Grep,Edit,Write';
+
+/** Why a provider other than `claude` cannot be given a development workspace by this adapter yet. */
+export const DEVELOPMENT_WORKSPACE_UNVERIFIED =
+  'no development argument shape has been verified against this tool. `codex exec` documents `-s '
+  + 'workspace-write` and `-C <dir>`, but its sandbox governs MODEL-GENERATED SHELL COMMANDS, which '
+  + 'is the one capability a development attempt in Cernum is deliberately not given — see '
+  + 'DEVELOPMENT_READ_ONLY_TOOLS. Establishing what that interface actually permits is a pass of its '
+  + 'own, and until somebody does it the request is refused rather than sent under an isolation '
+  + 'claim nobody has checked.';
+
+export interface CLIArgumentOptions {
+  /** Present only on a development attempt. See `DevelopmentWorkspaceRequest`. */
+  developmentWorkspace?: DevelopmentWorkspaceRequest;
+}
+
+/**
  * The arguments the official tool documents for a single non-interactive request.
  *
  * The prompt is NOT among them. It goes on stdin, because anything in argv is visible in the process
@@ -277,17 +350,36 @@ export const CLAUDE_CLI_EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high',
  * be expressed. Sending a request that quietly ignores a frozen setting is the substitution this
  * whole engine refuses.
  */
-export function buildCLIArguments(binding: ProviderBinding): { args: string[]; unexpressed: string[]; notEnforceable: string[] } {
+export function buildCLIArguments(binding: ProviderBinding, options: CLIArgumentOptions = {}):
+  { args: string[]; unexpressed: string[]; notEnforceable: string[] } {
   const unexpressed: string[] = [];
   const notEnforceable: string[] = [];
   const args: string[] = [];
+  const workspace = options.developmentWorkspace;
 
   if (binding.provider === 'claudeCLI') {
     args.push('-p', '--output-format', 'json');
     // A benchmark request must not be shaped by whatever happens to be configured on this machine.
     // Settings files, skills, MCP servers and tools all change what the model is asked and what it
     // may do, and none of them are in the manifest — so they are all switched off, explicitly.
-    args.push('--tools', '', '--disable-slash-commands', '--strict-mcp-config',
+    //
+    // A DEVELOPMENT TURN IS THE ONE EXCEPTION, AND IT IS AN EXPLICIT ONE. It is handed a disposable
+    // repository and asked to read it, so `--tools ""` would measure whether a model can answer a
+    // question about files it was never allowed to open. It is given the narrowest list that makes
+    // the task possible and nothing beyond it; `--restricted` then confines those file tools to the
+    // working directory, drops every command-running tool the list does not name, refuses
+    // `bypassPermissions`, and ignores user, project and local settings on top of
+    // `--setting-sources ""`. Everything else below is unchanged, including for this path.
+    if (workspace) {
+      args.push('--tools', workspace.writable ? DEVELOPMENT_EDIT_TOOLS : DEVELOPMENT_READ_ONLY_TOOLS);
+      args.push('--restricted', '--permission-prompts', 'none');
+      // `acceptEdits` only where the task PERMITS an edit. A read-only task is given no editing tool
+      // to accept an edit with, so it is given no editing permission either.
+      if (workspace.writable) args.push('--permission-mode', 'acceptEdits');
+    } else {
+      args.push('--tools', '');
+    }
+    args.push('--disable-slash-commands', '--strict-mcp-config',
       '--setting-sources', '', '--no-session-persistence');
     if (binding.requestedModelID.length > 0) args.push('--model', binding.requestedModelID);
     if (binding.effort !== 'none') {
@@ -323,6 +415,7 @@ export function buildCLIArguments(binding: ProviderBinding): { args: string[]; u
     // It is not called here, because it needs a freshly created empty working directory that only
     // the adapter can make and clean up. `SubscriptionCLIAdapter.complete` calls it directly, and
     // this branch exists to refuse the settings that must be refused before any of that happens.
+    if (workspace) unexpressed.push(`a development workspace on ${binding.provider}: ${DEVELOPMENT_WORKSPACE_UNVERIFIED}`);
     if (binding.effort !== 'none' && !CODEX_SERVICE_EFFORT_LEVELS.includes(binding.effort)) {
       unexpressed.push(`effort '${binding.effort}': the Codex service accepts only `
         + `${CODEX_SERVICE_EFFORT_LEVELS.filter((level) => level !== 'none').join(', ')}`
@@ -330,6 +423,7 @@ export function buildCLIArguments(binding: ProviderBinding): { args: string[]; u
     }
   } else {
     unexpressed.push(`${binding.provider} is not a subscription CLI`);
+    if (workspace) unexpressed.push(`a development workspace on ${binding.provider}: ${DEVELOPMENT_WORKSPACE_UNVERIFIED}`);
   }
 
   // Sampling is not expressible through these tools. A binding that froze a temperature and is run
@@ -561,7 +655,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         + 'reach the service any other way.');
     }
 
-    const { args, unexpressed, notEnforceable } = buildCLIArguments(request.binding);
+    const { args, unexpressed, notEnforceable } = buildCLIArguments(request.binding, {
+      developmentWorkspace: request.developmentWorkspace,
+    });
     if (unexpressed.length > 0) {
       // Refused BEFORE the request. A run that sent this would produce real answers under settings
       // the manifest does not describe, which is worse than no answers.
@@ -590,7 +686,15 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
     // the operator happened to be standing when they typed the command.
     //
     // Created empty, removed afterwards, and never the repository.
-    const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-claude-'));
+    //
+    // A DEVELOPMENT ATTEMPT SUPPLIES ITS OWN, AND THIS ADAPTER DOES NOT DELETE IT. The disposable
+    // workspace already holds the materialized fixture, and it has to survive this call so the
+    // runner can read the repository back and grade what the attempt did to it. Disposal belongs to
+    // whoever created it — `withIsolatedWorkspace` — which deletes it whether the attempt succeeded
+    // or not. It is still never a checkout: `createIsolatedWorkspace` makes it under the OS temp
+    // root and the path fence refuses anything that resolves outside it.
+    const supplied = request.developmentWorkspace;
+    const workingDirectory = supplied?.root ?? fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-claude-'));
     let result;
     try {
       result = await this.run({
@@ -603,7 +707,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         onFirstOutput: (at) => { firstVisibleTokenMilliseconds = at; },
       });
     } finally {
-      try { fs.rmSync(workingDirectory, { recursive: true, force: true }); } catch { /* already gone */ }
+      if (supplied === undefined) {
+        try { fs.rmSync(workingDirectory, { recursive: true, force: true }); } catch { /* already gone */ }
+      }
     }
 
     // A REFUSED MODEL EXITS NON-ZERO AND STILL PRINTS ITS DOCUMENTED ENVELOPE. Reading the exit code
@@ -619,11 +725,15 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         // Same order and same reason as the Codex path: a service content filter is recognised from
         // its message before any status-based branch can call it a transport fault. This provider
         // emitted none in Pass 8; the classification is here so that the first one is not a fail.
-        const kind: FrontierFailureKind = isContentFilterRefusal(message) ? 'contentFiltered'
-          : status === 404 || status === 403 ? 'refused'
-            : status === 401 ? 'notAuthenticated'
-              : status === 429 ? 'rateLimited'
-                : 'transport';
+        // An exhausted allowance is read from the MESSAGE too, and before the status branches, for
+        // exactly the reason the content filter is: Pass 11 proved this provider class can announce
+        // a spent subscription inside a failed-turn envelope carrying no HTTP status at all.
+        const kind: FrontierFailureKind = isAllowanceExhaustion(message) ? 'rateLimited'
+          : isContentFilterRefusal(message) ? 'contentFiltered'
+            : status === 404 || status === 403 ? 'refused'
+              : status === 401 ? 'notAuthenticated'
+                : status === 429 ? 'rateLimited'
+                  : 'transport';
         return {
           ...empty(kind, `the CLI reported a failed turn (${errored.terminalReason ?? 'no terminal reason'}`
             + `${status === undefined ? '' : `, HTTP ${status}`}): ${message.slice(0, 400)}`),
@@ -639,7 +749,9 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
     if (result.failure) {
       const unauthenticated = /not (?:logged|signed) in|unauthenticated|please (?:log|sign) in|no active session/i
         .test(`${result.stdout}\n${result.stderr}`);
-      const rateLimited = /rate.?limit|too many requests|429|quota|usage limit/i.test(`${result.stdout}\n${result.stderr}`);
+      // One marker list, shared with the classifier that decides what the row MEANS. Two private
+      // regexes that agree today are two regexes that disagree after the next provider reword.
+      const rateLimited = isAllowanceExhaustion(`${result.stdout}\n${result.stderr}`);
       const kind: FrontierFailureKind = result.failure.kind === 'timeout' ? 'timeout'
         : result.failure.kind === 'cancelled' ? 'cancelled'
           : result.failure.kind === 'notInstalled' ? 'notInstalled'
@@ -769,11 +881,17 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
         // all, so every status-based branch below falls through to `transport` — which is how Pass 8
         // recorded a service's policy decision as a network fault, retried it twice, and then scored
         // the silence as the model's failure.
-        const kind: FrontierFailureKind = isContentFilterRefusal(message) ? 'contentFiltered'
-          : status === 400 || status === 403 || status === 404 ? 'refused'
-            : status === 401 ? 'notAuthenticated'
-              : status === 429 ? 'rateLimited'
-                : 'transport';
+        // AN EXHAUSTED ALLOWANCE IS TESTED FIRST, AND ON THE MESSAGE. This is the Pass 11 defect
+        // verbatim: `turn.failed` carrying "You've hit your usage limit ... try again at Sep 21st,
+        // 2026 1:55 AM" and NO HTTP STATUS, so every status branch below fell through to
+        // `transport` — which the campaign does not treat as a throttle, so sixty-nine attempts were
+        // recorded terminal and counted as sixty-nine failures of the model.
+        const kind: FrontierFailureKind = isAllowanceExhaustion(message) ? 'rateLimited'
+          : isContentFilterRefusal(message) ? 'contentFiltered'
+            : status === 400 || status === 403 || status === 404 ? 'refused'
+              : status === 401 ? 'notAuthenticated'
+                : status === 429 ? 'rateLimited'
+                  : 'transport';
         return {
           ...empty(kind, `the CLI reported a failed turn (${parsed.terminalReason ?? 'no terminal reason'}`
             + `${status === undefined ? '' : `, HTTP ${status}`}): ${message.slice(0, 400)}`),
@@ -783,9 +901,16 @@ export class SubscriptionCLIAdapter implements FrontierAdapter {
       }
 
       if (result.failure) {
+        // The same sniff the Claude path has done since Pass 6. A tool that dies without writing an
+        // envelope still prints why on its stderr, and "usage limit" there means the same thing it
+        // means inside an envelope: the account is out of capacity, and no model was asked anything.
+        const streams = `${result.stdout}\n${result.stderr}`;
+        const unauthenticated = /not (?:logged|signed) in|unauthenticated|please (?:log|sign) in|no active session/i.test(streams);
         const kind: FrontierFailureKind = result.failure.kind === 'timeout' ? 'timeout'
           : result.failure.kind === 'cancelled' ? 'cancelled'
-            : result.failure.kind === 'notInstalled' ? 'notInstalled' : 'transport';
+            : result.failure.kind === 'notInstalled' ? 'notInstalled'
+              : isAllowanceExhaustion(streams) ? 'rateLimited'
+                : unauthenticated ? 'notAuthenticated' : 'transport';
         return {
           ...empty(kind, `${redactSecrets(result.failure.detail)}`
             + `${result.stderr ? ` — ${redactSecrets(result.stderr).slice(0, 500)}` : ''}`),

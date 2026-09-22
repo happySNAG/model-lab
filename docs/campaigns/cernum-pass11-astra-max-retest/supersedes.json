@@ -1,0 +1,47 @@
+{
+  "_whatThisIs": "The link between this campaign and the one it supersedes. It is a POINTER, not a correction: nothing in cernum-pass07-tierb-codex-scored is edited, deleted or re-scored by this campaign, and that campaign's ledger remains the record of what happened on 2026-09-21.",
+  "supersedesForCandidate": "codexCLI:gpt-6-astra@max",
+  "supersedes": {
+    "campaign": "cernum-pass07-tierb-codex-scored",
+    "manifestID": "manifest:9adf1f6fa8efec81",
+    "whatItMeasured": "19 of 88 planned attempts produced a model evaluation. The remaining 69 were answered by the Codex service with 'You've hit your usage limit ... try again at Sep 21st, 2026 1:55 AM' and were recorded as terminal runtimeError rows, which the ranking then counted as 69 model failures. None of the 13 governance cases was ever reached.",
+    "whyItIsNotComparable": "Not because its rows are wrong \u2014 they are correct records of what the provider did \u2014 but because they cover a fifth of the plan and none of the cases that disqualified the rest of the Tier B cohort. A rate over that is a rate over a different experiment."
+  },
+  "supersededBy": {
+    "campaign": "cernum-pass11-astra-max-retest",
+    "manifestID": "manifest:f3a707691bcbbe89",
+    "reason": "The stated subscription allowance reset was 01:55 CDT on 2026-09-21 and has passed. This is a fresh campaign over the same benchmark, so that the 69 attempts the allowance ended are measured rather than assumed."
+  },
+  "whatIsIdenticalToTheCohortItIsComparedWith": {
+    "note": "Every digest that defines the BENCHMARK is byte-identical to the Tier B manifest. Only the things that must differ for a single-candidate retest differ, and each is named below.",
+    "identical": {
+      "manifestFormatVersion": 4,
+      "catalogDigest": "df9731a914754f100bb0d46e35fe4f0f7b41e7b66b9aad727036106f08844271",
+      "caseCount": 44,
+      "repeatsPerCase": 2,
+      "promptsDigest": "7acd36fa48612ea4c492180d94eb0c2ee069bb2c2aea59d7bb37ae3f4543f777",
+      "scoredCoreDigest": "97b2a9e1deb431c55e3b1dbff217c6290c50a4aeb1b02db4773f0d78d42a4850",
+      "evaluatorsDigest": "0eed63f7116bd089676c35b462d2230815b2d5c083953a07b19ae08c7230b1ab",
+      "guardsDigest": "02b1ba7bcc46b529dbb21c36afe49b2b72f7e01446facfd548aa1dea6a0dea2a",
+      "executionDigest": "5502d7d6b4a483594f4ef89b8836415bd363f8ec65d789bbdb025b0e6ee5f49c",
+      "hardwareDigest": "44b2710af63a9dbb7d8d894312a159ee489316d9a9e1e2c1481952424b4a2853",
+      "runtimeVersion": "ollama-unreported"
+    },
+    "differentAndWhy": {
+      "candidatesDigest": "one candidate instead of six",
+      "operationalEnvelopeDigest": "one provider binding instead of six",
+      "identityAdmissionDigest": "the sealed admission is narrowed to the one configuration retested",
+      "manifestID": "a new campaign has its own identity; that is what makes it a retest and not a rewrite"
+    }
+  },
+  "whatThisRetestDoesNotDo": [
+    "It does not alter, re-score or re-open cernum-pass07-tierb-codex-scored.",
+    "It does not retry any of that campaign's 88 terminal slots; those stay exactly as recorded.",
+    "It does not promote, route or qualify anything. The candidate's identity is still unverifiable on this CLI path, so no capability role and no retention recommendation follows from it.",
+    "It measures nothing about repository understanding or multi-file editing, which no Cernum suite measures and which must not be inferred from any of these results."
+  ],
+  "costPosture": "Subscription-covered Codex usage only. Marginal API charge $0 and a finite plan allowance consumed, recorded as allowance and never as free. No metered or pay-per-token candidate is in this campaign and the cost gate would block one.",
+  "machine": "Mac mini (Skippys-Mac-mini.local) \u2014 the same machine as the campaign it supersedes.",
+  "linkedAt": "2026-09-21T12:15:20Z",
+  "dispositionFixCommit": "87146737ea1e9040a3ba375f830fe855567d2ea3"
+}

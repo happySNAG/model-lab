@@ -190,7 +190,7 @@ async function bootstrap(): Promise<void> {
     applicationName: PRODUCT_NAME,
     applicationVersion: info.version,
     version: `${info.commit} · ${info.builtAt}`,
-    copyright: 'Model Lab contributors. Local benchmarking; nothing leaves this computer.',
+    copyright: 'Cernum contributors. Local benchmarking; nothing leaves this computer.',
     credits: `Evidence store: ${service.evidenceRoot}`,
   });
   installMenu();

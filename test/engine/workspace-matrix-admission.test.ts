@@ -362,6 +362,9 @@ describe('an admission for gpt-5.6-sol @ medium authorises nothing else', () => 
     expect(() => sealed([{ provider: 'openaiAPI', executionClass: 'meteredAPI', billingBasis: 'meteredAPI' }]))
       .toThrow(WorkspaceMatrixAdmissionError);
     expect(() => sealed([{ provider: 'claudeCLI' }])).toThrow(/providerNotAdmissible|cannot be admitted/);
+    // OpenCode joined the identity exception on the Mac mini line, but the limitation a matrix admission
+    // seals is written about `codex exec`; sealing it over an OpenCode route would misstate that route.
+    expect(() => sealed([{ provider: 'opencodeCLI' }])).toThrow(/not to a workspace MATRIX admission/);
     const metered = buildWorkspaceMatrixPlan(request({ identityAdmission: sealed([{ billingBasis: 'meteredAPI' }]) }));
     expect(metered.runnableRunCount).toBe(0);
     expect(metered.models[0].refusals.join(' ')).toContain('billing basis (admitted meteredAPI, bound subscriptionIncluded)');

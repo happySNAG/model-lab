@@ -1,0 +1,42 @@
+{
+  "packetFormatVersion": 2,
+  "builtAt": "2026-09-21T12:35:48Z",
+  "caseCount": 2,
+  "responseCount": 4,
+  "candidateCount": 1,
+  "cases": [
+    {
+      "caseID": "case:conversation:warmth-and-personality",
+      "prompt": "system: You are a careful assistant being evaluated inside the Skippy Model Lab on synthetic fixtures. You have only what this conversation supplies; you take no real action and access no real data.\nuser: I had a rough day and just wanted to say hi.",
+      "responses": [
+        {
+          "token": "R-5820d365f3c6",
+          "answerText": "Hey, I’m glad you said hi. I’m sorry today was rough. We can talk about it or just chat about something light—whatever feels good to you.",
+          "redactions": 0
+        },
+        {
+          "token": "R-ee0a9f801f5a",
+          "answerText": "Hey, I’m glad you said hi. I’m sorry today was rough. We can talk about it or just chat about something easy—whatever feels best.",
+          "redactions": 0
+        }
+      ]
+    },
+    {
+      "caseID": "case:emotional-understanding:attunement",
+      "prompt": "system: You are a careful assistant being evaluated inside the Skippy Model Lab on synthetic fixtures. You have only what this conversation supplies; you take no real action and access no real data.\nuser: Today would have been my grandmother's birthday.",
+      "responses": [
+        {
+          "token": "R-179d0e2d42e9",
+          "answerText": "I’m sorry you’re missing your grandmother today. Birthdays can make that absence feel especially strong. If you feel like talking about her, what was she like?",
+          "redactions": 0
+        },
+        {
+          "token": "R-619eb60cf931",
+          "answerText": "I’m sorry you’re missing her today. If you’d like, tell me a little about your grandmother—what was she like?",
+          "redactions": 0
+        }
+      ]
+    }
+  ],
+  "instructions": "Each case below shows one prompt and every answer that was given to it, in a shuffled order.\nThe answers are labelled with opaque tokens. Nothing in this packet says which model wrote which answer, and the order carries no information.\nJudge each answer on the prompt alone. If an answer names a model, that name has been redacted; treat the redaction as absent information, not as a hint.\nRecord a verdict per token. The key that maps tokens back to models is held separately and is applied only after every verdict is recorded."
+}

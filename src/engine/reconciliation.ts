@@ -16,7 +16,7 @@
 // produces is born `unproven` exactly like every other.
 
 import { EffortLevel, ProviderID } from './provider';
-import { DESIRED_CANDIDATE_LADDER } from './discovery';
+import { DESIRED_CANDIDATE_LADDER, FREE_OPENCODE_DEVELOPMENT_POOL } from './discovery';
 
 /** One requested configuration: a model at one effort. The unit the cohort is counted in. */
 export interface RequestedConfiguration {
@@ -93,9 +93,44 @@ export const OPENAI_API_IDENTITY_ADDITIONS: RequestedConfiguration[] = [
   { provider: 'openaiAPI', modelID: 'gpt-6-astra', displayName: 'GPT-6 Astra', effort: 'low' },
 ];
 
-/** Everything the ladder is allowed to contain: the frozen request, plus what was added since. */
-export const AUTHORIZED_COHORT: RequestedConfiguration[] =
-  [...REQUESTED_COHORT, ...CERNUM_V2_ADDITIONS, ...OPENAI_API_IDENTITY_ADDITIONS];
+/**
+ * The free OpenCode pool, authorised as a COHORT OF CANDIDATES and not as a routing change.
+ *
+ * WHY ITS OWN LIST RATHER THAN A LINE APPENDED TO ANY OF THE OTHERS. `REQUESTED_COHORT` is the
+ * frozen Pass 5C request and must stay frozen for the reason written above it. `CERNUM_V2_ADDITIONS`
+ * is the V2 authorisation, and a test asserts its exact contents — which is the point of it, and
+ * would quietly stop being the point if later work kept appending to it. Each authorisation gets its
+ * own list, and `AUTHORIZED_COHORT` is the union, so a ladder row nobody authorised is still
+ * reported as extra.
+ *
+ * WHAT THIS AUTHORISES, STATED NARROWLY. It authorises Cernum to NAME these six models, to discover
+ * them, and to be pointed at them by `cernum smoke --models`. It authorises nothing else. It is not
+ * a routing change, not a qualification, and not a benchmark campaign: every one of these rows is
+ * born `unproven` exactly like Union Alpha, `selectableModels` drops it, and the campaign builder
+ * refuses it. A model becomes routable here only by being measured, and nothing in this file
+ * measures anything.
+ *
+ * THEY ARE FREE AND THEY ARE STILL METERED. OpenCode's catalogue publishes a $0 list price for all
+ * six, which is why they are the sensible place to start. `opencodeCLI` remains a `meteredAPI`
+ * provider, so a campaign that selects one still crosses the metered-authorization gate — a zero
+ * list price is a statement by the provider, not a guarantee Cernum can make on the user's behalf.
+ * Derived from the ladder's own pool constant so the two cannot disagree about which six.
+ */
+export const FREE_OPENCODE_POOL_ADDITIONS: RequestedConfiguration[] =
+  FREE_OPENCODE_DEVELOPMENT_POOL.flatMap((entry) => entry.desiredEfforts.map((effort) => ({
+    provider: entry.provider,
+    modelID: entry.modelID,
+    displayName: entry.displayName,
+    effort: effort as EffortLevel,
+  })));
+
+/**
+ * Everything the ladder is allowed to contain: the frozen request, plus what was added since, each
+ * authorisation in its own list and in the order it arrived.
+ */
+export const AUTHORIZED_COHORT: RequestedConfiguration[] = [
+  ...REQUESTED_COHORT, ...CERNUM_V2_ADDITIONS, ...OPENAI_API_IDENTITY_ADDITIONS, ...FREE_OPENCODE_POOL_ADDITIONS,
+];
 
 /**
  * The two models Pass 5B lost, named explicitly.

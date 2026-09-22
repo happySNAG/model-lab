@@ -15,6 +15,7 @@ export * from './opencode-adapter';
 export * from './discovery-store';
 export * from './reconciliation';
 export * from './identity-admission';
+export * from './cost-eligibility';
 export * from './identity-smoke';
 export * from './smoke-binding';
 export * from './spending';
@@ -84,3 +85,34 @@ export * from './synthetic';
 export * from './live-host';
 export * from './frontier-host';
 export * from './host-factory';
+
+// The development runner. Named rather than `export *`, so the terminal's development commands reach
+// exactly what they call and the engine's public surface grows by nothing else.
+export {
+  DevelopmentPlanError, buildDevelopmentPlan, describeDevelopmentPlan,
+} from './development-plan';
+export type { DevelopmentCampaignPlan, DevelopmentCandidateRequest } from './development-plan';
+export {
+  DevelopmentCampaignError, contractVersionRefusal, createDevelopmentCampaign, openDevelopmentCampaign,
+  promptVersionRefusal, runDevelopmentCampaign, unrunnableAttempts,
+} from './development-campaign';
+export type { DevelopmentProgressEvent } from './development-campaign';
+export {
+  buildDevelopmentCampaignReport, describeDevelopmentCampaignReport, readDevelopmentCampaignState,
+} from './development-report';
+export type { DevelopmentCampaignReport } from './development-report';
+export {
+  DEVELOPMENT_REINTERPRETATIONS_DIRECTORY, describeDevelopmentReinterpretation, listDevelopmentReinterpretations,
+  reinterpretDevelopmentCampaign,
+} from './development-reinterpretation';
+export type { DevelopmentReinterpretation } from './development-reinterpretation';
+export {
+  DEVELOPMENT_EDIT_EVIDENCE_DIRECTORY, MAX_EDIT_EVIDENCE_CHANGED_FILES, MAX_EDIT_EVIDENCE_RETAINED_BYTES,
+  buildEditEvidence, readVerifiedEditEvidence,
+} from './development-edit-evidence';
+export type { DevelopmentEditEvidence, EditEvidenceReference } from './development-edit-evidence';
+export { readBenchmarkCommit, readWorkingTreeDirty } from './development-provenance';
+export {
+  DEVELOPMENT_EXECUTABLE_PROVIDERS, DevelopmentEligibilityError, SYNTHETIC_DEVELOPMENT_PROVIDER,
+  SyntheticDevelopmentAdapter, developmentExecutionRefusals, parseSyntheticDevelopmentScript,
+} from './development-synthetic';

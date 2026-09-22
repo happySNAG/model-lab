@@ -15,7 +15,9 @@ import * as path from 'node:path';
 import { BenchmarkCase } from '../core/benchmark';
 import { caseByID, humanReviewRubrics, policyCatalog } from '../core/catalog';
 import { CaseMaterial, GovernanceRow, RubricRow } from './adjudication';
-import { dispositionOf, isContentFilterRefusal, AttemptDisposition } from './attempt-disposition';
+import {
+  AttemptDisposition, DISPOSITION_EXPLANATION, effectiveDisposition, isScoreableDisposition,
+} from './attempt-disposition';
 
 /** One row of a campaign's `results.jsonl`, as far as anything here is willing to assume. */
 export interface EvidenceRow {
@@ -117,9 +119,13 @@ export interface ReinterpretedRow {
   candidate: string;
   /** What the sealed evidence says, unchanged. */
   originalStatus: string;
+  /** What the sealed evidence recorded on the second axis, unchanged. */
+  originalDisposition: string;
   /** What this engine would record now. The original row is not modified. */
   correctedStatus: string;
   correctedDisposition: AttemptDisposition;
+  /** Why this row is read the way it is, in the vocabulary a reader of the rankings will meet. */
+  correctedDispositionMeans: string;
   /** How many requests the old classification spent re-asking a question with a fixed answer. */
   retriesSpentOnADeterministicRefusal: number;
   evidence: string;
@@ -137,38 +143,47 @@ export interface Reinterpretation {
 }
 
 export const REINTERPRETATION_NOTE =
-  'OFFLINE AND BESIDE THE ORIGINAL. Not one byte of the sealed Pass 8 ledger is modified by this file. '
-  + 'It states what the corrected engine WOULD have recorded for rows that Pass 8 wrote as `runtimeError` '
-  + 'and counted as model-quality failures. The rows are not re-run, no request is sent, and the original '
-  + 'campaign result stands as the campaign result. A benchmark that edited its own history after finding a '
-  + 'defect would be a benchmark whose history means nothing.';
+  'OFFLINE AND BESIDE THE ORIGINAL. Not one byte of the sealed ledger is modified by this file. It states '
+  + 'what the corrected engine WOULD have recorded for rows an earlier pass wrote as `runtimeError` and '
+  + 'counted as model-quality failures, reading nothing but those rows\' own recorded detail. The rows are '
+  + 'not re-run, no request is sent, NO OUTCOME IS UPGRADED TO A PASS, and the original campaign result '
+  + 'stands as the campaign result. What changes is only which rows are eligible to be scored at all. A '
+  + 'benchmark that edited its own history after finding a defect would be a benchmark whose history means '
+  + 'nothing.';
 
 /**
  * What the corrected classification does to a sealed campaign, computed without touching it.
  *
- * A row qualifies when it was recorded `runtimeError` AND its detail carries either a provider
- * content-filter marker or this engine's own tool-contamination sentence. Both tests are on the
- * recorded detail, so the reinterpretation is reproducible from the evidence file alone.
+ * A row qualifies when it was recorded without a scored answer AND the corrected reading of its own
+ * recorded detail says no model produced one. The test is on the RECORDED DETAIL, so the
+ * reinterpretation is reproducible by anybody holding the evidence file and nothing else — and it
+ * is the same function the live engine and the ranking use, so a re-derivation can never drift into
+ * being a second opinion about what these rows mean.
  */
 export function reinterpretDispositions(rows: EvidenceRow[], source: string, producedAt: string): Reinterpretation {
   const reinterpreted: ReinterpretedRow[] = [];
   for (const row of rows) {
-    if (row.status !== 'runtimeError') continue;
+    const corrected = effectiveDisposition(row);
+    if (isScoreableDisposition(corrected)) continue;
+    const stored = typeof row.disposition === 'string' ? row.disposition : 'modelAnswered';
+    if (stored === corrected && row.status !== 'runtimeError') continue;
     const detail = String(row.detail ?? '');
-    const contaminated = /this turn invoked \d+ tool\(s\)/.test(detail);
-    const refused = isContentFilterRefusal(detail);
-    if (!contaminated && !refused) continue;
-    const disposition: AttemptDisposition = refused ? 'providerRefusedContent' : 'interfaceContaminated';
     reinterpreted.push({
       slotKey: row.slotKey,
       caseID: caseOf(row),
       candidate: candidateOf(row),
       originalStatus: row.status,
+      originalDisposition: stored,
       correctedStatus: 'envelopeFailure',
-      correctedDisposition: disposition,
-      // Only a content refusal is deterministic. A contaminated turn's retries, if any, are not
-      // counted here as waste, because a second attempt might genuinely not have run a tool.
-      retriesSpentOnADeterministicRefusal: refused && typeof row.retryCount === 'number' ? row.retryCount : 0,
+      correctedDisposition: corrected,
+      correctedDispositionMeans: DISPOSITION_EXPLANATION[corrected],
+      // Only a deterministic non-answer counts as waste. A content filter and an exhausted
+      // allowance both return the identical answer to the identical prompt for as long as they
+      // hold, so every retry against one bought nothing. A contaminated turn's retries are NOT
+      // counted, because a second attempt might genuinely not have run a tool.
+      retriesSpentOnADeterministicRefusal:
+        (corrected === 'providerRefusedContent' || corrected === 'providerCapacityExhausted')
+        && typeof row.retryCount === 'number' ? row.retryCount : 0,
       evidence: detail.slice(0, 400),
     });
   }
@@ -192,14 +207,15 @@ export function reinterpretDispositions(rows: EvidenceRow[], source: string, pro
   };
 }
 
-/** Rows as the corrected engine would carry them into a ranking, for an offline recount. */
+/**
+ * Rows as the corrected engine would carry them into a ranking, for an offline recount.
+ *
+ * Kept as a named export because that is what the CLI and the Pass 9 tests call it, and delegating
+ * rather than re-implementing is the point: there is now exactly one function in this engine that
+ * decides what a recorded row measured, and every reader of a ledger goes through it.
+ */
 export function correctedOutcomeDisposition(row: EvidenceRow): AttemptDisposition {
-  if (row.status === 'runtimeError') {
-    const detail = String(row.detail ?? '');
-    if (isContentFilterRefusal(detail)) return 'providerRefusedContent';
-    if (/this turn invoked \d+ tool\(s\)/.test(detail)) return 'interfaceContaminated';
-  }
-  return dispositionOf(row);
+  return effectiveDisposition(row);
 }
 
 /** Write a JSON artefact, creating its directory. Pretty-printed: these are read by people. */
@@ -217,7 +233,7 @@ export function writeText(file: string, text: string): void {
 
 export interface RecountedCandidate {
   candidate: string;
-  /** As the sealed campaign counted it: the refusals and contaminations counted as fails. */
+  /** As the sealed campaign counted it: every non-answer counted as a model-quality fail. */
   sealedScoredCount: number;
   sealedPassRateMilli: number | null;
   /** With rule 6 applied: those rows out of the numerator and the denominator. */
@@ -227,6 +243,10 @@ export interface RecountedCandidate {
   deltaMilli: number | null;
   providerRefusalRateMilli: number;
   interfaceContaminationRateMilli: number;
+  providerCapacityExhaustionRateMilli: number;
+  /** Attempts made for this candidate, and the share of them that survive the corrected rule. */
+  attempts: number;
+  measuredCoverageMilli: number;
 }
 
 /**
@@ -259,6 +279,7 @@ export function recountWithCorrectedDispositions(
       (of.scored === 0 ? null : Math.round((of.passes * 1000) / of.scored));
     const refused = mine.filter((row) => correctedOutcomeDisposition(row) === 'providerRefusedContent').length;
     const contaminated = mine.filter((row) => correctedOutcomeDisposition(row) === 'interfaceContaminated').length;
+    const capacity = mine.filter((row) => correctedOutcomeDisposition(row) === 'providerCapacityExhausted').length;
     const sealedRate = rate(sealed);
     const correctedRate = rate(corrected);
     return {
@@ -270,6 +291,13 @@ export function recountWithCorrectedDispositions(
       deltaMilli: sealedRate === null || correctedRate === null ? null : correctedRate - sealedRate,
       providerRefusalRateMilli: mine.length === 0 ? 0 : Math.round((refused * 1000) / mine.length),
       interfaceContaminationRateMilli: mine.length === 0 ? 0 : Math.round((contaminated * 1000) / mine.length),
+      providerCapacityExhaustionRateMilli: mine.length === 0 ? 0 : Math.round((capacity * 1000) / mine.length),
+      // How much of what was ATTEMPTED for this candidate survives the corrected rule. The pass rate
+      // beside it is correct over that share and over nothing more, and Pass 11 is the proof that a
+      // rate published without it can read as the opposite of what happened.
+      measuredCoverageMilli: mine.length === 0 ? 0
+        : Math.round((mine.filter((row) => correctedOutcomeDisposition(row) === 'modelAnswered').length * 1000) / mine.length),
+      attempts: mine.length,
     };
   });
 }
