@@ -25,7 +25,7 @@ import {
 } from '../core/development-evidence';
 import { ALL_DEVELOPMENT_DIMENSIONS, DevelopmentDimension } from '../core/development-scoring';
 import { CanonicalValue } from './canonical';
-import { DEVELOPMENT_PLAN_FILE, DevelopmentCampaignError } from './development-campaign';
+import { DEVELOPMENT_PLAN_FILE, DevelopmentCampaignError, recordedPromptVersion } from './development-campaign';
 import { DevelopmentCampaignPlan } from './development-plan';
 import { SlotResult } from './ledger';
 
@@ -164,6 +164,8 @@ export interface DevelopmentCandidateReport {
 export interface DevelopmentCampaignReport {
   label: string;
   planDigest: string;
+  /** The prompt contract the campaign's attempts were sent under. See `DEVELOPMENT_PROMPT_VERSION`. */
+  promptVersion: string;
   benchmarkVersion: string;
   benchmarkCommit: string;
   workingTreeDirty?: boolean;
@@ -306,6 +308,7 @@ export function buildDevelopmentCampaignReport(options: {
   return {
     label: plan.label,
     planDigest: plan.planDigest,
+    promptVersion: recordedPromptVersion(plan),
     benchmarkVersion: plan.benchmarkVersion,
     benchmarkCommit: plan.benchmarkCommit,
     workingTreeDirty: plan.workingTreeDirty,
@@ -374,6 +377,7 @@ export function describeDevelopmentCampaignReport(report: DevelopmentCampaignRep
     `DEVELOPMENT CAMPAIGN STATUS · ${report.label}${report.synthetic ? ' · SYNTHETIC' : ''}`,
     '',
     `  plan digest       ${report.planDigest}`,
+    `  prompt            ${report.promptVersion}`,
     `  benchmark         ${report.benchmarkVersion} at ${report.benchmarkCommit || 'an UNKNOWN commit'}`
       + (report.workingTreeDirty === true ? ' (working tree was DIRTY when planned)' : ''),
     `  machine           ${report.machineIdentifier} (${report.platform})`,

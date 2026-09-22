@@ -26,9 +26,7 @@
 // blank would put an exhausted subscription, a content filter or a dead socket into a model's
 // development column, which is the exact defect Pass 9 and Pass 11 were spent correcting.
 
-import {
-  DEVELOPMENT_ANSWER_PATH, DevelopmentTask,
-} from '../core/development-benchmark';
+import { DevelopmentTask } from '../core/development-benchmark';
 import { FixtureRepo } from '../core/development-fixture';
 import { AttemptDisposition, dispositionForFailure, isScoreableDisposition } from './attempt-disposition';
 import { materializeFixture, readWorkspaceSnapshot, WorkspaceReading } from './development-workspace';
@@ -88,17 +86,54 @@ export interface DevelopmentExecutionOutcome {
 }
 
 /**
+ * The version of the development prompt contract: the words wrapped around a task's own prompt, and
+ * where the answer is asked to go.
+ *
+ * IT IS PART OF THE EXPERIMENT, SO IT IS PART OF THE PLAN. It is stamped on every plan, it enters the
+ * plan's identity and therefore every run id, and a campaign created under one version is refused a
+ * resume under another. Two campaigns that asked different questions are two measurements, and a
+ * resume that joined them would produce a rate that belongs to neither.
+ *
+ *   development-prompt-1   asked a READ-ONLY attempt to WRITE its answer to `cernum-answer.json` and
+ *                          also print it. The workspace is read-only by construction, so a candidate
+ *                          that tried was refused, and the natural reply — the JSON, then a sentence
+ *                          explaining that the file could not be written — is not a JSON document.
+ *                          That instruction was the defect, not the candidates. `dev-cohort-1` ran
+ *                          under it and stays associated with it permanently.
+ *   development-prompt-2   a read-only attempt returns ONLY the JSON object as its reply and is asked
+ *                          to write nothing. Edit tasks are worded exactly as before.
+ *
+ * Bump it whenever `developmentPromptFor` changes what any attempt is asked to do.
+ */
+export const DEVELOPMENT_PROMPT_VERSION = 'development-prompt-2';
+
+/**
+ * The version a plan recorded before plans carried one. Every such plan was built by a runner that
+ * sent `development-prompt-1`, so that is what an absent field means — never "the current one", which
+ * would let a campaign asked the defective question be resumed as though it had been asked this one.
+ */
+export const LEGACY_DEVELOPMENT_PROMPT_VERSION = 'development-prompt-1';
+
+/**
  * The prompt one development attempt is sent.
  *
  * The fixture is NOT interpolated into it. The repository is on disk in front of the candidate, and
  * a prompt that also carried its text would be measuring reading comprehension of a prompt rather
  * than of a repository — and would make the input token count a property of the fixture's size.
+ *
+ * A READ-ONLY TASK IS NEVER ASKED TO WRITE. Its workspace gives it no tool that could, so an
+ * instruction to write a file is an instruction it cannot follow, and what a candidate says about
+ * failing to follow it lands in the reply and makes the reply unparseable. The answer is the reply:
+ * the JSON object, alone. The task's own prompt — the question and the exact shape of the object —
+ * follows unchanged.
  */
 export function developmentPromptFor(task: DevelopmentTask): { system: string; user: string } {
   const preamble = task.kind === 'repositoryQuestion'
-    ? `The repository is the current working directory. Read it. Do not modify it.\n\n`
-      + `Write your answer as a single JSON object to the file ${DEVELOPMENT_ANSWER_PATH} in the `
-      + `working directory root, and also print it as your reply.\n\n`
+    ? `The repository is the current working directory. Read it. Do not modify it, and do not create `
+      + `or write any file.\n\n`
+      + `Return your answer as your reply: ONLY the required JSON object, printed to stdout. No prose, `
+      + `explanation, heading or code fence before it or after it — the reply must parse as a single `
+      + `JSON object on its own.\n\n`
     : `The repository is the current working directory. Make the change in place, editing the files `
       + `that genuinely need to change and no others.\n\n`;
   return { system: task.prompt.system, user: `${preamble}${task.prompt.user}` };

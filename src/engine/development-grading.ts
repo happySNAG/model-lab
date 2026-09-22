@@ -6,15 +6,18 @@
 // handed, stamp the provenance on the result, and refuse to produce a grade at all when nothing was
 // measured.
 //
-// WHERE A READ-ONLY TASK'S ANSWER COMES FROM, AND WHY IT IS PREFERRED FROM THE WORKSPACE.
+// WHERE A READ-ONLY TASK'S ANSWER COMES FROM.
 //
-// A repository-understanding attempt is asked to do two things with its answer: WRITE it to the
-// reserved answer path, and print it. Those can disagree — a model can write a clean object to the
-// file and wrap the printed copy in a markdown fence, or write nothing and print everything. The
-// file is preferred because it is the artefact the task actually asked for and because it is read
-// back through the same path fence as every other file, so an answer path that resolved outside the
-// workspace is refused rather than read. The printed text is the fallback, so a model that answered
-// correctly and skipped the file is not failed for a filing convention.
+// Under `development-prompt-2` a repository-understanding attempt is asked for ONE thing: its reply,
+// which must be the JSON object alone. It is given no tool that could write, and it is told not to.
+// (`development-prompt-1` also asked it to write the reserved answer path — an instruction a
+// read-only workspace made impossible to follow — and that is what the version bump corrected.)
+//
+// The reserved answer path is still read first, and a clean object found there is still graded: it
+// is read back through the same path fence as every other file, so an answer path that resolved
+// outside the workspace is refused rather than read. On the current prompt it is simply absent, and
+// the printed reply is what is graded. A reply that is the object followed by prose is NOT an object
+// and is graded as the non-conforming output it is.
 //
 // WHICHEVER WAS USED IS RECORDED. `answerSource` is on the result, because "this candidate's answers
 // are only ever in its stdout" is a fact about the integration worth being able to see — exactly as
@@ -75,8 +78,8 @@ export function readBackAnswer(outcome: DevelopmentExecutionOutcome): Developmen
       text: outcome.answerText,
       source: 'providerReply',
       because: written === undefined
-        ? `the attempt wrote no ${DEVELOPMENT_ANSWER_PATH}, so the printed reply was graded instead; a correct `
-          + 'answer is not failed for a filing convention'
+        ? `the attempt wrote no ${DEVELOPMENT_ANSWER_PATH}, so the printed reply was graded — which is where the `
+          + 'current prompt asks a read-only attempt to put its answer'
         : `${DEVELOPMENT_ANSWER_PATH} was present but could not be graded (${written.slice(0, 120)}), so the `
           + 'printed reply was graded instead',
     };

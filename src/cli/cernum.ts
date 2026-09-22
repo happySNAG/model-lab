@@ -49,7 +49,7 @@ import {
   DEVELOPMENT_EXECUTABLE_PROVIDERS, DevelopmentCampaignError, DevelopmentCandidateRequest, FrontierAdapter, SYNTHETIC_DEVELOPMENT_PROVIDER,
   SyntheticDevelopmentAdapter, acquireCampaignLock, buildDevelopmentCampaignReport, buildDevelopmentPlan,
   createDevelopmentCampaign, describeDevelopmentCampaignReport, describeDevelopmentPlan, developmentExecutionRefusals,
-  openDevelopmentCampaign, parseSyntheticDevelopmentScript, readDevelopmentCampaignState, runDevelopmentCampaign,
+  openDevelopmentCampaign, parseSyntheticDevelopmentScript, promptVersionRefusal, readDevelopmentCampaignState, runDevelopmentCampaign,
   unrunnableAttempts,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
@@ -2484,6 +2484,10 @@ async function commandDevelopResume(positional: string[], options: Options, invo
     fail(`${name} was created with ${state.meta.syntheticScriptDigest ? `synthetic script ${state.meta.syntheticScriptDigest}` : 'no synthetic script'}, `
       + `and this resume supplies ${script.digest ? `script ${script.digest}` : 'none'}. Resuming would join two experiments.`, 2);
   }
+  // THE SAME PROMPT OR NONE, and refused before the dry run too: a preview that listed attempts a
+  // resume would then refuse to send would be describing a run that cannot happen.
+  const promptRefusal = promptVersionRefusal(state.plan);
+  if (promptRefusal !== undefined) fail(`${name} cannot be resumed: ${promptRefusal}`, 2);
   const done = new Set(state.rows.map((row) => row.slotKey));
   const pending = state.plan.attempts.filter((attempt) => !done.has(attempt.slotKey));
   const refusals = synthetic ? [] : developmentExecutionRefusals(state.plan);

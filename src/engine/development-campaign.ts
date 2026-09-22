@@ -31,7 +31,9 @@ import { FixtureRepo } from '../core/development-fixture';
 import { CanonicalValue } from './canonical';
 import { AttemptDisposition, NON_ANSWER_TERMINAL_STATUS } from './attempt-disposition';
 import { DevelopmentCampaignPlan, DevelopmentPlannedAttempt, DevelopmentPlanError } from './development-plan';
-import { DevelopmentExecutionOutcome, executeDevelopmentAttempt } from './development-execution';
+import {
+  DEVELOPMENT_PROMPT_VERSION, DevelopmentExecutionOutcome, LEGACY_DEVELOPMENT_PROMPT_VERSION, executeDevelopmentAttempt,
+} from './development-execution';
 import { DevelopmentAttemptResult, gradeDevelopmentAttempt } from './development-grading';
 import { developmentProvenance } from './development-provenance';
 import { FrontierAdapter } from './frontier-adapter';
@@ -72,6 +74,7 @@ export function createDevelopmentCampaign(root: string, plan: DevelopmentCampaig
     contractID: plan.contractID,
     contractVersion: plan.contractVersion,
     contractDigest: plan.contractDigest,
+    promptVersion: plan.promptVersion,
     machineIdentifier: plan.machineIdentifier,
     platform: plan.platform,
     suiteIDs: plan.suiteIDs,
@@ -92,12 +95,41 @@ export function readDevelopmentPlan(root: string): DevelopmentCampaignPlan {
 }
 
 /**
+ * The prompt contract a recorded plan was sent under.
+ *
+ * A plan written before plans carried one was written by a runner that sent the legacy version, so
+ * that is what its absence means. It is read, never written back: the plan file is evidence.
+ */
+export function recordedPromptVersion(plan: DevelopmentCampaignPlan): string {
+  return typeof plan.promptVersion === 'string' && plan.promptVersion.length > 0
+    ? plan.promptVersion : LEGACY_DEVELOPMENT_PROMPT_VERSION;
+}
+
+/**
+ * Why this build may not run any more of a campaign, or undefined when it may.
+ *
+ * THIS BUILD SENDS EXACTLY ONE PROMPT CONTRACT. A campaign created under another would have its
+ * remaining attempts asked a different question from its recorded ones, and the ledger would count
+ * both toward one rate. There is no migration: the old campaign keeps its rows, and a new campaign
+ * is the way to measure under the new prompt.
+ */
+export function promptVersionRefusal(plan: DevelopmentCampaignPlan,
+                                     current: string = DEVELOPMENT_PROMPT_VERSION): string | undefined {
+  const recorded = recordedPromptVersion(plan);
+  if (recorded === current) return undefined;
+  return `campaign ${plan.label} was created under prompt contract ${recorded}, and this build sends ${current}. `
+    + 'Running its remaining attempts would join answers to two different prompts in one campaign. It is left '
+    + 'exactly as recorded; start a new campaign to measure under the current prompt.';
+}
+
+/**
  * Open an existing campaign, refusing a plan that is not the one it was created with.
  *
  * The digest covers the registry, the contract, the candidate list and every run id, so any change
  * to the experiment is a refusal here rather than a silent join two months later.
  */
-export function openDevelopmentCampaign(root: string, clock?: () => string):
+export function openDevelopmentCampaign(root: string, clock?: () => string,
+                                        currentPromptVersion: string = DEVELOPMENT_PROMPT_VERSION):
   { ledger: Ledger; plan: DevelopmentCampaignPlan } {
   if (!Ledger.exists(root)) {
     throw new DevelopmentCampaignError('noCampaign', `${root} holds no plan.json; there is no campaign here to resume`);
@@ -115,6 +147,8 @@ export function openDevelopmentCampaign(root: string, clock?: () => string):
     throw new DevelopmentCampaignError('notDevelopment',
       `the campaign at ${root} is not a development campaign, and the two are graded by different contracts`);
   }
+  const refusal = promptVersionRefusal(plan, currentPromptVersion);
+  if (refusal !== undefined) throw new DevelopmentCampaignError('promptVersionDrift', refusal);
   return { ledger, plan };
 }
 
@@ -159,6 +193,8 @@ export interface RunDevelopmentCampaignOptions {
   sleep?: (milliseconds: number) => Promise<void>;
   /** Injected by the tests so a run is deterministic. */
   executeAttempt?: typeof executeDevelopmentAttempt;
+  /** The prompt contract this build sends. Injected by the tests; `DEVELOPMENT_PROMPT_VERSION` in life. */
+  currentPromptVersion?: string;
 }
 
 export interface DevelopmentCampaignProgress {
@@ -257,6 +293,7 @@ export function developmentResultRow(options: {
     contractID: graded.provenance.contractID,
     contractVersion: graded.provenance.contractVersion,
     contractDigest: graded.provenance.contractDigest,
+    promptVersion: plan.promptVersion,
     executedAt: graded.provenance.executedAt,
 
     // `${provider}.${kind}: sentence`, so the failure kind is recoverable from the evidence file
@@ -378,6 +415,11 @@ export async function runDevelopmentCampaign(
   const now = options.now ?? (() => new Date());
   const execute = options.executeAttempt ?? executeDevelopmentAttempt;
   const preserve = options.preserveArtefacts ?? true;
+
+  // Checked again here, not only on open: a caller that built the ledger itself must not be able to
+  // run a campaign's remaining attempts under a prompt its recorded attempts were never sent.
+  const refusal = promptVersionRefusal(plan, options.currentPromptVersion);
+  if (refusal !== undefined) throw new DevelopmentCampaignError('promptVersionDrift', refusal);
 
   const byKey = new Map(plan.attempts.map((attempt) => [attempt.slotKey, attempt]));
   const pending: PlanSlot[] = ledger.pending();

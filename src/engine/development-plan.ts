@@ -41,6 +41,7 @@ import {
   CostEligibilityVerdict, CostPolicyOverride, ZeroMarginalCostConfirmation,
   assertCostEligibilityAuthorized, costEligibilityAgreesWithBillingBasis,
 } from './cost-eligibility';
+import { DEVELOPMENT_PROMPT_VERSION } from './development-execution';
 import { MachineIdentity, readBenchmarkCommit, readMachineIdentity, readWorkingTreeDirty } from './development-provenance';
 import { PlanSlot, PlannableCatalog, buildPlan } from './ledger';
 import {
@@ -126,6 +127,11 @@ export interface DevelopmentPlanRequest {
   workingTreeDirty?: boolean;
   /** Where the commit is read from when it was not supplied. Never a task workspace. */
   repositoryPath?: string;
+  /**
+   * The prompt contract this plan will send. Supplied only by the tests; a real plan is always the
+   * version this build sends, because the runner has no way to send any other.
+   */
+  promptVersion?: string;
 }
 
 /** A candidate as the plan carries it: the binding it will run under and the cost verdict that let it. */
@@ -171,6 +177,12 @@ export interface DevelopmentCampaignPlan {
   contractID: string;
   contractVersion: string;
   contractDigest: string;
+  /**
+   * The development prompt contract every attempt in this plan is sent under. In the plan's identity,
+   * so a plan that would ask a different question has different run ids, and a resume under a build
+   * that sends a different version is refused. See `DEVELOPMENT_PROMPT_VERSION`.
+   */
+  promptVersion: string;
   benchmarkVersion: string;
   /** Empty when the runner could not read one. Never invented, never a version standing in for it. */
   benchmarkCommit: string;
@@ -328,19 +340,23 @@ export function buildDevelopmentPlan(request: DevelopmentPlanRequest): Developme
   const benchmarkCommit = request.benchmarkCommit ?? readBenchmarkCommit(request.repositoryPath);
   const workingTreeDirty = request.workingTreeDirty ?? readWorkingTreeDirty(request.repositoryPath);
 
+  const promptVersion = request.promptVersion ?? DEVELOPMENT_PROMPT_VERSION;
+
   const suiteByID = new Map(wanted.map((suite) => [suite.id, suite]));
   const suiteDigests = new Map(wanted.map((suite) => [suite.id, developmentSuiteDigest(suite)]));
   const taskByID = new Map<string, DevelopmentTask>();
   for (const suite of wanted) for (const task of suite.tasks) taskByID.set(task.id, task);
 
-  // The plan's identity, which every run id is derived from. It deliberately includes the contract
-  // and the registry: a plan rebuilt after either changed is a different experiment and must not
-  // reuse the old run ids, because a resume keyed on them would join two measurements.
+  // The plan's identity, which every run id is derived from. It deliberately includes the contract,
+  // the registry and the prompt contract: a plan rebuilt after any of them changed is a different
+  // experiment and must not reuse the old run ids, because a resume keyed on them would join two
+  // measurements.
   const planIdentity = fnv1a64Hex([
     request.label,
     String(request.repeats),
     plannableCatalog.catalogDigest,
     developmentContractDigest(),
+    promptVersion,
     candidates.map((entry) => `${entry.name}=${entry.binding.provider}:${entry.binding.requestedModelID}@${entry.binding.effort}`).join(','),
     wanted.map((suite) => `${suite.id}@${suite.version}=${suiteDigests.get(suite.id)}`).join(','),
   ].join('||'));
@@ -380,6 +396,7 @@ export function buildDevelopmentPlan(request: DevelopmentPlanRequest): Developme
     contractID: DEVELOPMENT_SCORING_CONTRACT_ID,
     contractVersion: DEVELOPMENT_SCORING_CONTRACT_VERSION,
     contractDigest: developmentContractDigest(),
+    promptVersion,
     benchmarkVersion: request.benchmarkVersion,
     benchmarkCommit,
     workingTreeDirty,
@@ -413,6 +430,7 @@ export function describeDevelopmentPlan(plan: DevelopmentCampaignPlan): string[]
     `  plan digest       ${plan.planDigest}`,
     `  registry digest   ${plan.catalogDigest}`,
     `  contract          ${plan.contractID}@${plan.contractVersion} (${plan.contractDigest})`,
+    `  prompt            ${plan.promptVersion}`,
     `  benchmark         ${plan.benchmarkVersion} at ${plan.benchmarkCommit.length > 0 ? plan.benchmarkCommit : 'an UNKNOWN commit — no git and no build stamp'}`
       + (plan.workingTreeDirty === true ? ' · WORKING TREE DIRTY, so the commit alone misdescribes this grade' : ''),
     `  machine           ${plan.machineIdentifier} (${plan.platform})`,

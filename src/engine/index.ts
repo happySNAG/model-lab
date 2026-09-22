@@ -59,8 +59,8 @@ export {
 } from './development-plan';
 export type { DevelopmentCampaignPlan, DevelopmentCandidateRequest } from './development-plan';
 export {
-  DevelopmentCampaignError, createDevelopmentCampaign, openDevelopmentCampaign, runDevelopmentCampaign,
-  unrunnableAttempts,
+  DevelopmentCampaignError, createDevelopmentCampaign, openDevelopmentCampaign, promptVersionRefusal,
+  runDevelopmentCampaign, unrunnableAttempts,
 } from './development-campaign';
 export type { DevelopmentProgressEvent } from './development-campaign';
 export {

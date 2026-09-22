@@ -191,10 +191,11 @@ describe('what the attempt left behind', () => {
 });
 
 describe('the prompt a development attempt is sent', () => {
-  it('names the working directory and the answer path on a read-only task, and forbids modification', () => {
+  it('names the working directory on a read-only task, forbids modification, and asks for the answer as the reply', () => {
     const prompt = developmentPromptFor(QUESTION_TASK);
-    expect(prompt.user).toContain(DEVELOPMENT_ANSWER_PATH);
+    expect(prompt.user).not.toContain(DEVELOPMENT_ANSWER_PATH);
     expect(prompt.user).toContain('Do not modify it');
+    expect(prompt.user).toContain('ONLY the required JSON object');
     expect(prompt.system).toBe(QUESTION_TASK.prompt.system);
   });
 
