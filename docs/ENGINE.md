@@ -942,7 +942,7 @@ installed and on `PATH`.
 | `observations-export --out <file>` | write this machine's observations as one sealed, transport-neutral bundle |
 | `observations-import <bundle>` | import another machine's bundle — digest-checked whole, idempotent, and never promoted to a local observation |
 | `availability [--machine <key>] [--route <key>]` | which routes are observed available, on which machine, and from whose observation |
-| `candidates <capability>` | the routes whose evidence QUALIFIES them, with every exclusion and its reasons. A set, never a winner. `--require-verified-identity` excludes routes whose served identity cannot be verified; `--policy crp1` re-answers under the superseded Pass 6/7 rule |
+| `candidates <capability>` | the routes whose evidence QUALIFIES them, with every exclusion and its reasons. A set, never a winner. `--require-verified-identity` excludes routes whose served identity cannot be verified; `--policy crp1` re-answers under the superseded Pass 6/7 rule; `--evidence-roots a,b` reads sealed records from the campaign roots that hold them, where a route's evidence is spread across the matrices that produced it |
 | `unlock --endpoint <url>` | release a crashed campaign's hold on an endpoint |
 | `where` | where campaigns live, and whether this command is installed |
 | `install-command` / `uninstall-command` | put the command on your account, or take it off |
