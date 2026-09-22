@@ -282,6 +282,38 @@ describe('develop, develop-status, develop-resume: a synthetic campaign interrup
   }, 600_000);
 });
 
+describe('develop-reinterpret: an edit campaign re-graded from its retained bytes, offline', () => {
+  it('re-grades every edit row from its evidence, touches no provider or network, and moves no recorded byte', () => {
+    const script = referenceScript();
+    const suite = developmentSuites.find((entry) => entry.tasks.some((task) => task.kind === 'repositoryEdit'))!;
+    const run = cernum('develop', 'edits', '--synthetic', '--synthetic-script', script, '--suites', suite.id, '--repeats', '1');
+    expect(run.status, run.output).toBe(0);
+    const directory = path.join(campaigns, 'edits');
+    const rows = fs.readFileSync(path.join(directory, 'results.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows).toHaveLength(suite.tasks.length);
+    for (const row of rows) expect(row.editEvidence.state, row.taskID).toBe('byteExact');
+    const before = new Map(campaignFiles().map((file) => [file, fs.readFileSync(path.join(campaigns, file))]));
+
+    const dry = cernum('develop-reinterpret', 'edits', '--dry-run');
+    expect(dry.status, dry.output).toBe(0);
+    expect(dry.output).toContain(`re-graded edits   ${suite.tasks.length} edit(s)`);
+    expect(dry.output).toContain('DRY RUN');
+    expect(campaignFiles().sort()).toEqual([...before.keys()].sort());
+
+    const written = cernum('develop-reinterpret', 'edits');
+    expect(written.status, written.output).toBe(0);
+    expect(written.output).toContain('the campaign\'s own files are unchanged');
+    const added = campaignFiles().filter((file) => !before.has(file));
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatch(/^edits\/reinterpretations\/mldri1_[0-9a-f]+\.json$/);
+    for (const [file, bytes] of before) expect(fs.readFileSync(path.join(campaigns, file)).equals(bytes), file).toBe(true);
+    const document = JSON.parse(fs.readFileSync(path.join(campaigns, added[0]), 'utf8'));
+    expect(document.editRows).toHaveLength(suite.tasks.length);
+    expect(document.editRows.every((row: { reproducedUnderOriginalContract: boolean }) => row.reproducedUnderOriginalContract)).toBe(true);
+    nothingReachedAnything();
+  }, 300_000);
+});
+
 describe('the synthetic candidate and the execution gate, in process', () => {
   it('refuses a script path that leaves the workspace', async () => {
     const task = developmentSuites[0].tasks[0];

@@ -300,8 +300,11 @@ export const COMMAND_SPECS: CommandSpec[] = [
     detail: [
       'Sends nothing and runs nothing. Each recorded repository-understanding answer is first graded',
       'under the contract it was originally graded under and must reproduce its recorded row exactly;',
-      'only then is it graded under the current contract. Multi-file-edit rows are carried unchanged,',
-      'because the workspaces they were graded from no longer exist.',
+      'only then is it graded under the current contract. A multi-file-edit row is re-graded the same',
+      'way from its edit evidence in development-edits/: the stored baseline plus the retained files must',
+      'rebuild the graded snapshot digest first. A row with no edit evidence (campaigns before it existed),',
+      'or with evidence declared redacted or incomplete, is carried unchanged with the reason. Evidence',
+      'that is missing or altered refuses the whole reinterpretation.',
       '',
       'The result is written to reinterpretations/<id>.json beside the campaign. The campaign\'s results,',
       'plan, meta and artefacts are hashed before and after, and are never modified.',

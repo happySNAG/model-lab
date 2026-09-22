@@ -21,6 +21,9 @@
 // THE WORKSPACE IS GONE BY THE TIME A ROW IS WRITTEN, which is why the row carries the snapshot
 // digests, the touched paths and the assertion outcomes rather than a path to look at. An optional
 // artefact file keeps the answer text and the reader's warnings for whoever has to debug a verdict.
+// A graded multi-file-edit attempt also writes its EDIT EVIDENCE (`development-edit-evidence.ts`):
+// the retained bytes of every changed file and a diff of each, proven to rebuild the graded
+// snapshot, and the row commits to that document by hash.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -36,6 +39,9 @@ import {
   DEVELOPMENT_PROMPT_VERSION, DevelopmentExecutionOutcome, LEGACY_DEVELOPMENT_PROMPT_VERSION, executeDevelopmentAttempt,
 } from './development-execution';
 import { DevelopmentAttemptResult, gradeDevelopmentAttempt } from './development-grading';
+import {
+  EditEvidenceLimits, EditEvidenceReference, buildEditEvidence, writeEditEvidence,
+} from './development-edit-evidence';
 import { developmentProvenance } from './development-provenance';
 import { FrontierAdapter } from './frontier-adapter';
 import { Ledger, PlanSlot, SlotResult, TerminalSlotStatus, atomicWriteJSON } from './ledger';
@@ -208,8 +214,13 @@ export interface RunDevelopmentCampaignOptions {
   adapters: Partial<Record<ProviderID, FrontierAdapter>>;
   shouldCancel?: () => boolean;
   onProgress?: (event: DevelopmentProgressEvent) => void;
-  /** Keep the per-attempt debugging artefact. On by default: a verdict nobody can check is not evidence. */
+  /**
+   * Keep the per-attempt debugging artefact and, on a graded edit attempt, its edit evidence. On by
+   * default: a verdict nobody can check is not evidence.
+   */
   preserveArtefacts?: boolean;
+  /** Injected by the tests to exercise the bounds. `DEFAULT_EDIT_EVIDENCE_LIMITS` in life. */
+  editEvidenceLimits?: EditEvidenceLimits;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
   /** Injected by the tests so a run is deterministic. */
@@ -260,6 +271,8 @@ export function developmentResultRow(options: {
   outcome: DevelopmentExecutionOutcome;
   graded: DevelopmentAttemptResult;
   status: TerminalSlotStatus;
+  /** What was retained of a graded edit attempt's workspace. Absent on every other row. */
+  editEvidence?: EditEvidenceReference;
 }): Record<string, CanonicalValue | undefined> {
   const { attempt, plan, outcome, graded, status } = options;
   const candidate = plan.candidates.find((entry) => entry.name === attempt.candidate)!;
@@ -376,6 +389,9 @@ export function developmentResultRow(options: {
     workspaceTotalBytes: outcome.reading.totalBytes,
     workspaceBounded: outcome.reading.bounded,
     workspaceWarnings: outcome.reading.warnings,
+    // THE ROW COMMITS TO ITS EDIT EVIDENCE BY HASH, so a re-read can tell the document it finds from
+    // the one that was written. Its state says whether the retained bytes are the graded bytes.
+    editEvidence: options.editEvidence as unknown as CanonicalValue | undefined,
 
     // Telemetry, exactly as a text row carries it, from the same builder.
     telemetry: outcome.record as unknown as CanonicalValue,
@@ -412,6 +428,33 @@ function writeArtefact(root: string, attempt: DevelopmentPlannedAttempt, outcome
       measurementState: graded.state,
       notMeasuredBecause: graded.notMeasuredBecause ?? null,
     } as CanonicalValue));
+}
+
+/**
+ * Retain a graded edit attempt's bytes, BEFORE its row is written, so a row never names evidence
+ * that is not yet on disk. An interruption between the two leaves the slot pending, and its re-run
+ * overwrites the orphaned document.
+ */
+function editEvidenceFor(root: string, attempt: DevelopmentPlannedAttempt, repo: FixtureRepo,
+                         outcome: DevelopmentExecutionOutcome, graded: DevelopmentAttemptResult, preserve: boolean,
+                         limits?: EditEvidenceLimits): EditEvidenceReference {
+  const evidence = buildEditEvidence({
+    slotKey: attempt.slotKey,
+    runID: attempt.runID,
+    taskID: attempt.taskID,
+    repo,
+    result: outcome.reading.snapshot,
+    gradedResultSnapshotDigest: graded.result!.resultSnapshotDigest,
+    gradedBaselineSnapshotDigest: graded.result!.baselineSnapshotDigest,
+    gradedFromBoundedReading: outcome.reading.bounded,
+    limits,
+  });
+  if (preserve) return writeEditEvidence(root, evidence, repo);
+  return {
+    file: '', sha256: '', state: 'notRetained',
+    notByteExactBecause: ['the runner was told not to preserve artefacts, so no bytes were retained'],
+    changedFileCount: evidence.changedFileCount, retainedBytes: 0, resultSnapshotSha256: evidence.result.snapshotSha256,
+  };
 }
 
 function provenanceFor(attempt: DevelopmentPlannedAttempt, plan: DevelopmentCampaignPlan,
@@ -529,11 +572,14 @@ export async function runDevelopmentCampaign(
     const status = developmentTerminalStatus(graded, outcome);
 
     if (preserve) writeArtefact(options.root, attempt, outcome, graded);
+    const editEvidence = task.kind === 'repositoryEdit' && graded.state === 'graded'
+      ? editEvidenceFor(options.root, attempt, repo, outcome, graded, preserve, options.editEvidenceLimits)
+      : undefined;
 
     // THE FSYNC THE WHOLE CAMPAIGN RESTS ON. The row is durable before the runner moves on, so an
     // interruption after this line can never re-run this attempt and an interruption before it can
     // never leave a half-recorded one.
-    ledger.appendResult(developmentResultRow({ attempt, plan, outcome, graded, status }) as SlotResult);
+    ledger.appendResult(developmentResultRow({ attempt, plan, outcome, graded, status, editEvidence }) as SlotResult);
     ledger.writeCheckpoint({ planDigest: plan.planDigest, campaignKind: 'development' });
 
     progress.attempted += 1;

@@ -8,9 +8,16 @@
 //
 // ONLY WHAT CAN BE RE-DERIVED FROM RECORDED BYTES IS RE-GRADED. A repository-understanding row is
 // graded from its answer text, and the artefact keeps that text — so it can be graded again. A
-// multi-file-edit row is graded from the workspace the attempt left behind, and that workspace was
-// deleted after grading; only its digest survives. Those rows are carried unchanged and listed as
-// such. (Contract 2 does not change multi-file-edit grading, so carrying them is also correct.)
+// multi-file-edit row is graded from the workspace the attempt left behind, which was deleted after
+// grading. A row written since edit evidence existed commits by hash to a document that retains
+// every changed file (`development-edit-evidence.ts`); that document is proven to rebuild the graded
+// snapshot from the stored baseline, and the row is then re-graded from those bytes. A row with no
+// edit evidence (every campaign before it, `dev-cohort-2` included), or whose evidence declares
+// itself redacted or incomplete, is carried unchanged and listed with the reason.
+//
+// EVIDENCE THAT IS NOT WHAT THE ROW COMMITTED TO IS A REFUSAL OF THE WHOLE READING, not a skipped
+// row: a missing or altered document, baseline or retained file, or a diff that does not apply,
+// means some of the campaign's recorded evidence is not what was recorded.
 //
 // THE RAW ANSWER IS PROVEN TO BE THE GRADED ANSWER BEFORE IT IS RE-GRADED. Each artefact's text is
 // first graded under the ORIGINAL contract, by the task as it was sealed then, and must reproduce
@@ -30,7 +37,9 @@ import {
   DevelopmentTask, developmentComparabilityKey, developmentTaskDigest,
 } from '../core/development-benchmark';
 import { developmentFixtureByID, developmentTaskByID } from '../core/development-catalog';
-import { DevelopmentTaskResult, answerReadingRulesFor, gradeRepositoryQuestion } from '../core/development-evaluation';
+import {
+  DevelopmentTaskResult, answerReadingRulesFor, gradeRepositoryEdit, gradeRepositoryQuestion,
+} from '../core/development-evaluation';
 import {
   DEVELOPMENT_SCORING_CONTRACT_ID, DEVELOPMENT_SCORING_CONTRACT_VERSION, developmentContractDigest,
 } from '../core/development-scoring';
@@ -41,6 +50,7 @@ import {
   recordedPromptVersion,
 } from './development-campaign';
 import { DevelopmentCampaignPlan } from './development-plan';
+import { EditEvidenceError, EditEvidenceReference, readVerifiedEditEvidence } from './development-edit-evidence';
 import {
   DevelopmentAnswerFormat, answerFormatOf, answerReadingOfRow, buildDevelopmentCampaignReport,
   readDevelopmentCampaignState,
@@ -57,6 +67,9 @@ export const DEVELOPMENT_REINTERPRETATION_NOTE =
   + 'campaign\'s results, plan, meta or artefacts was modified; their hashes are recorded here as they were '
   + 'read. Each repository-understanding answer was first re-graded under the contract it was originally '
   + 'graded under and reproduced its recorded row exactly, and only then graded under the current contract. '
+  + 'Each multi-file-edit row with byte-exact edit evidence was rebuilt from the stored baseline and its '
+  + 'retained files, proven to reproduce the graded snapshot digest, re-graded under its original contract '
+  + 'to reproduce its row, and only then graded under the current contract. '
   + 'The recorded campaign result stands as the campaign result; this document is a second, identified '
   + 'reading of the same answers.';
 
@@ -114,6 +127,30 @@ export interface ReinterpretedAnswerRow {
   changed: boolean;
 }
 
+export interface ReinterpretedEditRow {
+  slotKey: string;
+  candidate: string;
+  taskID: string;
+  repeat: number;
+  evidence: { file: string; sha256: string; changedFiles: number; retainedBytes: number; baselineFile: string };
+  /** The graded snapshot, rebuilt from the stored baseline and the retained files. */
+  resultSnapshot: { digest: string; sha256: string; reproduced: true };
+  answerKey: { recordedTaskDigest: string; originalContractEquivalentDigest: string; unchanged: true };
+  reproducedUnderOriginalContract: true;
+  before: { status: string; structuralCredit: string; failedAssertions: string[] };
+  after: { status: string; structuralCredit: string; failedAssertions: string[] };
+  changed: boolean;
+}
+
+/** Why a row was carried unchanged. */
+export type CarriedBecause =
+  /** No model answered: nothing to read under any contract. */
+  | 'notMeasured'
+  /** A multi-file-edit row written before edit evidence existed: only its digest was kept. */
+  | 'noEditEvidence'
+  /** Edit evidence exists and is intact, and declares itself redacted, incomplete or not retained. */
+  | 'editEvidenceNotGradeable';
+
 export interface DimensionSummary {
   statusCounts: Record<string, number>;
   /** Share of repeats with full structural credit, averaged per task — the `develop-status` score. */
@@ -133,7 +170,8 @@ export interface CandidateSummary {
 
 export interface DevelopmentReinterpretation {
   kind: 'developmentReinterpretation';
-  formatVersion: 1;
+  /** 2 adds `editRows`, the `kind` on `carriedUnchanged`, and `original.evidenceFiles`. */
+  formatVersion: 2;
   reinterpretationID: string;
   producedAt: string;
   note: string;
@@ -147,8 +185,10 @@ export interface DevelopmentReinterpretation {
     resultsSha256: string;
     planSha256: string;
     metaSha256: string;
-    /** One digest over every artefact read, by file name. */
+    /** One digest over every artefact and edit evidence file read, by name. */
     artefactsSha256: string;
+    /** sha256 of every file the campaign held when it was read, reinterpretations excluded. */
+    evidenceFiles: Record<string, string>;
     rowCount: number;
   };
   regradedUnder: {
@@ -161,7 +201,8 @@ export interface DevelopmentReinterpretation {
   };
   scope: string;
   rows: ReinterpretedAnswerRow[];
-  carriedUnchanged: { slotKey: string; dimension: string; because: string }[];
+  editRows: ReinterpretedEditRow[];
+  carriedUnchanged: { slotKey: string; dimension: string; kind: CarriedBecause; because: string }[];
   summary: { before: CandidateSummary[]; after: CandidateSummary[] };
 }
 
@@ -200,7 +241,18 @@ function summarise(plan: DevelopmentCampaignPlan, rows: Row[], derivedAt: string
 function reinterpretedRow(original: Row, task: DevelopmentTask, result: DevelopmentTaskResult,
                           status: string, reinterpretationID: string): Row {
   const grade = result.grade;
-  const answer = result.answer!;
+  const answer = result.answer;
+  const answerFields: Row = answer === undefined ? {} : {
+    answerStrictlyParsed: answer.strictlyParsed,
+    answerSemanticallyParsed: answer.semanticallyParsed,
+    answerFenceRemoved: answer.fenceRemoved,
+    answerReadingRules: answer.rules,
+    answerReading: answer.reading,
+    answerTerminalObjectExtracted: answer.terminalObjectExtracted,
+    answerTerminalExtractionRefusedBecause: answer.terminalExtractionRefusedBecause,
+    answerShapeValid: answer.shapeValid,
+    answerShapeViolations: answer.shapeViolations,
+  };
   return {
     ...original,
     status,
@@ -226,15 +278,7 @@ function reinterpretedRow(original: Row, task: DevelopmentTask, result: Developm
       id: outcome.id, metric: outcome.metric, visibility: outcome.visibility, held: outcome.held,
       shortcutProbe: outcome.shortcutProbe, detail: outcome.detail,
     })),
-    answerStrictlyParsed: answer.strictlyParsed,
-    answerSemanticallyParsed: answer.semanticallyParsed,
-    answerFenceRemoved: answer.fenceRemoved,
-    answerReadingRules: answer.rules,
-    answerReading: answer.reading,
-    answerTerminalObjectExtracted: answer.terminalObjectExtracted,
-    answerTerminalExtractionRefusedBecause: answer.terminalExtractionRefusedBecause,
-    answerShapeValid: answer.shapeValid,
-    answerShapeViolations: answer.shapeViolations,
+    ...answerFields,
     originalTaskDigest: text(original.taskDigest),
     originalContractVersion: text(original.contractVersion),
     reinterpretationID,
@@ -243,6 +287,128 @@ function reinterpretedRow(original: Row, task: DevelopmentTask, result: Developm
 
 function hashIfPresent(file: string): string {
   return fs.existsSync(file) ? sha256(fs.readFileSync(file)) : 'absent';
+}
+
+/** sha256 of every file under the campaign, by relative path, reinterpretations excluded. */
+function hashCampaignFiles(root: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(directory, entry.name);
+      const relative = path.relative(root, full).split(path.sep).join('/');
+      if (entry.isDirectory()) {
+        if (relative !== DEVELOPMENT_REINTERPRETATIONS_DIRECTORY) walk(full);
+      } else if (entry.isFile()) {
+        out[relative] = sha256(fs.readFileSync(full));
+      }
+    }
+  };
+  if (fs.existsSync(root)) walk(root);
+  return out;
+}
+
+function assertionOutcomesOf(row: Row): string[] {
+  return (Array.isArray(row.assertionOutcomes) ? row.assertionOutcomes : [])
+    .map((entry) => entry as Record<string, CanonicalValue>)
+    .map((entry) => `${text(entry.id)}=${entry.held === true}`).sort();
+}
+
+function answerKeyFor(original: Row, slotKey: string): { current: DevelopmentTask; asSealed: DevelopmentTask; sealedDigest: string } {
+  const current = developmentTaskByID(text(original.taskID));
+  if (!current) {
+    throw new DevelopmentCampaignError('unknownTask', `${text(original.taskID)} is not in this build's development registry`);
+  }
+  const originalVersion = text(original.contractVersion);
+  const asSealed = taskAsSealedUnder(current, originalVersion);
+  const sealedDigest = developmentTaskDigest(asSealed);
+  if (sealedDigest !== original.taskDigest) {
+    throw new DevelopmentCampaignError('answerKeyChanged',
+      `${text(original.taskID)} digests to ${sealedDigest} under contract ${originalVersion}, but ${slotKey} was graded `
+      + `against ${text(original.taskDigest)}. The task itself changed, so its answers cannot be re-read as the same measurement.`);
+  }
+  return { current, asSealed, sealedDigest };
+}
+
+/**
+ * One multi-file-edit row, re-graded from its retained bytes — or the reason it cannot be.
+ *
+ * Throws `DevelopmentCampaignError` when the evidence is not what the row committed to.
+ */
+function regradeEditRow(root: string, original: Row, artefactHashes: Record<string, string>):
+  { carried: { kind: CarriedBecause; because: string } }
+  | { task: DevelopmentTask; result: DevelopmentTaskResult; row: ReinterpretedEditRow } {
+  const slotKey = text(original.slotKey);
+  const reference = original.editEvidence as unknown as EditEvidenceReference | undefined;
+  if (reference === undefined || reference === null) {
+    return { carried: { kind: 'noEditEvidence',
+      because: 'graded from a workspace that was deleted after grading, by a build that kept only its digest; the '
+        + 'bytes that were graded were never retained, so the row cannot be re-derived' } };
+  }
+  if (reference.state === 'notRetained') {
+    return { carried: { kind: 'editEvidenceNotGradeable', because: reference.notByteExactBecause.join('; ') } };
+  }
+
+  let verified;
+  try {
+    verified = readVerifiedEditEvidence(root, {
+      slotKey, runID: text(original.runID), fixtureRepoDigest: text(original.fixtureRepoDigest),
+      baselineSnapshotDigest: text(original.baselineSnapshotDigest),
+      resultSnapshotDigest: text(original.resultSnapshotDigest), reference,
+    });
+  } catch (error) {
+    if (error instanceof EditEvidenceError) {
+      throw new DevelopmentCampaignError(error.code, `${error.message}. Nothing was written.`);
+    }
+    throw error;
+  }
+  Object.assign(artefactHashes, verified.files);
+  if (!verified.usable) return { carried: { kind: 'editEvidenceNotGradeable', because: verified.because } };
+
+  const { current, asSealed, sealedDigest } = answerKeyFor(original, slotKey);
+  const originalVersion = text(original.contractVersion);
+  const retryDetail = typeof original.retryDetail === 'string' ? original.retryDetail : undefined;
+
+  // The retained bytes, graded as they originally were, must reproduce the recorded row exactly.
+  const reproduced = gradeRepositoryEdit(asSealed, verified.repo, verified.snapshot,
+    { taskDigest: sealedDigest, comparabilityKey: text(original.comparabilityKey) }, { retryDetail });
+  const recordedOutcomes = assertionOutcomesOf(original);
+  const reproducedOutcomes = reproduced.outcomes.map((outcome) => `${outcome.id}=${outcome.held}`).sort();
+  if (JSON.stringify(recordedOutcomes) !== JSON.stringify(reproducedOutcomes)
+      || reproduced.grade.structuralCredit !== original.structuralCredit
+      || reproduced.grade.credit !== original.credit
+      || reproduced.resultSnapshotDigest !== original.resultSnapshotDigest) {
+    throw new DevelopmentCampaignError('notReproduced',
+      `${slotKey}: the retained edit, graded under contract ${originalVersion}, does not reproduce the recorded row, so it `
+      + 'is not provably the edit that was graded. Nothing was written.');
+  }
+
+  const result = gradeRepositoryEdit(current, verified.repo, verified.snapshot,
+    { taskDigest: developmentTaskDigest(current), comparabilityKey: developmentComparabilityKey(current) }, { retryDetail });
+  const status = statusFor(text(original.status), result);
+  return {
+    task: current,
+    result,
+    row: {
+      slotKey,
+      candidate: text(original.candidate),
+      taskID: text(original.taskID),
+      repeat: typeof original.repeat === 'number' ? original.repeat : 0,
+      evidence: {
+        file: reference.file, sha256: reference.sha256, changedFiles: verified.evidence.changedFileCount,
+        retainedBytes: verified.evidence.retainedBytes, baselineFile: `${verified.evidence.baseline.file}`,
+      },
+      resultSnapshot: { digest: result.resultSnapshotDigest, sha256: reference.resultSnapshotSha256, reproduced: true },
+      answerKey: { recordedTaskDigest: text(original.taskDigest), originalContractEquivalentDigest: sealedDigest, unchanged: true },
+      reproducedUnderOriginalContract: true,
+      before: {
+        status: text(original.status),
+        structuralCredit: text(original.structuralCredit),
+        failedAssertions: recordedOutcomes.filter((entry) => entry.endsWith('=false')).map((entry) => entry.slice(0, -6)),
+      },
+      after: { status, structuralCredit: result.grade.structuralCredit, failedAssertions: failedAssertionIDs(result.outcomes) },
+      changed: status !== text(original.status) || result.grade.structuralCredit !== original.structuralCredit,
+    },
+  };
 }
 
 /**
@@ -264,6 +430,7 @@ export function reinterpretDevelopmentCampaign(options: {
   const planFile = path.join(root, DEVELOPMENT_PLAN_FILE);
   const metaFile = path.join(root, 'meta.json');
   const before = { results: hashIfPresent(resultsFile), plan: hashIfPresent(planFile), meta: hashIfPresent(metaFile) };
+  const filesBefore = hashCampaignFiles(root);
 
   const state = readDevelopmentCampaignState(root);
   if (state.unreadableLines > 0) {
@@ -275,19 +442,23 @@ export function reinterpretDevelopmentCampaign(options: {
 
   const artefactHashes: Record<string, string> = {};
   const regraded: { original: Row; task: DevelopmentTask; result: DevelopmentTaskResult; row: ReinterpretedAnswerRow }[] = [];
+  const editRegraded: { original: Row; task: DevelopmentTask; result: DevelopmentTaskResult; row: ReinterpretedEditRow }[] = [];
   const carriedUnchanged: DevelopmentReinterpretation['carriedUnchanged'] = [];
 
   for (const original of originalRows) {
     const slotKey = text(original.slotKey);
-    if (original.dimension !== 'repositoryUnderstanding') {
-      carriedUnchanged.push({ slotKey, dimension: text(original.dimension),
-        because: 'graded from a workspace that was deleted after grading; only its digest was kept, so it cannot be '
-          + 're-derived — and contract 2 does not change multi-file-edit grading' });
+    if (original.measurementState !== 'graded') {
+      carriedUnchanged.push({ slotKey, dimension: text(original.dimension), kind: 'notMeasured',
+        because: 'no model answered this attempt, so there is nothing to read under any contract' });
       continue;
     }
-    if (original.measurementState !== 'graded') {
-      carriedUnchanged.push({ slotKey, dimension: text(original.dimension),
-        because: 'no model answered this attempt, so there is no answer to read under any contract' });
+    if (original.dimension !== 'repositoryUnderstanding') {
+      const outcome = regradeEditRow(root, original, artefactHashes);
+      if ('carried' in outcome) {
+        carriedUnchanged.push({ slotKey, dimension: text(original.dimension), ...outcome.carried });
+      } else {
+        editRegraded.push({ original, ...outcome });
+      }
       continue;
     }
     if (original.answerSource !== 'providerReply' && original.answerSource !== 'none') {
@@ -313,29 +484,19 @@ export function reinterpretDevelopmentCampaign(options: {
         `${slotKey}'s recorded answer reaches the artefact's ${ARTEFACT_ANSWER_LIMIT}-character limit and may have been cut`);
     }
 
-    const current = developmentTaskByID(text(original.taskID));
-    const repo = current && developmentFixtureByID(current.fixtureRepoID, current.fixtureRepoVersion);
-    if (!current || !repo) {
-      throw new DevelopmentCampaignError('unknownTask', `${text(original.taskID)} is not in this build's development registry`);
-    }
-
     // The answer key: the task as sealed under the row's contract must be the task the row names.
+    const { current, asSealed, sealedDigest } = answerKeyFor(original, slotKey);
     const originalVersion = text(original.contractVersion);
-    const asSealed = taskAsSealedUnder(current, originalVersion);
-    const sealedDigest = developmentTaskDigest(asSealed);
-    if (sealedDigest !== original.taskDigest) {
-      throw new DevelopmentCampaignError('answerKeyChanged',
-        `${text(original.taskID)} digests to ${sealedDigest} under contract ${originalVersion}, but ${slotKey} was graded `
-        + `against ${text(original.taskDigest)}. The task itself changed, so its answers cannot be re-read as the same measurement.`);
+    const repo = developmentFixtureByID(current.fixtureRepoID, current.fixtureRepoVersion);
+    if (!repo) {
+      throw new DevelopmentCampaignError('unknownTask', `${text(original.taskID)} names a fixture this build does not register`);
     }
 
     // The raw answer: graded as it originally was, it must reproduce the recorded row exactly.
     const reproduced = gradeRepositoryQuestion(asSealed, repo, answerText,
       { taskDigest: sealedDigest, comparabilityKey: text(original.comparabilityKey) },
       { contractVersion: originalVersion });
-    const recordedOutcomes = (Array.isArray(original.assertionOutcomes) ? original.assertionOutcomes : [])
-      .map((entry) => entry as Record<string, CanonicalValue>)
-      .map((entry) => `${text(entry.id)}=${entry.held === true}`).sort();
+    const recordedOutcomes = assertionOutcomesOf(original);
     const reproducedOutcomes = reproduced.outcomes.map((outcome) => `${outcome.id}=${outcome.held}`).sort();
     if (JSON.stringify(recordedOutcomes) !== JSON.stringify(reproducedOutcomes)
         || reproduced.grade.structuralCredit !== original.structuralCredit
@@ -389,13 +550,13 @@ export function reinterpretDevelopmentCampaign(options: {
     contractDigest: developmentContractDigest(), producedAt,
   }, 'mldri1:');
 
-  const regradedBySlot = new Map(regraded.map((entry) => [text(entry.original.slotKey),
+  const regradedBySlot = new Map([...regraded, ...editRegraded].map((entry) => [text(entry.original.slotKey),
     reinterpretedRow(entry.original, entry.task, entry.result, entry.row.after.status, reinterpretationID)]));
   const afterRows = originalRows.map((row) => regradedBySlot.get(text(row.slotKey)) ?? row);
 
   const reinterpretation: DevelopmentReinterpretation = {
     kind: 'developmentReinterpretation',
-    formatVersion: 1,
+    formatVersion: 2,
     reinterpretationID,
     producedAt,
     note: DEVELOPMENT_REINTERPRETATION_NOTE,
@@ -410,6 +571,7 @@ export function reinterpretDevelopmentCampaign(options: {
       planSha256: before.plan,
       metaSha256: before.meta,
       artefactsSha256,
+      evidenceFiles: filesBefore,
       rowCount: originalRows.length,
     },
     regradedUnder: {
@@ -420,9 +582,11 @@ export function reinterpretDevelopmentCampaign(options: {
       benchmarkCommit: options.benchmarkCommit,
       workingTreeDirty: options.workingTreeDirty,
     },
-    scope: 'repository-understanding rows are re-graded from their recorded answer text; every other row is carried '
-      + 'unchanged and listed under carriedUnchanged with the reason',
+    scope: 'repository-understanding rows are re-graded from their recorded answer text, and multi-file-edit rows '
+      + 'from their byte-exact edit evidence; every other row is carried unchanged and listed under carriedUnchanged '
+      + 'with the reason',
     rows: regraded.map((entry) => entry.row),
+    editRows: editRegraded.map((entry) => entry.row),
     carriedUnchanged,
     summary: {
       before: summarise(plan, originalRows, producedAt),
@@ -440,10 +604,12 @@ export function reinterpretDevelopmentCampaign(options: {
   fs.mkdirSync(directory, { recursive: true });
   atomicWriteJSON(target, reinterpretation as unknown as CanonicalValue);
 
-  const after = { results: hashIfPresent(resultsFile), plan: hashIfPresent(planFile), meta: hashIfPresent(metaFile) };
-  if (after.results !== before.results || after.plan !== before.plan || after.meta !== before.meta) {
+  const filesAfter = hashCampaignFiles(root);
+  const moved = [...new Set([...Object.keys(filesBefore), ...Object.keys(filesAfter)])]
+    .filter((file) => filesBefore[file] !== filesAfter[file]).sort();
+  if (moved.length > 0) {
     throw new DevelopmentCampaignError('evidenceMoved',
-      `the campaign's recorded files changed while it was being reinterpreted (${JSON.stringify({ before, after })}); `
+      `the campaign's recorded files changed while it was being reinterpreted (${moved.join(', ')}); `
       + `the reinterpretation at ${target} describes files that are no longer on disk and must not be used`);
   }
   return { reinterpretation, writtenTo: target };
@@ -473,8 +639,9 @@ export function describeDevelopmentReinterpretation(value: DevelopmentReinterpre
       + (value.regradedUnder.workingTreeDirty === true ? ' (working tree DIRTY)' : ''),
     `  evidence          results ${value.original.resultsSha256.slice(0, 23)}… · artefacts ${value.original.artefactsSha256.slice(0, 23)}…`,
     `  re-graded         ${value.rows.length} answer(s), every one reproduced under the original contract first`,
+    `  re-graded edits   ${value.editRows.length} edit(s), every one rebuilt from retained bytes to its graded digest and reproduced first`,
     `  carried           ${value.carriedUnchanged.length} row(s) unchanged (not re-derivable, or no answer)`,
-    `  changed           ${value.rows.filter((row) => row.changed).length} row(s)`,
+    `  changed           ${value.rows.filter((row) => row.changed).length + value.editRows.filter((row) => row.changed).length} row(s)`,
   ];
   for (const after of value.summary.after) {
     const before = value.summary.before.find((entry) => entry.candidate === after.candidate)!;
@@ -484,12 +651,27 @@ export function describeDevelopmentReinterpretation(value: DevelopmentReinterpre
     lines.push(`      before        ${counts(b.statusCounts)} · score ${pct(b.structuralScoreMilli)} · held-out ${pct(b.meanHeldOutPassRateMilli)} · ${format(b.answerFormat)}`);
     lines.push(`      after         ${counts(a.statusCounts)} · score ${pct(a.structuralScoreMilli)} · held-out ${pct(a.meanHeldOutPassRateMilli)} · ${format(a.answerFormat)}`);
     lines.push(`      coverage      tasks ${a.tasksFullyCovered} · repeats ${a.repeatsGraded} · mixed ${b.mixedTasks} -> ${a.mixedTasks}`);
+    const be = before.multiFileEditing;
+    const ae = after.multiFileEditing;
+    lines.push('', `  ${after.candidate} · multiFileEditing`);
+    lines.push(`      before        ${counts(be.statusCounts)} · score ${pct(be.structuralScoreMilli)} · held-out ${pct(be.meanHeldOutPassRateMilli)}`);
+    lines.push(`      after         ${counts(ae.statusCounts)} · score ${pct(ae.structuralScoreMilli)} · held-out ${pct(ae.meanHeldOutPassRateMilli)}`);
+  }
+  const carriedKinds: Record<string, number> = {};
+  for (const entry of value.carriedUnchanged) carriedKinds[entry.kind] = (carriedKinds[entry.kind] ?? 0) + 1;
+  if (value.carriedUnchanged.length > 0) {
+    lines.push('', `  carried unchanged ${Object.entries(carriedKinds).map(([kind, count]) => `${kind} ${count}`).join(' · ')}`);
   }
   const changed = value.rows.filter((row) => row.changed);
-  if (changed.length > 0) lines.push('', '  rows that moved');
+  const changedEdits = value.editRows.filter((row) => row.changed);
+  if (changed.length + changedEdits.length > 0) lines.push('', '  rows that moved');
   for (const row of changed) {
     lines.push(`      ${row.candidate} ${row.taskID.split('.').pop()} r${row.repeat}: ${row.before.status} -> ${row.after.status}`
       + ` (${row.after.reading}${row.after.failedAssertions.length > 0 ? `; failed ${row.after.failedAssertions.join(', ')}` : ''})`);
+  }
+  for (const row of changedEdits) {
+    lines.push(`      ${row.candidate} ${row.taskID.split('.').pop()} r${row.repeat}: ${row.before.status} -> ${row.after.status}`
+      + (row.after.failedAssertions.length > 0 ? ` (failed ${row.after.failedAssertions.join(', ')})` : ''));
   }
   lines.push('', '  ' + value.note);
   return lines;

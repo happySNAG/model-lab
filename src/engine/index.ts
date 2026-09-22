@@ -72,6 +72,11 @@ export {
   reinterpretDevelopmentCampaign,
 } from './development-reinterpretation';
 export type { DevelopmentReinterpretation } from './development-reinterpretation';
+export {
+  DEVELOPMENT_EDIT_EVIDENCE_DIRECTORY, MAX_EDIT_EVIDENCE_CHANGED_FILES, MAX_EDIT_EVIDENCE_RETAINED_BYTES,
+  buildEditEvidence, readVerifiedEditEvidence,
+} from './development-edit-evidence';
+export type { DevelopmentEditEvidence, EditEvidenceReference } from './development-edit-evidence';
 export { readBenchmarkCommit, readWorkingTreeDirty } from './development-provenance';
 export {
   DEVELOPMENT_EXECUTABLE_PROVIDERS, DevelopmentEligibilityError, SYNTHETIC_DEVELOPMENT_PROVIDER,

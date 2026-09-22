@@ -20,6 +20,7 @@ import {
   developmentResultRow, developmentTerminalStatus, materialsFor, openDevelopmentCampaign, runDevelopmentCampaign,
   unrunnableAttempts,
 } from '../../src/engine/development-campaign';
+import { DEVELOPMENT_EDIT_EVIDENCE_DIRECTORY } from '../../src/engine/development-edit-evidence';
 import { gradeDevelopmentAttempt, readBackAnswer } from '../../src/engine/development-grading';
 import { DEVELOPMENT_NEVER_MEASURED_FAILURES, executeDevelopmentAttempt } from '../../src/engine/development-execution';
 import { DevelopmentCampaignPlan, DevelopmentPlanRequest, buildDevelopmentPlan } from '../../src/engine/development-plan';
@@ -677,7 +678,7 @@ describe('development evidence does not promote or route anything by itself', ()
     await run(root, ledger, plan, syntheticAdapter());
     expect(fs.readdirSync(process.cwd()).sort()).toEqual(cwdBefore);
     expect(fs.readdirSync(root).sort()).toEqual([
-      'aborts', 'checkpoint.json', DEVELOPMENT_ARTEFACTS_DIRECTORY, DEVELOPMENT_PLAN_FILE,
+      'aborts', 'checkpoint.json', DEVELOPMENT_ARTEFACTS_DIRECTORY, DEVELOPMENT_EDIT_EVIDENCE_DIRECTORY, DEVELOPMENT_PLAN_FILE,
       'events.jsonl', 'meta.json', 'plan.json', 'results.jsonl',
     ].sort());
   });
