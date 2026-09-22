@@ -44,6 +44,7 @@ import { SpendTracker, SpendingAuthorization } from './spending';
 import { PreRunIdentity } from './workspace-binding';
 import { IdentityAdmission, admissionFor, admissionStamp } from './identity-admission';
 import { WORKSPACE_REPEAT_IS_NOT_RETRY, WorkspaceRepeat } from './workspace-pack';
+import { WorkspaceCellSelectionStamp, cellSelectionFieldsOf } from './workspace-cell-selection';
 import {
   WorkspaceCase, workspaceCaseDigest, workspaceComparabilityKey, workspaceInstructionText,
   workspacePlannableCaseOf, workspacePromptRecordOf, workspaceScoredCoreEntryOf, workspaceScoringMode,
@@ -285,6 +286,12 @@ export interface WorkspaceCampaignInputs {
   repeat?: WorkspaceRepeat;
   /** The pack this run was planned from, when it was planned from one. Recorded, never acted on. */
   pack?: { id: string; version: string; digest: string };
+  /**
+   * WHICH CELL OF WHICH SELECTION this record is, when its matrix ran only selected cells — and, for a
+   * continuation, which source campaign (and which historical record of it) it follows. Absent on every
+   * record of an unselected matrix and every one-off run, whose rows are then exactly what they were.
+   */
+  cellSelection?: WorkspaceCellSelectionStamp;
   /** The OPERATOR's ceiling on attempts, when there is one. Never raises the case's own. */
   attemptCeiling?: number;
   preserveFailedWorkspaces?: boolean;
@@ -549,6 +556,9 @@ export class WorkspaceCampaign {
       mixedExecution: envelope.mixed,
       hasMeteredBinding: envelope.hasMeteredBinding,
       canonical: true,
+      // WRITTEN BEFORE THE REQUEST, so a selected run that faults before it seals still says which cell of
+      // which selection — and which source campaign — it was.
+      ...cellSelectionFieldsOf(inputs.cellSelection),
     });
 
     const disclosure = discloseWorkspaceDriver(inputs.driver, workspaceCase);
@@ -570,6 +580,7 @@ export class WorkspaceCampaign {
       repeatGroupID: inputs.repeat?.repeatGroupID,
       packID: inputs.pack?.id,
       packDigest: inputs.pack?.digest,
+      ...cellSelectionFieldsOf(inputs.cellSelection),
     });
     ledger.writeCheckpoint();
 
@@ -692,6 +703,8 @@ export class WorkspaceCampaign {
       packID: this.inputs.pack?.id,
       packVersion: this.inputs.pack?.version,
       packDigest: this.inputs.pack?.digest,
+      // THE CELL AND ITS PROVENANCE, on the row because the row is the authority a combined report reads.
+      ...cellSelectionFieldsOf(this.inputs.cellSelection),
       scoringPolicyID: card.scoringPolicyID,
       scoringPolicyVersion: card.scoringPolicyVersion,
       fixturePath: workspaceCase.source.fixturePath,
@@ -838,6 +851,7 @@ export class WorkspaceCampaign {
       packID: this.inputs.pack?.id,
       packVersion: this.inputs.pack?.version,
       packDigest: this.inputs.pack?.digest,
+      ...cellSelectionFieldsOf(this.inputs.cellSelection),
       repeatDisclosure: this.inputs.repeat === undefined ? undefined : WORKSPACE_REPEAT_IS_NOT_RETRY,
       fixturePath: workspaceCase.source.fixturePath,
       fixtureExpectedTreeDigest: workspaceCase.source.expectedTreeDigest,
@@ -972,6 +986,10 @@ function assertAdmissionAdmitsThisRun(inputs: WorkspaceCampaignInputs): void {
     ['driver', reference.driverID, inputs.driver.driverID],
     ['execution class', reference.executionClass, inputs.binding.executionClass],
     ['billing basis', reference.billingBasis, inputs.binding.billingBasis],
+    // Both absent on an unselected matrix, so equal. Present, the record admission names ONE cell of ONE
+    // selection, and a record of any other cell — or of no selection — is refused.
+    ['cell selection', reference.cellSelectionDigest, inputs.cellSelection?.cellSelectionDigest],
+    ['matrix cell', reference.matrixCellID, inputs.cellSelection?.matrixCellID],
   ] as const).filter(([, admitted, bound]) => admitted !== bound);
   if (mismatches.length > 0) {
     throw new WorkspaceCampaignError('identityAdmissionMismatch',

@@ -201,6 +201,10 @@ export interface MatrixAdmissionReference {
   reason: string;
   intent: string;
   identityLimitation: string;
+  /** `cms1:` of the cell selection the matrix admission authorised, when it authorised a selected matrix. */
+  cellSelectionDigest?: string;
+  /** `cmc1:` of the ONE cell this record's admission may be frozen into, when the matrix ran a selection. */
+  matrixCellID?: string;
 }
 
 /** A campaign-manifest authorization for the exception. Sealed, and bound to one campaign. */

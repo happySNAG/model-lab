@@ -28,6 +28,7 @@
 // same sealed case before, from records on this machine, and say so as an `estimated` quantity
 // naming that method. A cell with no prior evidence estimates nothing and says why.
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DiscoveryEvidence, acceptedRequestEvidenceFor } from './discovery-store';
 import {
@@ -55,6 +56,11 @@ import {
   PreRunIdentity, WorkspaceBindingError, buildWorkspaceBinding, resolvePreRunIdentity, workspaceTimeoutFor,
 } from './workspace-binding';
 import { WorkspaceRunRow } from './workspace-aggregate';
+import {
+  CELL_SELECTION_IS_NOT_A_NEW_EXPERIMENT, SOURCE_CAMPAIGN_IS_IMMUTABLE, WorkspaceCellSelection,
+  WorkspaceCellSelectionReason, WorkspaceCellSelectionStamp, WorkspaceMatrixPlanSelection,
+  describeWorkspaceCellCoordinate, workspaceCellSelectionDigest, workspaceMatrixCellID, workspaceMatrixRecordName,
+} from './workspace-cell-selection';
 import {
   WorkspaceCampaign, WorkspaceDriverDisclosure, discloseWorkspaceDriver, workspaceRecordPaths, workspaceRecordRoot,
 } from './workspace-campaign';
@@ -168,6 +174,12 @@ export interface WorkspaceMatrixRequest {
    * `appliedEffortUnavailable` and no route can qualify, which the plan says before anything is sent.
    */
   effortTelemetry?: WorkspaceMatrixEffortTelemetry;
+  /**
+   * Run ONLY these cells of the matrix, each at its original coordinate. Absent means every cell —
+   * exactly the matrix this request described before selection existed. Explicit (`--cells`) and
+   * continuation (`--continue-from`) selections are the same object; see `workspace-cell-selection.ts`.
+   */
+  cellSelection?: WorkspaceCellSelection;
   /** Injected by the tests, so a matrix can be planned and run without a provider's CLI installed. */
   driverFactory?: (binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>,
                    context?: { otlp?: OTLPTurnSource }) => WorkspaceAgentDriver | undefined;
@@ -263,6 +275,8 @@ export interface WorkspaceMatrixModelAdmission {
 
 /** One planned run: one model, one case, one repeat. The unit the matrix counts in. */
 export interface WorkspaceMatrixCell {
+  /** `cmc1:` — this cell's logical coordinate: pack, route, case and repeat r of n. See `workspace-cell-selection.ts`. */
+  cellID: string;
   candidate: string;
   modelID: string;
   caseID: string;
@@ -298,6 +312,8 @@ export interface WorkspaceMatrixCell {
   /** Empty means this cell runs. Non-empty means it is refused, and every reason is named. */
   refusals: string[];
   runnable: boolean;
+  /** Present exactly when this plan was built under a cell selection: which selection, why this cell, from where. */
+  selection?: WorkspaceCellSelectionStamp;
 }
 
 export interface WorkspaceAllowanceEstimateCell {
@@ -413,6 +429,12 @@ export interface WorkspaceMatrixPlan {
   throttleScope: ProviderThrottleScopeDecision;
   /** The sealed matrix identity admission this plan was built under, verbatim. Absent when none was given. */
   identityAdmission?: WorkspaceMatrixIdentityAdmission;
+  /**
+   * The cell selection this plan was narrowed to, when one was given. Absent means the whole matrix, and
+   * every count above then describes the whole matrix exactly as before; present, every count above
+   * describes the SELECTED cells only, and `fullPlanRunCount` here says what the whole matrix would be.
+   */
+  selection?: WorkspaceMatrixPlanSelection;
   /** Runnable runs whose identity is admitted rather than established. Counted, never folded into quality. */
   admittedUnverifiableRunCount: number;
   /** Whether and how this matrix will measure applied effort. Stated in every plan, measured only live. */
@@ -435,8 +457,6 @@ export interface WorkspaceDesignedRecovery {
   /** Attempts beyond the first those runs may use — the part of `maximumProviderAttemptCount` that is retries. */
   additionalAttemptCeiling: number;
 }
-
-const slug = (value: string): string => value.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
 
 /**
  * Plan the whole matrix. Sends nothing, writes nothing, and makes no directory.
@@ -477,7 +497,7 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
     planModel(request, modelID, packCases, packDigest));
   assertEveryAdmissionEntryIsUsed(request, models);
 
-  const cells: WorkspaceMatrixCell[] = [];
+  const allCells: WorkspaceMatrixCell[] = [];
   // MODEL → REPEAT → CASE. The middle term is why a spread column means anything; see the header.
   for (const model of models) {
     for (let repeatIndex = 1; repeatIndex <= repeatsPerCase; repeatIndex++) {
@@ -489,10 +509,16 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
           comparabilityKey: workspaceComparabilityKey(workspaceCase),
         });
         const repeat = planWorkspaceRepeats(repeatsPerCase, groupID)[repeatIndex - 1];
-        cells.push(planCell(request, model, workspaceCase, repeat, recordRootPrefix, packDigest));
+        allCells.push(planCell(request, model, workspaceCase, repeat, recordRootPrefix, packDigest));
       }
     }
   }
+
+  // THE SELECTION, APPLIED TO THE WHOLE PLAN AND NOTHING ELSE. Every cell above was planned exactly as it
+  // would be with no selection — same binding, same record name, same repeat r of n — and a selection only
+  // decides which of them this matrix keeps. Every count below is then computed from what was kept.
+  const { cells, selection } = applyCellSelection(request, allCells, models, packCases, repeatsPerCase, packDigest);
+  assertAdmissionSelection(request, selection);
 
   const runnable = cells.filter((cell) => cell.runnable);
   const environmentShortfalls = shortfallsOfEnvironment(packCases, models, environmentSource);
@@ -551,6 +577,7 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
     throttleProtectionArmed: true,
     throttleScope: providerThrottleScopeFor(request.provider),
     identityAdmission: request.identityAdmission,
+    selection,
     admittedUnverifiableRunCount: runnable.filter((cell) => cell.identityAdmission !== undefined).length,
     appliedEffortTelemetry: {
       measuredRunCount: runnable.filter((cell) =>
@@ -614,6 +641,194 @@ function assertEveryAdmissionEntryIsUsed(request: WorkspaceMatrixRequest, models
       + `run (it runs ${models.map((model) => model.candidate).join(', ')}). An admission names exactly the routes of the `
       + 'matrix it is sealed to; a route at another effort or on another model needs its own matrix and its own admission.');
   }
+}
+
+/**
+ * Narrow a fully planned matrix to the cells a selection names, or return it whole.
+ *
+ * EVERY SELECTOR MUST LAND ON EXACTLY ONE PLANNED CELL. A case the pack does not have, a repeat beyond
+ * the planned count, a model not in --models, the same cell twice, a model left with nothing to run,
+ * or a cell whose record already exists under this matrix's label is refused — before anything is
+ * sent — rather than skipped, because a selection that silently ran less (or more) than it named would
+ * be the exact failure this exists to prevent.
+ */
+function applyCellSelection(request: WorkspaceMatrixRequest, allCells: WorkspaceMatrixCell[],
+                            models: WorkspaceMatrixModel[], packCases: WorkspaceCase[], repeatsPerCase: number,
+                            packDigest: string): { cells: WorkspaceMatrixCell[]; selection?: WorkspaceMatrixPlanSelection } {
+  const requested = request.cellSelection;
+  if (requested === undefined) return { cells: allCells };
+  if (requested.selectors.length === 0) {
+    throw new WorkspaceMatrixError('cellSelectionEmpty',
+      requested.mode === 'continuation'
+        ? 'the continuation found no eligible cell for this route: everything the source planned for it is already '
+          + 'complete. Nothing was planned, and nothing needs to run.'
+        : 'the cell selection names no cell. Name at least one as <case-id>@<repeat>.');
+  }
+  if (requested.mode === 'continuation' && requested.continuation === undefined) {
+    throw new WorkspaceMatrixError('cellSelectionSourceMissing',
+      'a continuation selection must carry the source it was derived from.');
+  }
+  const caseIDs = packCases.map((entry) => entry.id);
+  const chosen = new Map<string, { reason: WorkspaceCellSelectionReason; source?: { recordRoot?: string; status?: string } }>();
+  for (const selector of requested.selectors) {
+    if (!caseIDs.includes(selector.caseID)) {
+      throw new WorkspaceMatrixError('cellSelectionUnknownCase',
+        `'${selector.caseID}' is not a case of ${request.pack.id}@${request.pack.version}. Its cases are: ${caseIDs.join(', ')}.`);
+    }
+    if (!Number.isInteger(selector.repeatIndex) || selector.repeatIndex < 1 || selector.repeatIndex > repeatsPerCase) {
+      throw new WorkspaceMatrixError('cellSelectionRepeatOutOfRange',
+        `${selector.caseID}@${selector.repeatIndex}: this matrix plans repeats 1 to ${repeatsPerCase}. A selected cell keeps its `
+        + 'ORIGINAL repeat number, so the repeat count must be the one the experiment planned.');
+    }
+    if (selector.modelID !== undefined && !request.modelIDs.includes(selector.modelID)) {
+      throw new WorkspaceMatrixError('cellSelectionUnknownModel',
+        `a selected cell names model '${selector.modelID}', which is not in --models (${request.modelIDs.join(', ')}). A `
+        + 'selection narrows a matrix; it never adds a route to one.');
+    }
+    const targets = allCells.filter((cell) => cell.caseID === selector.caseID && cell.repeat.repeatIndex === selector.repeatIndex
+      && (selector.modelID === undefined || cell.modelID === selector.modelID));
+    for (const cell of targets) {
+      if (chosen.has(cell.cellID)) {
+        throw new WorkspaceMatrixError('cellSelectionDuplicate',
+          `${describeWorkspaceCellCoordinate({ ...cell, repeatIndex: cell.repeat.repeatIndex, repeatsPlanned: cell.repeat.repeatsPlanned })} `
+          + 'is selected twice. One cell is one run; a second run of the same cell would be duplicate evidence.');
+      }
+      chosen.set(cell.cellID, { reason: selector.reason ?? 'operatorSelected', source: selector.source });
+    }
+  }
+  const unselected = models.filter((model) => !allCells.some((cell) => cell.candidate === model.candidate && chosen.has(cell.cellID)));
+  if (unselected.length > 0) {
+    throw new WorkspaceMatrixError('cellSelectionModelUnselected',
+      `${unselected.map((model) => model.candidate).join(', ')} ${unselected.length === 1 ? 'has' : 'have'} no selected cell. `
+      + `${requested.mode === 'continuation'
+        ? 'The source already completed everything it planned for that route, so there is nothing to continue.'
+        : 'Every model named must have something to run.'} Leave ${unselected.length === 1 ? 'it' : 'them'} out of --models; `
+      + 'a route in a matrix with no cells would be an admission, a binding and a row with nothing behind them.');
+  }
+  const cells = allCells.filter((cell) => chosen.has(cell.cellID));
+  // A CONTINUATION RUNS THE SAME EXPERIMENT OR NOTHING. The source's own records say what each case was
+  // (`cwk1:`), how long its binding allowed, what attempt cap applied and which driver ran it; a selected
+  // cell that would differ in any of those is refused, because its row would sit beside the source's rows
+  // in a combined report as if it were the same measurement.
+  if (requested.mode === 'continuation' && requested.continuation !== undefined) {
+    const experiment = requested.continuation.sourceExperiment;
+    const differences: string[] = [];
+    for (const cell of cells) {
+      const model = models.find((entry) => entry.candidate === cell.candidate);
+      const key = experiment.comparabilityKeys[cell.caseID];
+      if (key !== undefined && key !== cell.comparabilityKey) {
+        differences.push(`${cell.caseID}: comparability key ${cell.comparabilityKey}, the source ran ${key}`);
+      }
+      const timeout = experiment.bindingTimeouts[cell.candidate];
+      if (timeout !== undefined && model?.binding !== undefined && model.binding.timeoutMilliseconds !== timeout) {
+        differences.push(`${cell.candidate}: binding deadline ${model.binding.timeoutMilliseconds} ms, the source ran ${timeout} ms`);
+      }
+      const applied = cell.effectiveAttemptCeiling < cell.caseMaximumAttempts ? cell.effectiveAttemptCeiling : null;
+      if (cell.caseID in experiment.attemptCeilings && experiment.attemptCeilings[cell.caseID] !== applied) {
+        differences.push(`${cell.caseID}: attempt cap ${applied ?? 'none'}, the source ran ${experiment.attemptCeilings[cell.caseID] ?? 'none'}`);
+      }
+      const driverID = experiment.driverIDs[cell.candidate];
+      if (driverID !== undefined && model?.driver !== undefined && model.driver.driverID !== driverID) {
+        differences.push(`${cell.candidate}: driver ${model.driver.driverID}, the source ran ${driverID}`);
+      }
+    }
+    if (differences.length > 0) {
+      throw new WorkspaceMatrixError('continuationNotComparable',
+        `this continuation would not run the source's experiment: ${[...new Set(differences)].join('; ')}. Match the `
+        + 'source (drop --timeout / --max-attempts, or pass the values it ran with); nothing was planned.');
+    }
+  }
+  // A SELECTED CELL WHOSE RECORD ALREADY EXISTS HERE IS REFUSED IN THE PLAN, not discovered as a harness
+  // fault at execution: that record is somebody's evidence, and this matrix may neither overwrite it nor
+  // pretend it did not run.
+  const existing = cells.filter((cell) => fs.existsSync(workspaceRecordPaths(cell.recordRoot).manifest));
+  if (existing.length > 0) {
+    throw new WorkspaceMatrixError('cellSelectionRecordExists',
+      `${existing.length} selected cell(s) already have a sealed record under label '${request.runLabel}': `
+      + `${existing.map((cell) => cell.recordRoot).join(', ')}. A selected cell runs under a NEW label; the existing `
+      + 'record stays exactly as it is.');
+  }
+
+  const continuation = requested.continuation;
+  const selectionDigest = workspaceCellSelectionDigest({
+    mode: requested.mode,
+    packID: request.pack.id,
+    packVersion: request.pack.version,
+    packDigest,
+    provider: request.provider,
+    effort: request.effort,
+    continuation: continuation === undefined ? undefined
+      : { sourceLabel: continuation.sourceLabel, sourceDigest: continuation.sourceDigest },
+    cells: cells.map((cell) => ({ cellID: cell.cellID, reason: chosen.get(cell.cellID)!.reason })),
+  });
+  const stamped = cells.map((cell): WorkspaceMatrixCell => {
+    const choice = chosen.get(cell.cellID)!;
+    return {
+      ...cell,
+      selection: {
+        matrixCellID: cell.cellID,
+        cellSelectionMode: requested.mode,
+        cellSelectionReason: choice.reason,
+        cellSelectionDigest: selectionDigest,
+        ...(continuation === undefined ? {} : {
+          continuationSourceLabel: continuation.sourceLabel,
+          continuationSourceDigest: continuation.sourceDigest,
+          continuationSourceRoot: continuation.sourceRoot,
+        }),
+        ...(choice.source?.recordRoot === undefined ? {} : { continuationSourceRecordRoot: choice.source.recordRoot }),
+        ...(choice.source?.status === undefined ? {} : { continuationSourceStatus: choice.source.status }),
+      },
+    };
+  });
+  return {
+    cells: stamped,
+    selection: {
+      mode: requested.mode,
+      selectionDigest,
+      fullPlanRunCount: allCells.length,
+      selectedRunCount: stamped.length,
+      cells: stamped.map((cell) => ({
+        cellID: cell.cellID,
+        candidate: cell.candidate,
+        modelID: cell.modelID,
+        caseID: cell.caseID,
+        repeatIndex: cell.repeat.repeatIndex,
+        repeatsPlanned: cell.repeat.repeatsPlanned,
+        reason: cell.selection!.cellSelectionReason,
+        ...(cell.selection!.continuationSourceRecordRoot === undefined ? {}
+          : { sourceRecordRoot: cell.selection!.continuationSourceRecordRoot }),
+        ...(cell.selection!.continuationSourceStatus === undefined ? {}
+          : { sourceStatus: cell.selection!.continuationSourceStatus }),
+      })),
+      continuation,
+      disclosure: CELL_SELECTION_IS_NOT_A_NEW_EXPERIMENT,
+    },
+  };
+}
+
+/**
+ * Refuse a matrix admission that does not name exactly this plan's selection — in either direction.
+ *
+ * An admission written for a whole matrix does not authorise a selected one, and an admission written
+ * for nine selected cells authorises neither the full matrix nor a different nine: the `cms1:` digest
+ * covers every selected cell id, the reason each was selected, and the source it was continued from.
+ */
+function assertAdmissionSelection(request: WorkspaceMatrixRequest, selection: WorkspaceMatrixPlanSelection | undefined): void {
+  const admission = request.identityAdmission;
+  if (admission === undefined) return;
+  const admitted = admission.cellSelectionDigest;
+  const planned = selection?.selectionDigest;
+  if (admitted === planned) return;
+  throw new WorkspaceMatrixError('matrixAdmissionSelectionMismatch',
+    admitted === undefined
+      ? `the matrix identity admission covers the WHOLE matrix, and this plan runs a selection of `
+        + `${selection?.selectedRunCount ?? 0} cell(s) (${planned}). An admission for selected cells must name that `
+        + 'selection: add "selection": { "digest": "<the cms1: digest this dry run prints>" } to the admission file.'
+      : planned === undefined
+        ? `the matrix identity admission covers only the cell selection ${admitted}, and this plan runs the WHOLE matrix. `
+          + 'An admission for selected cells never authorises any cell outside them.'
+        : `the matrix identity admission covers the cell selection ${admitted}, and this plan selects ${planned}. The `
+          + 'digest covers every selected cell, why it was selected and its source; a different set is a different matrix.');
 }
 
 /** What this matrix will record about the effort the tool actually applied. Stated per route, never inferred. */
@@ -818,19 +1033,25 @@ function planCell(request: WorkspaceMatrixRequest, model: WorkspaceMatrixModel, 
   const caseAllows = workspaceCase.execution.maximumAttempts;
   const effectiveAttemptCeiling = request.attemptCeiling === undefined
     ? caseAllows : Math.max(1, Math.min(request.attemptCeiling, caseAllows));
-  const recordName = [
-    slug(request.runLabel), slug(model.modelID), slug(workspaceCase.id), `r${repeat.repeatIndex}`,
-  ].filter((part) => part.length > 0).join('-');
+  const recordName = workspaceMatrixRecordName(request.runLabel, model.modelID, workspaceCase.id, repeat.repeatIndex);
+  const cellID = workspaceMatrixCellID({
+    packID: request.pack.id, packVersion: request.pack.version, provider: request.provider, modelID: model.modelID,
+    effort: request.effort, caseID: workspaceCase.id, repeatIndex: repeat.repeatIndex, repeatsPlanned: repeat.repeatsPlanned,
+  });
   // THE SAME LABEL THE RECORD IS FROZEN UNDER, decided here so the per-record admission can be sealed
   // to it in the plan — and so the dry run shows the seal the live record will carry.
   const recordLabel = `${request.pack.id}@${request.pack.version} · ${workspaceCase.id}@${workspaceCase.version} · `
     + `${model.candidate} · repeat ${repeat.repeatIndex}/${repeat.repeatsPlanned}`;
   const identityAdmission = model.runnable && model.admission.admitted && model.admission.entry !== undefined
     && request.identityAdmission !== undefined && request.identityAdmission.packDigest === packDigest
-    ? recordAdmissionFromMatrix(request.identityAdmission, model.admission.entry, recordLabel)
+    // UNDER A SELECTION, EACH RECORD'S ADMISSION IS ALSO BOUND TO ITS OWN CELL, so it cannot be carried
+    // onto a record of any other case or repeat even by a caller that hands it over.
+    ? recordAdmissionFromMatrix(request.identityAdmission, model.admission.entry, recordLabel,
+      request.cellSelection === undefined ? undefined : { matrixCellID: cellID })
     : undefined;
 
   return {
+    cellID,
     candidate: model.candidate,
     modelID: model.modelID,
     caseID: workspaceCase.id,
@@ -992,8 +1213,15 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   lines.push(`repeats         ${plan.repeatsPerCase} per case `
     + `(${describeRepeatProvenance(plan.repeatsFrom, plan.packRepeatsPerCase)})`);
   lines.push('');
-  lines.push(`base task runs  ${plan.modelIDs.length} models x ${plan.caseIDs.length} cases x `
-    + `${plan.repeatsPerCase} repeats = ${plan.taskRunCount} independent runs`);
+  if (plan.selection === undefined) {
+    lines.push(`base task runs  ${plan.modelIDs.length} models x ${plan.caseIDs.length} cases x `
+      + `${plan.repeatsPerCase} repeats = ${plan.taskRunCount} independent runs`);
+  } else {
+    lines.push(`full plan       ${plan.modelIDs.length} models x ${plan.caseIDs.length} cases x `
+      + `${plan.repeatsPerCase} repeats = ${plan.selection.fullPlanRunCount} runs — NOT what runs; a selection applies`);
+    lines.push(`selected runs   ${plan.selection.selectedRunCount} independent runs, each at its ORIGINAL case and repeat `
+      + `(${plan.selection.mode === 'continuation' ? 'continuation' : 'explicit operator selection'})`);
+  }
   lines.push(`  runnable      ${plan.runnableRunCount}`);
   lines.push(`  refused       ${plan.refusedRunCount}`);
   lines.push(`max attempts    ${plan.maximumProviderAttemptCount} — the CEILING on times a provider could be handed a `
@@ -1011,6 +1239,10 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
     lines.push('                actually fails; a run that passes first time is not recovery evidence.');
   }
   lines.push('');
+  if (plan.selection !== undefined) {
+    for (const line of describeWorkspaceMatrixSelection(plan.selection)) lines.push(line);
+    lines.push('');
+  }
 
   lines.push('cases, as sealed:');
   for (const caseID of plan.caseIDs) {
@@ -1103,8 +1335,9 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   lines.push(`fixtures        ${plan.fixtureRoot}`);
   lines.push(`sandbox         ${plan.sandboxRoot}`);
   lines.push(`records         ${plan.recordRootPrefix}`);
-  for (const cell of plan.cells.slice(0, 3)) lines.push(`  ${workspaceRecordPaths(cell.recordRoot).manifest}`);
-  if (plan.cells.length > 3) lines.push(`  … and ${plan.cells.length - 3} more, one directory per run`);
+  const shownRecords = plan.selection === undefined ? 3 : plan.cells.length;
+  for (const cell of plan.cells.slice(0, shownRecords)) lines.push(`  ${workspaceRecordPaths(cell.recordRoot).manifest}`);
+  if (plan.cells.length > shownRecords) lines.push(`  … and ${plan.cells.length - shownRecords} more, one directory per run`);
   lines.push('');
   lines.push(`throttle guard  ${plan.throttleProtectionArmed
     ? 'ARMED — a provider session throttle stops the matrix at the run that established it, and every cell after '
@@ -1137,6 +1370,53 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
     lines.push('');
     lines.push(plan.structureDisclosure);
   }
+  return lines;
+}
+
+/**
+ * A plan's cell selection, as a person reads it: where it came from, what it excluded, and every cell
+ * it will run, by coordinate. ONE renderer, shared by the dry run and the disclosure before a live run.
+ */
+export function describeWorkspaceMatrixSelection(selection: WorkspaceMatrixPlanSelection): string[] {
+  const lines: string[] = [];
+  const source = selection.continuation;
+  lines.push(`selection       ${selection.mode === 'continuation'
+    ? `CONTINUATION of '${source?.sourceLabel}'${source?.explicitSubset ? ', narrowed by --cells' : ''}`
+    : 'EXPLICIT — cells named by the operator with --cells'}`);
+  lines.push(`selection dig.  ${selection.selectionDigest}`);
+  lines.push('                (an identity admission for this matrix must name this digest: "selection": { "digest": … })');
+  if (source !== undefined) {
+    const byState = Object.entries(source.sourceCellsByState).map(([state, count]) => `${count} ${state}`).join(' · ');
+    lines.push(`source          ${source.sourceRoot}`);
+    lines.push(`  label         ${source.sourceLabel}`);
+    lines.push(`  digest        ${source.sourceDigest} (over ${source.sourceRecordCount} sealed record(s)`
+      + `${source.sourceAggregateSHA256 === undefined ? ', no aggregate' : ' and its aggregate'})`);
+    if (source.sourceAggregatePath !== undefined) lines.push(`  aggregate     ${source.sourceAggregatePath}`);
+    lines.push(`  pack          ${source.sourcePackDigest}`);
+    lines.push(`  source plan   ${source.sourcePlannedRunCount} runs: ${source.sourceCandidates.length} candidate(s) x cases x `
+      + `${source.sourceRepeatsPlanned} repeats — ${source.sourceCandidates.join(', ')}`);
+    lines.push(`  by state      ${byState}`);
+    lines.push(`  out of scope  ${source.outOfScopeRunCount} run(s) on routes this continuation was not asked to run — never selected`);
+    lines.push(`  completed     ${source.completedExcludedCount} run(s) of this route the source completed — EXCLUDED, never re-run`);
+    if (source.completedByPriorContinuationCount > 0 || source.priorContinuationRoots.length > 0) {
+      lines.push(`  continued     ${source.completedByPriorContinuationCount} run(s) an earlier continuation of this source already `
+        + `completed — EXCLUDED (looked in ${source.priorContinuationRoots.join(', ')})`);
+    }
+    lines.push(`  eligible      ${source.eligibleRunCount} run(s) of this route: throttled, deferred or never executed in the source`);
+    if (source.throttledAttemptsHeldBackCount > 0) {
+      lines.push(`  held back     ${source.throttledAttemptsHeldBackCount} provider-declined attempt(s) NOT selected: the source sent a request `
+        + 'for each and the provider declined it. Pass --include-throttled-attempts, or name the cell with --cells, to run '
+        + 'a new attempt; the sealed original is kept as history either way');
+    }
+    lines.push(`  immutable     ${SOURCE_CAMPAIGN_IS_IMMUTABLE}`);
+  }
+  lines.push(`selected cells  ${selection.selectedRunCount}:`);
+  for (const cell of selection.cells) {
+    lines.push(`  ${describeWorkspaceCellCoordinate(cell)}  ${cell.reason}`);
+    lines.push(`    ${cell.cellID}${cell.sourceRecordRoot === undefined ? ''
+      : ` · follows source record ${path.basename(cell.sourceRecordRoot)} (${cell.sourceStatus ?? 'no terminal row'}), kept as history`}`);
+  }
+  lines.push(`                ${selection.disclosure}`);
   return lines;
 }
 
@@ -1364,6 +1644,9 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
         // THE PER-RECORD ADMISSION THE PLAN DERIVED, verbatim. `WorkspaceCampaign.create` re-checks that
         // it admits this label and this route, and that its matrix scope matches this pack and driver.
         identityAdmission: cell.identityAdmission,
+        // WHICH CELL OF WHICH SELECTION, frozen before the request and written on the row after it. Absent
+        // on an unselected matrix, whose records are therefore byte-for-byte what they were.
+        cellSelection: cell.selection,
         driver,
         hardware: options.hardware,
         runtimeVersion: options.runtimeVersion,

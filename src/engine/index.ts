@@ -59,6 +59,8 @@ export * from './workspace-empirical-evidence';
 export * from './workspace-throttle';
 export * from './workspace-matrix';
 export * from './workspace-matrix-admission';
+export * from './workspace-cell-selection';
+export * from './workspace-continuation';
 export * from './workspace-effort-evidence';
 export * from './workspace-matrix-telemetry';
 export * from './provider-session-status';

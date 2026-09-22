@@ -56,7 +56,11 @@ import {
   WorkspaceMatrixEffortTelemetry, WorkspaceMatrixTelemetryCollector, WorkspaceMatrixTelemetryError,
   describeWorkspaceAppliedEffortProvenance, lateAppliedEffortEvidence, workspaceAppliedEffortProvenance,
   describeWorkspaceCell, describeWorkspaceMatrixPlan, registeredWorkspacePacks, runWorkspaceMatrix,
-  workspacePackByID,
+  workspacePackByID, WorkspaceBenchmarkPack,
+  // Exact cell selection, and continuation of a stopped matrix, which compiles down to it.
+  WorkspaceCellSelection, WorkspaceCellSelectionError, WorkspaceCellSelector, WorkspaceContinuationError,
+  parseWorkspaceCellList, parseWorkspaceCellSelectionFile, planWorkspaceContinuation, readWorkspaceContinuationRows,
+  readWorkspaceContinuationSource, sameCampaignRoot, combineWorkspaceContinuationEvidence, describeWorkspaceLogicalReport,
   // The matrix-wide identity admission: sealed per route, to one matrix and one pack.
   WORKSPACE_MATRIX_ADMISSION_SCOPE, WorkspaceMatrixAdmissionError, WorkspaceMatrixIdentityAdmission,
   parseWorkspaceMatrixAdmissionFile, sealWorkspaceMatrixAdmission, workspaceMatrixIdentityProvenance,
@@ -1935,6 +1939,108 @@ function readWorkspaceMatrixAdmission(options: Options, runLabel: string, now: D
 }
 
 /**
+ * Resolve `--cells`, `--cells-file` and `--continue-from` into the ONE cell selection the planner applies.
+ *
+ * Both ways in end here as the same `WorkspaceCellSelection`: an explicit list becomes `explicit`
+ * selectors, and a continuation reads its source READ-ONLY and compiles to `continuation` selectors.
+ * Nothing below this function knows which way a cell arrived except by the reason stamped on it.
+ */
+function resolveWorkspaceCellSelection(options: Options, context: {
+  pack: WorkspaceBenchmarkPack; root: string; runLabel: string; provider: ProviderID;
+  modelIDs: string[]; effort: EffortLevel; repeats: number | undefined;
+}): { selection?: WorkspaceCellSelection; repeatsPerCase?: number; rerunFlags: string } {
+  const inline = options.cells;
+  const file = options['cells-file'];
+  const sourceLabel = options['continue-from'];
+  if (inline !== undefined && file !== undefined) {
+    fail('--cells and --cells-file both name a selection. Name the cells one way.', 2);
+  }
+  for (const name of ['source-root', 'source-aggregate', 'include-throttled-attempts', 'prior-continuation-root']) {
+    if (options[name] !== undefined && sourceLabel === undefined) {
+      fail(`--${name} only means something with --continue-from, which was not given. Nothing was planned.`, 2);
+    }
+  }
+  const caseIDs = context.pack.caseIDs;
+  let explicit: WorkspaceCellSelector[] | undefined;
+  try {
+    if (inline !== undefined) explicit = parseWorkspaceCellList(String(inline), caseIDs);
+    if (file !== undefined) {
+      let text: string;
+      try {
+        text = fs.readFileSync(String(file), 'utf8');
+      } catch (error) {
+        return fail(`could not read the cell selection file ${String(file)}: `
+          + `${error instanceof Error ? error.message : String(error)}`, 2);
+      }
+      explicit = parseWorkspaceCellSelectionFile(text);
+    }
+  } catch (error) {
+    if (error instanceof WorkspaceCellSelectionError) return fail(`${error.code}: ${error.message}\nNothing was planned.`, 2);
+    throw error;
+  }
+  const explicitFlags = inline !== undefined ? ` --cells ${String(inline)}`
+    : file !== undefined ? ` --cells-file ${String(file)}` : '';
+  if (sourceLabel === undefined) {
+    return explicit === undefined ? { rerunFlags: '' }
+      : { selection: { mode: 'explicit', selectors: explicit }, rerunFlags: `${explicitFlags} --root ${context.root}` };
+  }
+
+  // A CONTINUATION. The source is read and never written, and the continuation lives somewhere else.
+  const sourceRootOption = options['source-root'];
+  if (sourceRootOption === undefined) {
+    fail('--continue-from needs --source-root: the campaign root the source matrix is in. It is read, never written.', 2);
+  }
+  const sourceRoot = path.resolve(String(sourceRootOption));
+  if (sameCampaignRoot(sourceRoot, context.root)) {
+    fail(`--root is the source's own root (${sourceRoot}). A continuation is sealed in a DIFFERENT campaign root, so `
+      + 'nothing it writes can land beside, over or inside the source. Name a new --root.', 2);
+  }
+  if (String(sourceLabel) === context.runLabel) {
+    fail(`--label is the source's own label ('${context.runLabel}'). A continuation runs under a NEW label.`, 2);
+  }
+  const priorRoots = options['prior-continuation-root'] === undefined ? []
+    : String(options['prior-continuation-root']).split(',').map((entry) => path.resolve(entry.trim())).filter((entry) => entry.length > 0);
+  for (const prior of priorRoots) {
+    if (sameCampaignRoot(prior, sourceRoot)) fail('--prior-continuation-root names the source root itself.', 2);
+  }
+  try {
+    const source = readWorkspaceContinuationSource({
+      campaignRoot: sourceRoot, label: String(sourceLabel), pack: context.pack, cases: allWorkspaceCases(),
+      aggregatePath: options['source-aggregate'] === undefined ? undefined : path.resolve(String(options['source-aggregate'])),
+    });
+    if (context.repeats !== undefined && context.repeats !== source.repeatsPlanned) {
+      fail(`--repeats ${context.repeats} disagrees with the source, which planned ${source.repeatsPlanned}. A continued cell `
+        + 'keeps its original repeat r of n; leave --repeats out and the source\'s own number is used.', 2);
+    }
+    // EARLIER CONTINUATIONS OF THE SAME SOURCE are looked for in the target root always, and in any root
+    // named, so a second continuation can never re-run a cell the first one completed.
+    const priorContinuationRoots = [context.root, ...priorRoots.filter((prior) => !sameCampaignRoot(prior, context.root))];
+    const priorContinuationRows = priorContinuationRoots.flatMap((prior) => readWorkspaceContinuationRows(prior));
+    const planned = planWorkspaceContinuation(source, {
+      provider: context.provider, modelIDs: context.modelIDs, effort: context.effort, explicit,
+      includeProviderThrottledAttempts: options['include-throttled-attempts'] === true,
+      priorContinuationRows, priorContinuationRoots,
+    });
+    return {
+      selection: planned.selection,
+      // The source's own count — passed only where it is not already the pack's, so the plan does not
+      // describe a count the operator never typed as "set by the operator".
+      repeatsPerCase: context.repeats ?? (source.repeatsPlanned === context.pack.repeatsPerCase ? undefined : source.repeatsPlanned),
+      rerunFlags: `${explicitFlags} --continue-from ${String(sourceLabel)} --source-root ${sourceRoot}`
+        + `${options['source-aggregate'] === undefined ? '' : ` --source-aggregate ${String(options['source-aggregate'])}`}`
+        + `${options['include-throttled-attempts'] === true ? ' --include-throttled-attempts' : ''}`
+        + `${priorRoots.length === 0 ? '' : ` --prior-continuation-root ${priorRoots.join(',')}`}`
+        + ` --root ${context.root}`,
+    };
+  } catch (error) {
+    if (error instanceof WorkspaceContinuationError) {
+      return fail(`${error.code}: ${error.message}\nNothing was planned, and the source was not written.`, 2);
+    }
+    throw error;
+  }
+}
+
+/**
  * Run a sealed benchmark PACK across several models, with repeats: the comparative matrix.
  *
  * WHY THIS IS A SECOND COMMAND AND NOT A FLAG ON `workspace`. `cernum workspace <case>` answers
@@ -2040,6 +2146,13 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   //     earlier matrix: the file is read now and sealed now, to THIS matrix's label and pack.
   const identityAdmission = readWorkspaceMatrixAdmission(options, runLabel, now);
 
+  // 2c. THE CELL SELECTION, when the operator names cells or a matrix to continue. Absent, the plan is the
+  //     whole matrix exactly as before; present, it is the same plan with only the selected cells kept.
+  const selected = resolveWorkspaceCellSelection(options, {
+    pack, root, runLabel, provider, modelIDs, effort: effort as EffortLevel, repeats: numeric('repeats'),
+  });
+  const repeatsPerCase = selected.repeatsPerCase ?? numeric('repeats');
+
   // 3. THE PLAN. Every binding, every disclosure and every refusal, decided before anything is sent.
   let plan;
   try {
@@ -2052,13 +2165,14 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       modelIDs,
       effort: effort as EffortLevel,
       discovery: readDiscoveryStoreForWorkspace(root),
-      repeatsPerCase: numeric('repeats'),
+      repeatsPerCase,
       attemptCeiling: numeric('max-attempts'),
       timeoutMilliseconds: numeric('timeout'),
       campaignRoot: root,
       fixtureRoot,
       sandboxRoot,
       runLabel,
+      cellSelection: selected.selection,
       // PRIOR EVIDENCE ON THIS MACHINE, read for ONE purpose: estimating plan allowance before the
       // matrix runs. Nothing here scores anything from it.
       priorRuns: collectWorkspaceRunRows(root),
@@ -2121,10 +2235,14 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       + `${options.label === undefined ? '' : ` --label ${runLabel}`}`
       + `${identityAdmission === undefined ? '' : ` --admit-identity-unverifiable ${String(options['admit-identity-unverifiable'])}`}`
       + `${otlpDirectory === undefined ? '' : ` --otlp-observer ${otlpDirectory}`}`
+      + selected.rerunFlags
       + ' --yes');
     if (plan.models.some((model) => model.admission.required && !model.admission.admitted)) {
       say('A route above needs an identity admission and has none that admits it, so a live run would refuse it.');
       say(`Write one naming this pack's digest and each route exactly: ${TERMINAL_COMMAND} help workspace-benchmark`);
+      if (plan.selection !== undefined) {
+        say(`It must also name this selection, and only this selection: "selection": { "digest": "${plan.selection.selectionDigest}" }`);
+      }
     }
     return;
   }
@@ -2168,13 +2286,14 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
     modelIDs,
     effort: effort as EffortLevel,
     discovery: readDiscoveryStoreForWorkspace(root),
-    repeatsPerCase: numeric('repeats'),
+    repeatsPerCase,
     attemptCeiling: numeric('max-attempts'),
     timeoutMilliseconds: numeric('timeout'),
     campaignRoot: root,
     fixtureRoot,
     sandboxRoot,
     runLabel,
+    cellSelection: selected.selection,
     now: () => now,
   }, {
     hardware: {
@@ -2325,6 +2444,9 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       designedRecovery: plan.designedRecovery,
       packDigest: plan.packDigest,
       repeatDisclosure: plan.repeatDisclosure,
+      // WHICH CELLS THIS MATRIX RAN, when it ran a selection: every cell id, why it was selected and, for a
+      // continuation, the source it continues. Absent on a whole matrix, whose aggregate is unchanged.
+      ...(plan.selection === undefined ? {} : { selection: plan.selection }),
       // WHO THE ROWS CAN BE ATTRIBUTED TO, kept beside the quality figures and never folded into them:
       // the sealed matrix admission, which candidate each entry admitted, how many runs are
       // identity-unverifiable, and every run that reported a different model.
@@ -2338,6 +2460,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       // finished from one the provider stopped, and they mean opposite things about the models.
       execution: {
         plannedRunCount: result.plannedRunCount,
+        ...(plan.selection === undefined ? {} : { fullPlanRunCount: plan.selection.fullPlanRunCount }),
         executedRunCount: result.executedRunCount,
         notExecutedBecauseProviderThrottled: result.notExecutedBecauseThrottledCount,
         notExecutedForOtherReason: result.notExecutedForOtherReasonCount,
@@ -2361,6 +2484,77 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       cells,
     }, null, 2) + '\n', 'utf8');
     say(`Aggregate written to ${aggregatePath}`);
+  }
+}
+
+/**
+ * The LOGICAL matrix of a source and its continuations, for reporting. Reads; never merges.
+ *
+ * One counted row per cell the source planned: the source's own sealed run wherever the provider did not
+ * decline it, otherwise the first continuation run of that cell the provider did not decline. Declined
+ * attempts are history and surplus runs are excluded, each listed beside its cell. Neither root is
+ * written — the rows handed to the aggregate point at the records they came from, where they are.
+ */
+async function commandWorkspaceReport(positional: string[], options: Options): Promise<void> {
+  validateWorkspaceCatalog();
+  if (positional.length !== 1) fail('name exactly one benchmark pack: the one the source matrix ran.', 2);
+  const pack = workspacePackByID(positional[0]);
+  if (!pack) fail(`'${positional[0]}' is not a benchmark pack this build knows.`, 2);
+  if (options['source-root'] === undefined || options['source-label'] === undefined) {
+    fail('--source-root and --source-label are required: the matrix whose planned cells the report is of.', 2);
+  }
+  const list = (value: unknown): string[] => (value === undefined ? []
+    : String(value).split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0));
+  const continuationRoots = list(options['continuation-root']).map((entry) => path.resolve(entry));
+  const continuationLabels = list(options['continuation-label']);
+  if (continuationLabels.length > 0 && continuationRoots.length === 0) {
+    fail('--continuation-label names continuations, and no --continuation-root says where they are.', 2);
+  }
+  let report;
+  try {
+    const source = readWorkspaceContinuationSource({
+      campaignRoot: path.resolve(String(options['source-root'])), label: String(options['source-label']), pack,
+      cases: allWorkspaceCases(),
+      aggregatePath: options['source-aggregate'] === undefined ? undefined : path.resolve(String(options['source-aggregate'])),
+    });
+    const continuations = continuationRoots.flatMap((root) => (continuationLabels.length === 0
+      ? [{ label: root, rows: readWorkspaceContinuationRows(root) }]
+      : continuationLabels.map((label) => ({ label, rows: readWorkspaceContinuationRows(root, label) }))));
+    report = combineWorkspaceContinuationEvidence(source, continuations);
+  } catch (error) {
+    if (error instanceof WorkspaceContinuationError) return fail(`${error.code}: ${error.message}
+Nothing was written.`, 2);
+    throw error;
+  }
+
+  say('LOGICAL MATRIX — read from the records where they are. No root was written and nothing was merged.');
+  say('');
+  for (const line of describeWorkspaceLogicalReport(report)) say(`  ${line}`);
+  say('');
+  const cells = aggregateWorkspaceRuns(report.logicalRows);
+  say('candidate                       case                              pass     score      time           allowance  quality');
+  for (const cell of cells) say(describeWorkspaceCell(cell));
+  say('');
+
+  if (options.out !== undefined) {
+    const outPath = path.resolve(String(options.out));
+    const touched = [String(options['source-root']), ...continuationRoots].find((root) =>
+      !path.relative(path.resolve(root), outPath).startsWith('..') && !path.isAbsolute(path.relative(path.resolve(root), outPath)));
+    if (touched !== undefined) {
+      fail(`--out ${outPath} is inside ${touched}. This report writes nowhere inside a campaign it reads.`, 2);
+    }
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, JSON.stringify({
+      writtenAt: new Date().toISOString(),
+      cernumVersion: PRODUCT.version,
+      packID: pack.id,
+      packVersion: pack.version,
+      ...report,
+      // The rows themselves stay in their records; the report names where each one is.
+      logicalRows: report.logicalRows.map((run) => run.recordRoot),
+      cells,
+    }, null, 2) + '\n', 'utf8');
+    say(`Logical report written to ${outPath}`);
   }
 }
 
@@ -2759,6 +2953,11 @@ function commandGeneralHelp(): void {
   say('                                  A REPEAT (--repeats) is a fresh independent run and measures');
   say('                                  variance; a RETRY (--max-attempts) is a second attempt inside');
   say('                                  one run and measures recovery. --dry-run first.');
+  say('                                  --cells runs only named cells; --continue-from finishes a');
+  say('                                  stopped matrix in a new root without touching the old one.');
+  say('  workspace-report <pack-id> --source-root r --source-label l --continuation-root c');
+  say('                                  the logical matrix of a source and its continuation: one');
+  say('                                  counted row per planned cell, history kept, nothing merged');
   say('');
   say('  adjudicate <results.jsonl...> --out <dir> --key-out <dir>');
   say('                                  build the blinded human-review packet, the blank answer sheet');
@@ -3072,6 +3271,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'resume': return commandRun(positional, options, true, invocationLine);
     case 'workspace': return commandWorkspace(positional, options);
     case 'workspace-benchmark': return commandWorkspaceBenchmark(positional, options);
+    case 'workspace-report': return commandWorkspaceReport(positional, options);
     case 'status': return commandStatus(positional, options);
     case 'verify': return commandVerify(positional, options);
     case 'finalize': return commandFinalize(positional, options);

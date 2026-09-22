@@ -340,3 +340,98 @@ that carries the bearer and sends no request frame. It refuses a matrix with no 
 an API-key session. It cannot tell whether stored tokens are still valid for inference, so the first run
 still discovers that. A dry run does not run it, because a dry run contacts nothing.
 
+
+## 12. Running only some cells, and continuing a stopped matrix
+
+Sources: `src/engine/workspace-cell-selection.ts`, `src/engine/workspace-continuation.ts`.
+Tests: `test/engine/workspace-cell-selection.test.ts`, `test/engine/workspace-continuation.test.ts`.
+
+**Why.** `codex-discriminator-medium-v1-01` was stopped by a provider usage limit on
+`gpt-6-astra @ medium · ws.d1.config-migrate.upgrade · repeat 2/3`, and the breaker deferred the nine
+Astra cells after it. Re-running the same label cannot finish it: every sealed record refuses a second
+manifest (a harness fault per cell), and the telemetry file beside them would be rewritten. Re-running the
+whole matrix would duplicate eighteen scored Sol runs and eight scored Astra runs.
+
+**Cell identity.** A cell is one coordinate of the design: pack id and version, provider, model, effort,
+case, and repeat *r* of *n*. `cmc1:` digests exactly those fields. The original repeat number is part of
+the identity and is never renumbered: a selected repeat 3 is sealed as `repeat 3/3`, in the same repeat
+group as its siblings.
+
+**Explicit selection.** `--cells <case-id>@<repeat>,…` applies to every model in `--models`. Each token
+is split at its last `@`, and the case id must equal one of the pack's own. `--cells-file` takes JSON with
+an optional per-cell `modelID`, for case ids that contain punctuation. The plan is built in full, then
+narrowed. Bindings, record names and seals are unchanged, and every count (runs, attempt ceiling,
+recovery design, allowance, measured runs) is of the selected cells only. The following are refused
+before anything is sent: an unknown case, a repeat beyond the planned count, a model not in `--models`,
+the same cell twice, a model left with no cell, and a cell whose record already exists under the label.
+
+**Continuation.** `--continue-from <label> --source-root <dir>` reads the source read-only. It does not
+use `Ledger.open`, which truncates a torn final line. A torn or multi-row source ledger is refused, not
+repaired. The source is fingerprinted as `cmr1:` over the bytes of every record and its aggregate. Every
+cell the source planned is classified as one of: `completed` (any sealed row the provider did not
+decline), `providerThrottledAttempt`, `notExecutedBecauseThrottled`, `notExecuted`, or
+`recordWithoutResult`. The continuation selects, as an ordinary cell selection, only cells that produced
+no evidence. There is no second executor.
+
+- A completed cell is never selected. Naming one with `--cells` is refused, and there is no override.
+- A provider-declined attempt is eligible but **held back by default**: something was sent for it. It
+  runs with `--include-throttled-attempts`, or when its cell is named with `--cells`. The historical
+  record stays where it is.
+- Cells an earlier continuation of the same source completed are excluded. The target root is always
+  searched for them, and so is any root named with `--prior-continuation-root`.
+- The continuation must use a different `--root` and a different `--label`. It must match the source's
+  pack digest, provider, effort, repeat count, per-case comparability key, binding deadline, attempt cap
+  and driver. A mismatch is refused.
+
+Every continuation record carries `matrixCellID`, `cellSelectionMode`, `cellSelectionReason`,
+`cellSelectionDigest` (`cms1:`), `continuationSourceLabel`, `continuationSourceDigest`,
+`continuationSourceRoot` and, for a throttled attempt, `continuationSourceRecordRoot` and
+`continuationSourceStatus`. These fields appear in the ledger meta (written before the request) and on the
+row and record. An unselected matrix writes none of them.
+
+**Admission.** A matrix admission for selected cells names them:
+`"selection": { "digest": "<cms1: from the dry run>" }`. The digest covers every selected cell id, why
+each was selected, and the source. It is part of every entry's seal, and each record's own admission also
+names its one `cmc1:` cell. A whole-matrix admission does not admit a selection, and a selection admission
+admits neither the whole matrix nor a different selection. It also admits no other model, effort, pack,
+driver or billing basis. An admission without `selection` seals to the same digest it always did.
+
+**Telemetry** is unchanged. The collector, the conversation-id join, `requestedEffort` / `appliedEffort` /
+`appliedEffortVerified`, the throttle breaker, token accounting and the sandbox all run per selected cell
+exactly as per planned cell.
+
+**Combined report.** `cernum workspace-report <pack> --source-root … --source-label … --continuation-root …`
+reads both campaigns and emits one counted row per planned cell. A cell's row is the source's own run
+wherever the provider did not decline it, otherwise the first continuation run the provider did not
+decline. Declined attempts in either campaign are shown as history and never counted. A later run of a
+cell that already has evidence is listed as excluded and never counted. Nothing is merged on disk, and
+`--out` may not point inside either root.
+
+**The Astra continuation (not yet run).** The intended continuation is **ten** cells, all
+`gpt-6-astra @ medium`, with no Sol cell. At repeat 2: config-migrate, log-redact, query-codec and
+task-board. At repeat 3: all six cases. Nine are `notExecutedBecauseThrottled`. The tenth is
+`config-migrate@2`, the `providerThrottledAttempt`: it produced no scored result, so the logical cell
+still needs one. It is included with `--include-throttled-attempts`. Without the flag the dry run selects
+only the nine. The historical throttled record is not replaced or rewritten. The new attempt is a
+separate record that names it (`continuationSourceRecordRoot`, `continuationSourceStatus`). The combined
+report counts the continuation's completed result once for that cell and keeps the original throttle as
+history, so all eighteen Astra cells are reported.
+
+**Which summary to read.** The summary `workspace-benchmark` prints at the end covers only its own target
+root. For a continuation that is the selected cells alone. `cernum workspace-report` is the authoritative
+combined view across the source and continuation roots.
+
+## 13. Leak-audit note: `codex-discriminator-medium-v1-01`
+
+That campaign's telemetry summary records `leakAuditClean: false, leakCount: 28`. The 28 matches are the
+email-shape check (`EMAIL_SHAPE` in `otlp-observer.ts`) finding two synthetic values, `ada@example.test`
+(16) and `a@b.test` (12). Both are in the `ws.d1.log-redact.mask` case: its fixture tests
+(`fixtures/workspace/d1-log-redact/test/`) and its sealed definition (`workspace-catalog-discriminator.ts`).
+The telemetry carries them because the tool read those files and generated test values from them. Both use
+the reserved `.test` top-level domain. A count check shows the operator's own address does not occur in the
+redacted file.
+The audit adds a separate entry for any unredacted conversation id and for UUID-shaped identifiers, and
+there were none: the 28 entries are exactly the 28 email matches. No bearer token or API key shape occurs.
+**This is not a redaction failure, and the campaign's evidence stays valid.** No redaction change was made.
+The shape check is deliberately conservative: it reports anything email-shaped and leaves a person to
+judge, which is what happened here.

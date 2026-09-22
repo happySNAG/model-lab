@@ -40,7 +40,7 @@ import { EFFORT_LEVELS, EffortLevel, PROVIDER_IDS, ProviderID } from './provider
 export class WorkspaceMatrixAdmissionError extends Error {
   constructor(readonly code:
     | 'unreadable' | 'wrongScope' | 'missingField' | 'noCandidates' | 'providerNotAdmissible' | 'unknownProvider'
-    | 'unknownEffort' | 'duplicateRoute' | 'returnedIdentityPresent' | 'sealBroken',
+    | 'unknownEffort' | 'duplicateRoute' | 'returnedIdentityPresent' | 'sealBroken' | 'selectionMalformed',
   message: string) {
     super(message);
     this.name = 'WorkspaceMatrixAdmissionError';
@@ -103,6 +103,11 @@ export interface WorkspaceMatrixAdmissionRequest {
   intent: string;
   pack: { id: string; version: string; digest: string };
   admitted: WorkspaceMatrixAdmissionRoute[];
+  /**
+   * The `cms1:` digest of the ONE cell selection this admission authorises, when it authorises a selected
+   * matrix rather than a whole one. Absent means a whole-matrix admission, which no selected plan accepts.
+   */
+  cellSelectionDigest?: string;
   /** SHA-256 of the file's bytes as read, so the sealed object names the exact file it came from. */
   sourceFileSHA256: string;
 }
@@ -131,6 +136,12 @@ export interface WorkspaceMatrixIdentityAdmission {
   reason: string;
   intent: string;
   sourceFileSHA256: string;
+  /**
+   * Present exactly on an admission for a SELECTED matrix: the `cms1:` digest of the exact cells — and,
+   * for a continuation, the source campaign they were continued from — that it authorises. Part of every
+   * entry's scope, so no entry of it admits a route in any other selection or in a whole matrix.
+   */
+  cellSelectionDigest?: string;
   identityLimitation: string;
   /** The Pass 6 approval this rests on, by name. */
   approval: string;
@@ -240,10 +251,25 @@ export function parseWorkspaceMatrixAdmissionFile(text: string): WorkspaceMatrix
     }
     return route;
   });
+  let cellSelectionDigest: string | undefined;
+  if (parsed.selection !== undefined) {
+    const selection = parsed.selection as Record<string, unknown> | null;
+    const digest = selection !== null && typeof selection === 'object' && !Array.isArray(selection)
+      ? requiredText(selection.digest) : '';
+    const extra = selection !== null && typeof selection === 'object' && !Array.isArray(selection)
+      ? Object.keys(selection).filter((key) => key !== 'digest') : [];
+    if (!/^cms1:[0-9a-f]{64}$/.test(digest) || extra.length > 0) {
+      throw new WorkspaceMatrixAdmissionError('selectionMalformed',
+        '"selection" must be { "digest": "<the cms1: digest the dry run prints>" } and nothing else. It binds this '
+        + 'admission to exactly the selected cells that digest covers.');
+    }
+    cellSelectionDigest = digest;
+  }
   return {
     authorizedBy, reason, intent,
     pack: { id: packID, version: packVersion, digest: packDigest },
     admitted,
+    ...(cellSelectionDigest === undefined ? {} : { cellSelectionDigest }),
     sourceFileSHA256: sha256Text(text),
   };
 }
@@ -258,7 +284,8 @@ function entryBody(route: WorkspaceMatrixAdmissionRoute): Omit<WorkspaceMatrixAd
 }
 
 function entryDigestOf(entry: Omit<WorkspaceMatrixAdmissionEntry, 'entryDigest'>,
-                       scope: { matrixLabel: string; packID: string; packVersion: string; packDigest: string }): string {
+                       scope: { matrixLabel: string; packID: string; packVersion: string; packDigest: string;
+                         cellSelectionDigest?: string }): string {
   return 'cme1:' + digestObject({ entry, scope } as unknown as CanonicalValue);
 }
 
@@ -303,6 +330,9 @@ export function sealWorkspaceMatrixAdmission(request: WorkspaceMatrixAdmissionRe
     packID: request.pack.id,
     packVersion: request.pack.version,
     packDigest: request.pack.digest,
+    // ABSENT, NOT EMPTY, on a whole-matrix admission: the canonical encoding drops an absent key, so every
+    // admission sealed before selections existed keeps its digest.
+    ...(request.cellSelectionDigest === undefined ? {} : { cellSelectionDigest: request.cellSelectionDigest }),
   };
   const entries = request.admitted.map((route) => {
     const body = entryBody(route);
@@ -331,6 +361,7 @@ export function matrixAdmissionSealIsIntact(admission: WorkspaceMatrixIdentityAd
   const scope = {
     matrixLabel: admission.matrixLabel, packID: admission.packID,
     packVersion: admission.packVersion, packDigest: admission.packDigest,
+    ...(admission.cellSelectionDigest === undefined ? {} : { cellSelectionDigest: admission.cellSelectionDigest }),
   };
   return admission.entries.every((entry) => {
     const { entryDigest, ...entryContent } = entry;
@@ -403,9 +434,15 @@ export function matrixAdmissionFor(admission: WorkspaceMatrixIdentityAdmission |
   return { admitted: true, entry, mismatches: [], reason: ADMISSION_STAMP_LONG };
 }
 
-/** The reference a per-record admission carries back to the matrix admission. */
+/**
+ * The reference a per-record admission carries back to the matrix admission.
+ *
+ * `cell` is given exactly when the matrix runs a selection: the record's admission then names the one
+ * `cmc1:` cell it may be frozen into, beside the `cms1:` selection it came from.
+ */
 export function matrixAdmissionReferenceOf(admission: WorkspaceMatrixIdentityAdmission,
-                                           entry: WorkspaceMatrixAdmissionEntry): MatrixAdmissionReference {
+                                           entry: WorkspaceMatrixAdmissionEntry,
+                                           cell?: { matrixCellID: string }): MatrixAdmissionReference {
   return {
     admissionScope: WORKSPACE_MATRIX_ADMISSION_SCOPE,
     matrixAdmissionDigest: admission.matrixAdmissionDigest,
@@ -420,6 +457,8 @@ export function matrixAdmissionReferenceOf(admission: WorkspaceMatrixIdentityAdm
     reason: admission.reason,
     intent: admission.intent,
     identityLimitation: admission.identityLimitation,
+    ...(admission.cellSelectionDigest === undefined ? {} : { cellSelectionDigest: admission.cellSelectionDigest }),
+    ...(cell === undefined ? {} : { matrixCellID: cell.matrixCellID }),
   };
 }
 
@@ -431,7 +470,8 @@ export function matrixAdmissionReferenceOf(admission: WorkspaceMatrixIdentityAdm
  * and the run derive the same object, so a dry run shows the seal the live record will freeze.
  */
 export function recordAdmissionFromMatrix(admission: WorkspaceMatrixIdentityAdmission,
-                                          entry: WorkspaceMatrixAdmissionEntry, recordLabel: string): IdentityAdmission {
+                                          entry: WorkspaceMatrixAdmissionEntry, recordLabel: string,
+                                          cell?: { matrixCellID: string }): IdentityAdmission {
   const evidence: AdmittedCandidateEvidence = {
     provider: entry.provider,
     requestedModelID: entry.requestedModelID,
@@ -448,7 +488,7 @@ export function recordAdmissionFromMatrix(admission: WorkspaceMatrixIdentityAdmi
     authorizedAt: admission.authorizedAt,
     authorizedBy: admission.authorizedBy,
     admitted: [evidence],
-    matrixAdmission: matrixAdmissionReferenceOf(admission, entry),
+    matrixAdmission: matrixAdmissionReferenceOf(admission, entry, cell),
   });
 }
 
@@ -458,6 +498,9 @@ export function describeWorkspaceMatrixAdmission(admission: WorkspaceMatrixIdent
     `identity admission  PRESENT — matrix scope, sealed ${admission.matrixAdmissionDigest}`,
     `  matrix            ${admission.matrixLabel}`,
     `  pack              ${admission.packID}@${admission.packVersion} · ${admission.packDigest}`,
+    `  cells             ${admission.cellSelectionDigest === undefined
+      ? 'the WHOLE matrix (no cell selection named)'
+      : `ONLY the selection ${admission.cellSelectionDigest} — no other case, repeat, route or matrix`}`,
     `  authorised by     ${admission.authorizedBy}`,
     `  authorised at     ${admission.authorizedAt} (sealed when this command read the file; file sha256 `
       + `${admission.sourceFileSHA256.slice(0, 16)}…)`,

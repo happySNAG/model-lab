@@ -485,6 +485,11 @@ function measuredModelWork(row: Record<string, unknown>): boolean {
  * failure kinds that set it.
  */
 function providerDeclined(row: Record<string, unknown>): boolean {
+  return workspaceRunWasProviderDeclined(row);
+}
+
+/** The same test, exported so a continuation and a combined report read a decline exactly as the aggregate does. */
+export function workspaceRunWasProviderDeclined(row: Record<string, unknown>): boolean {
   return row.providerThrottled === true || text(row, 'terminationReason') === 'providerDeclined';
 }
 
