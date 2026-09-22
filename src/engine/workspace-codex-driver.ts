@@ -98,6 +98,7 @@ import {
   CodexAuthStatus, codexSubscriptionUsable, parseCodexDoctorAuth, unwrapCodexError,
 } from './codex-cli';
 import { OTLPTurnObservation, OTLPTurnSource, codexOTLPConfigArgument } from './otlp-observer';
+import { attemptAppliedEffortEvidence } from './workspace-effort-evidence';
 import { EffortLevel, ProviderID } from './provider';
 import { redactSecrets } from './redaction';
 import { verifyProviderIdentity } from './verification';
@@ -918,6 +919,12 @@ export class CodexWorkspaceDriver implements WorkspaceAgentDriver {
       activeIsolation: [...plan.activeIsolation, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX],
       elapsedMilliseconds: Date.now() - startedAt,
       events: events(),
+      // NOTHING WAS SENT, so nothing was applied: stated as such, never as a missing measurement of a
+      // request that happened. An auth refusal here is a provider-session fact, not an effort finding.
+      appliedEffortEvidence: attemptAppliedEffortEvidence({
+        requestedEffort: this.options.effort, requestedModelID: this.options.requestedModelID,
+        collectorAttached: this.options.otlp !== undefined, requestSent: false, refusal: kind,
+      }),
     });
 
     if (!this.executablePath) {
@@ -1005,6 +1012,20 @@ export class CodexWorkspaceDriver implements WorkspaceAgentDriver {
       otlp, reportedModelID, requestedModelID: this.options.requestedModelID,
     });
 
+    // THE APPLIED EFFORT, MEASURED — joined on this attempt's own `thread_id` and nothing else. A child
+    // that never started sent nothing; one that started and printed no thread id cannot be joined, and
+    // is recorded as such rather than matched to whatever record arrived nearest in time.
+    const started = result.failure?.kind !== 'notInstalled' && result.failure?.kind !== 'spawnFailure';
+    const appliedEffortEvidence = attemptAppliedEffortEvidence({
+      requestedEffort: this.options.effort,
+      requestedModelID: this.options.requestedModelID,
+      collectorAttached: this.options.otlp !== undefined,
+      requestSent: started,
+      refusal: started ? undefined : result.failure?.kind,
+      threadID: state.threadID,
+      observation: otlp,
+    });
+
     const isolation = [...plan.activeIsolation, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX,
       `the CLI passed the preflight as version ${preflight.version} with ${subscription.reason}`];
     if (otlp !== undefined) {
@@ -1024,6 +1045,7 @@ export class CodexWorkspaceDriver implements WorkspaceAgentDriver {
       elapsedMilliseconds: result.elapsedMilliseconds,
       usage,
       events: events(),
+      appliedEffortEvidence,
     });
 
     // 1. THE DEADLINE AND THE CANCELLATION COME FIRST: neither produced a finished turn.

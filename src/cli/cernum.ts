@@ -53,13 +53,15 @@ import {
   workspacePromptRecordOf, workspaceRecordPaths, workspaceRecordRoot, workspaceTimeoutFor,
   // The comparative matrix: one sealed pack, several models, several independent samples of each.
   WorkspaceMatrixError, aggregateWorkspaceRuns, buildWorkspaceMatrixPlan, collectWorkspaceRunRows,
+  WorkspaceMatrixEffortTelemetry, WorkspaceMatrixTelemetryCollector, WorkspaceMatrixTelemetryError,
+  describeWorkspaceAppliedEffortProvenance, lateAppliedEffortEvidence, workspaceAppliedEffortProvenance,
   describeWorkspaceCell, describeWorkspaceMatrixPlan, registeredWorkspacePacks, runWorkspaceMatrix,
   workspacePackByID,
   // The matrix-wide identity admission: sealed per route, to one matrix and one pack.
   WORKSPACE_MATRIX_ADMISSION_SCOPE, WorkspaceMatrixAdmissionError, WorkspaceMatrixIdentityAdmission,
   parseWorkspaceMatrixAdmissionFile, sealWorkspaceMatrixAdmission, workspaceMatrixIdentityProvenance,
   // The provider-throttle circuit breaker, and the non-model session preflight beside it.
-  describeUnproductiveSpend, describeWorkspaceMatrixRunResult, readProviderSessionStatus,
+  describeUnproductiveSpend, describeWorkspaceMatrixRunResult, readProviderSessionStatus, deferredProviderSessionStatus,
   describeProviderSessionStatus, sessionPreflightRefusal, describeProviderThrottle,
   UNPRODUCTIVE_SPEND_DEFINITION, THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS,
   ADMISSION_APPROVAL, ADMISSION_STAMP_LONG, ADMISSION_STAMP_SHORT, AdmittedCandidateEvidence,
@@ -2013,6 +2015,26 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       + 'this matrix is named from it.', 2);
   }
 
+  // 2b. THE APPLIED-EFFORT COLLECTOR, for the one provider whose tool exports its applied effort. It is not
+  //     optional for a Codex matrix with an effort: a route whose applied effort is not measured cannot
+  //     qualify. The PLAN is built against a loopback probe (bind and release, no file, no connection) and a
+  //     placeholder port; the live collector is started only after every refusal below has been passed.
+  const otlpDirectory = options['otlp-observer'] === undefined ? undefined : String(options['otlp-observer']);
+  if (otlpDirectory !== undefined && provider !== 'codexCLI') {
+    fail(`--otlp-observer was given for ${provider}. Only the Codex CLI exposes an exporter this engine reads, so `
+      + 'nothing would arrive.', 2);
+  }
+  let effortTelemetry: WorkspaceMatrixEffortTelemetry | undefined;
+  if (provider === 'codexCLI') {
+    const loopback = await OTLPObserver.probeLoopback();
+    effortTelemetry = {
+      endpoint: 'http://127.0.0.1:<ephemeral port chosen when the run starts>',
+      observerAvailable: loopback.available,
+      availabilityDetail: loopback.detail,
+    };
+  }
+  const telemetryDirectory = path.resolve(otlpDirectory ?? path.join(workspaceRecordRoot(root), `${runLabel}.otlp`));
+
   // 2a. THE MATRIX IDENTITY ADMISSION, when — and only when — the operator passes the flag. There is no
   //     environment variable and no configuration default for it, and nothing is carried forward from an
   //     earlier matrix: the file is read now and sealed now, to THIS matrix's label and pack.
@@ -2023,6 +2045,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   try {
     plan = buildWorkspaceMatrixPlan({
       identityAdmission,
+      effortTelemetry,
       pack,
       cases: allWorkspaceCases(),
       provider,
@@ -2064,12 +2087,20 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   //     the argv comes from a frozen table and is checked against a deny-list of every flag that
   //     could carry a prompt. It reports what the tool actually exposes and refuses to convert a
   //     plan name into a remaining-allowance figure — see `provider-session-status.ts`.
-  const sessionStatus = await readProviderSessionStatus({ provider });
+  // A Codex DRY RUN does not run its probe: `codex doctor` opens an authenticated handshake, and a dry run
+  // contacts nothing. It is named here and run before the first live request instead.
+  // Nor does a live invocation whose every cell was refused: there is no session to ask about for it.
+  const sessionStatus = (dryRun || plan.runnableRunCount === 0 ? deferredProviderSessionStatus(provider) : undefined)
+    ?? await readProviderSessionStatus({ provider });
   for (const line of describeProviderSessionStatus(sessionStatus)) say(`  ${line}`);
   say('');
   const preflightRefusal = sessionPreflightRefusal(sessionStatus);
   if (preflightRefusal !== undefined) {
     say(`  REFUSED       ${preflightRefusal}`);
+    say('');
+  }
+  if (plan.appliedEffortTelemetry.measuredRunCount > 0) {
+    say(`  telemetry     ${dryRun ? 'would be collected' : 'collected'} on loopback into ${telemetryDirectory}`);
     say('');
   }
 
@@ -2089,6 +2120,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       + `--provider ${provider} --models ${modelIDs.join(',')}${effort === 'none' ? '' : ` --effort ${effort}`}`
       + `${options.label === undefined ? '' : ` --label ${runLabel}`}`
       + `${identityAdmission === undefined ? '' : ` --admit-identity-unverifiable ${String(options['admit-identity-unverifiable'])}`}`
+      + `${otlpDirectory === undefined ? '' : ` --otlp-observer ${otlpDirectory}`}`
       + ' --yes');
     if (plan.models.some((model) => model.admission.required && !model.admission.admitted)) {
       say('A route above needs an identity admission and has none that admits it, so a live run would refuse it.');
@@ -2110,9 +2142,26 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       + 'intend to spend allowance on.', 3);
   }
 
+  // 3b. THE COLLECTOR, LAST BEFORE THE FIRST REQUEST. A collector that cannot start is a measurement failure
+  //     on this machine: nothing is sent, because no measured route could qualify without it.
+  let collector: WorkspaceMatrixTelemetryCollector | undefined;
+  if (plan.appliedEffortTelemetry.measuredRunCount > 0) {
+    try {
+      collector = await WorkspaceMatrixTelemetryCollector.start({ directory: telemetryDirectory, runLabel });
+    } catch (error) {
+      if (error instanceof WorkspaceMatrixTelemetryError) fail(`${error.code}: ${error.message}\nNothing was run.`, 6);
+      throw error;
+    }
+    say(`OTLP collector on ${collector.endpoint} — loopback only, no outbound connection. Every Codex run is joined to `
+      + 'its own telemetry by the conversation id it prints, and nothing else.');
+    say('');
+  }
+
   // 4. EXECUTION. One durable record per run, sealed as it finishes.
   const result = await runWorkspaceMatrix(plan, {
     identityAdmission,
+    effortTelemetry: collector === undefined || effortTelemetry === undefined ? effortTelemetry
+      : { ...effortTelemetry, endpoint: collector.endpoint, collector },
     pack,
     cases: allWorkspaceCases(),
     provider,
@@ -2145,11 +2194,38 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
     },
   });
 
+  // THE COLLECTOR IS STOPPED AFTER THE LAST RUN, with its grace period, so records still in the exporter's
+  // queue land. What arrives now is REPORTED against the sealed rows and can only withdraw a qualification.
+  const telemetry = collector === undefined ? undefined : await collector.stop();
+  const executedRuns = collectWorkspaceRunRows(root)
+    .filter((run) => result.completed.some((entry) => entry.recordRoot === run.recordRoot));
+  const appliedEffort = telemetry === undefined && result.appliedEffortVerdicts.length === 0 ? undefined
+    : workspaceAppliedEffortProvenance(executedRuns,
+      telemetry === undefined ? [] : lateAppliedEffortEvidence(executedRuns, telemetry.observations, telemetry.summary.collisions));
+
   say('');
   for (const line of describeWorkspaceMatrixRunResult(result)) say(`  ${line}`);
   say('');
+  if (telemetry !== undefined) {
+    const summary = telemetry.summary;
+    say(`  telemetry       ${summary.payloadCount} payload(s) (${summary.unreadablePayloadCount} unreadable, bytes not kept), `
+      + `${summary.conversationCount} conversation(s), ${summary.collisions.length} collision(s), leak audit `
+      + `${summary.leakAuditClean ? 'clean' : `FAILED (${summary.leakCount})`}${summary.failure === undefined ? ''
+        : ` · COLLECTOR FAILED: ${summary.failure}`}`);
+    say(`                  ${summary.evidenceFile}`);
+    say(`                  joined by placeholder key in ${summary.indexFile}`);
+    say('');
+  }
+  if (appliedEffort !== undefined && appliedEffort.candidates.length > 0) {
+    say('applied effort, per candidate (requested vs measured; validity, not quality):');
+    for (const line of describeWorkspaceAppliedEffortProvenance(appliedEffort)) say(`  ${line}`);
+    say('');
+    for (const line of wrap(appliedEffort.disclosure, 74)) say(`  ${line}`);
+    say('');
+  }
   for (const entry of result.skipped) {
-    say(`  ${entry.disposition === 'providerThrottledBeforeExecution' ? 'NOT EXECUTED' : 'skipped     '} `
+    say(`  ${entry.disposition === 'providerThrottledBeforeExecution' || entry.disposition === 'measurementUnavailableBeforeExecution'
+      ? 'NOT EXECUTED' : 'skipped     '} `
       + `${entry.cell.candidate} · ${entry.cell.caseID} · repeat ${entry.cell.repeat.repeatIndex}: `
       + entry.reasons.join('; '));
   }
@@ -2254,6 +2330,10 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       // identity-unverifiable, and every run that reported a different model.
       identity: workspaceMatrixIdentityProvenance(plan, collectWorkspaceRunRows(root)
         .filter((run) => result.completed.some((entry) => entry.recordRoot === run.recordRoot))),
+      // WHETHER EACH RUN RAN AT THE EFFORT ASKED FOR, measured from the tool's own telemetry and kept apart
+      // from the quality figures. Present only on a matrix that measured applied effort.
+      ...(appliedEffort === undefined ? {} : { appliedEffort }),
+      ...(telemetry === undefined ? {} : { effortTelemetry: telemetry.summary }),
       // WHAT WAS PLANNED, BESIDE WHAT RAN. A reader handed only the cells cannot tell a matrix that
       // finished from one the provider stopped, and they mean opposite things about the models.
       execution: {
@@ -2261,6 +2341,10 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
         executedRunCount: result.executedRunCount,
         notExecutedBecauseProviderThrottled: result.notExecutedBecauseThrottledCount,
         notExecutedForOtherReason: result.notExecutedForOtherReasonCount,
+        ...(result.measurementFailure === undefined ? {} : {
+          measurementFailure: result.measurementFailure,
+          notExecutedBecauseMeasurementUnavailable: result.notExecutedBecauseMeasurementUnavailableCount,
+        }),
         providerThrottle: result.throttle,
         disclosure: result.throttle === undefined ? undefined : THROTTLE_STOPPED_THE_MATRIX_NOT_THE_MODELS,
         notExecutedCells: result.skipped

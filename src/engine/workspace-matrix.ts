@@ -34,6 +34,12 @@ import {
   Quantity, estimatedQuantity, measuredQuantity, sumQuantities, unavailableQuantity,
 } from './frontier-metrics';
 import { buildWorkspaceDriver } from './host-factory';
+import { OTLPTurnSource } from './otlp-observer';
+import {
+  APPLIED_EFFORT_IS_MEASURED_NOT_REQUESTED, AppliedEffortVerdict, EFFORT_VALIDITY_IS_NOT_QUALITY,
+  TELEMETRY_CORRELATION_BOUNDARY, runAppliedEffortEvidence,
+} from './workspace-effort-evidence';
+import { WorkspaceMatrixTelemetrySource } from './workspace-matrix-telemetry';
 import {
   EffortLevel, ProviderBinding, ProviderBindingError, ProviderID, billingBasisOf, executionClassOf, isMetered,
 } from './provider';
@@ -155,13 +161,63 @@ export interface WorkspaceMatrixRequest {
    * Optional and absent-means-absent, exactly like `difficultyProfiles`.
    */
   structuralProfiles?: WorkspaceStructuralProfile[];
+  /**
+   * THE APPLIED-EFFORT TELEMETRY this matrix plans and runs with. The CLI supplies it for every Codex
+   * matrix: in a dry run with a placeholder endpoint and the result of a loopback probe, in a live run
+   * with the collector itself. Absent means no collector was arranged — every Codex run is then recorded
+   * `appliedEffortUnavailable` and no route can qualify, which the plan says before anything is sent.
+   */
+  effortTelemetry?: WorkspaceMatrixEffortTelemetry;
   /** Injected by the tests, so a matrix can be planned and run without a provider's CLI installed. */
-  driverFactory?: (binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>)
-  => WorkspaceAgentDriver | undefined;
+  driverFactory?: (binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>,
+                   context?: { otlp?: OTLPTurnSource }) => WorkspaceAgentDriver | undefined;
   /** Injected by the tests. Defaults to this process's environment. */
   environmentSource?: NodeJS.ProcessEnv;
   now?: () => Date;
 }
+
+/** The telemetry a matrix is planned and run with. See `WorkspaceMatrixRequest.effortTelemetry`. */
+export interface WorkspaceMatrixEffortTelemetry {
+  /** The endpoint the disclosed argv carries: the live collector's, or a placeholder in a dry run. */
+  endpoint: string;
+  /** Whether a loopback collector can be — or, live, was — started on this machine. */
+  observerAvailable: boolean;
+  availabilityDetail: string;
+  /** The live collector. Absent in a dry run, which binds nothing it keeps. */
+  collector?: WorkspaceMatrixTelemetrySource;
+}
+
+/**
+ * What one route's matrix will measure about the effort the tool APPLIED, stated before it runs.
+ *
+ * A DRY RUN CANNOT PROVE AN APPLIED EFFORT, and this object is how it avoids appearing to: `appliedEffort`
+ * is `toBeMeasuredLive` at best, and every consequence of a missing or contradicting measurement is
+ * written out here rather than discovered afterwards.
+ */
+export interface WorkspaceMatrixModelEffortTelemetry {
+  requestedEffort: EffortLevel;
+  /** Whether this provider's applied effort can be measured at all in this build (Codex, with an effort). */
+  measurable: boolean;
+  /** Whether THIS matrix will measure it: measurable, and an available collector is arranged. */
+  measured: boolean;
+  observerAvailable: boolean;
+  appliedEffort: 'toBeMeasuredLive' | 'notMeasured' | 'notApplicable';
+  requirement: string;
+  onMissing: string;
+  onMismatch: string;
+  onAmbiguous: string;
+}
+
+export const APPLIED_EFFORT_ON_MISSING =
+  'the run is sealed with its workspace evidence and score, its applied effort is recorded appliedEffortUnavailable, '
+  + 'and the route is NOT qualified at the requested effort. Never recorded as a provider or model failure.';
+export const APPLIED_EFFORT_ON_MISMATCH =
+  'the run is sealed with its workspace evidence and score, recorded appliedEffortMismatch with the effort the tool '
+  + 'reported, listed beside the table, and the route is NOT qualified: that run is not evidence for the requested effort. '
+  + 'The matrix continues — the distribution is itself evidence.';
+export const APPLIED_EFFORT_ON_AMBIGUOUS =
+  'telemetry that cannot be attributed to exactly one attempt is refused, the run is recorded appliedEffortAmbiguous, '
+  + 'and the route is NOT qualified. No "nearest" record is ever substituted.';
 
 // MARK: - The plan
 
@@ -182,6 +238,8 @@ export interface WorkspaceMatrixModel {
   admission: WorkspaceMatrixModelAdmission;
   /** What this matrix will and will not record about the effort the tool actually APPLIED. Never an identity. */
   appliedEffortEvidence: string;
+  /** The same, structured: requested, measured or not, and what each failure of measurement means. */
+  effortTelemetry: WorkspaceMatrixModelEffortTelemetry;
 }
 
 /**
@@ -357,6 +415,16 @@ export interface WorkspaceMatrixPlan {
   identityAdmission?: WorkspaceMatrixIdentityAdmission;
   /** Runnable runs whose identity is admitted rather than established. Counted, never folded into quality. */
   admittedUnverifiableRunCount: number;
+  /** Whether and how this matrix will measure applied effort. Stated in every plan, measured only live. */
+  appliedEffortTelemetry: {
+    /** Runnable runs whose applied effort will be measured from telemetry. */
+    measuredRunCount: number;
+    observerAvailable?: boolean;
+    endpoint?: string;
+    detail: string;
+    correlationBoundary: string;
+    disclosure: string;
+  };
 }
 
 export interface WorkspaceDesignedRecovery {
@@ -484,6 +552,17 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
     throttleScope: providerThrottleScopeFor(request.provider),
     identityAdmission: request.identityAdmission,
     admittedUnverifiableRunCount: runnable.filter((cell) => cell.identityAdmission !== undefined).length,
+    appliedEffortTelemetry: {
+      measuredRunCount: runnable.filter((cell) =>
+        models.find((model) => model.candidate === cell.candidate)?.effortTelemetry.measured === true).length,
+      observerAvailable: request.effortTelemetry?.observerAvailable,
+      endpoint: request.effortTelemetry?.endpoint,
+      detail: request.effortTelemetry === undefined
+        ? 'no telemetry collector was arranged for this matrix'
+        : request.effortTelemetry.availabilityDetail,
+      correlationBoundary: TELEMETRY_CORRELATION_BOUNDARY,
+      disclosure: `${APPLIED_EFFORT_IS_MEASURED_NOT_REQUESTED} ${EFFORT_VALIDITY_IS_NOT_QUALITY}`,
+    },
   };
 }
 
@@ -542,12 +621,34 @@ function appliedEffortEvidenceOf(request: WorkspaceMatrixRequest, disclosure: Wo
   if (request.effort === 'none') return 'no effort requested';
   if (request.provider === 'codexCLI') {
     const collecting = (disclosure?.invocation ?? []).some((argument) => argument.startsWith('otel'));
-    return collecting
-      ? `requested ${request.effort}; APPLIED effort is measured from the CLI's own OTLP telemetry on each run`
+    return collecting && request.effortTelemetry?.observerAvailable === true
+      ? `requested ${request.effort}; APPLIED effort TO BE MEASURED LIVE on every run from the CLI's own OTLP telemetry, `
+        + 'joined by conversation id — a dry run proves nothing about it'
       : `requested ${request.effort} (sent as -c model_reasoning_effort); APPLIED effort is NOT MEASURED by this matrix — `
-        + 'no OTLP collector is attached, so what the tool applied is unobserved rather than assumed';
+        + 'no available OTLP collector is attached, so what the tool applied is unobserved rather than assumed';
   }
   return `requested ${request.effort}; this matrix records no separate applied-effort evidence for ${request.provider}`;
+}
+
+/** The structured applied-effort position of one route. */
+function effortTelemetryOf(request: WorkspaceMatrixRequest): WorkspaceMatrixModelEffortTelemetry {
+  const measurable = request.provider === 'codexCLI' && request.effort !== 'none';
+  const observerAvailable = request.effortTelemetry?.observerAvailable === true;
+  const measured = measurable && observerAvailable;
+  return {
+    requestedEffort: request.effort,
+    measurable,
+    measured,
+    observerAvailable,
+    appliedEffort: !measurable ? 'notApplicable' : measured ? 'toBeMeasuredLive' : 'notMeasured',
+    requirement: !measurable
+      ? (request.effort === 'none' ? 'no effort requested, so there is nothing to verify'
+        : `${request.provider} exposes no applied-effort telemetry this engine reads; not measured and not required`)
+      : `REQUIRED for qualification: every run must verify ${request.effort} from the CLI's own telemetry`,
+    onMissing: measurable ? APPLIED_EFFORT_ON_MISSING : 'not applicable',
+    onMismatch: measurable ? APPLIED_EFFORT_ON_MISMATCH : 'not applicable',
+    onAmbiguous: measurable ? APPLIED_EFFORT_ON_AMBIGUOUS : 'not applicable',
+  };
 }
 
 function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: WorkspaceCase[],
@@ -557,7 +658,13 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
   const refusals: string[] = [];
 
   const factory = request.driverFactory ?? buildWorkspaceDriver;
-  const driver = factory({ provider: request.provider, requestedModelID: modelID, effort: request.effort });
+  const effortTelemetry = effortTelemetryOf(request);
+  // THE DISCLOSED ARGV CARRIES THE COLLECTOR ARGUMENT whenever telemetry is arranged, so the dry run
+  // prints the `-c otel=…` the live run will send — with a placeholder port, because none is bound yet.
+  const planningSource: OTLPTurnSource | undefined = effortTelemetry.measurable && request.effortTelemetry !== undefined
+    ? { endpoint: request.effortTelemetry.endpoint, observe: async () => undefined } : undefined;
+  const driver = factory({ provider: request.provider, requestedModelID: modelID, effort: request.effort },
+    planningSource === undefined ? undefined : { otlp: planningSource });
   if (driver === undefined) {
     refusals.push(`workspace driver unavailable: ${request.provider} has no workspace driver in this build, so a `
       + 'repository cannot be handed to it. Cernum does not fall back to prose execution for a workspace case.');
@@ -608,6 +715,13 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
       + `${admission.entry.billingBasis}.`);
   }
   if (disclosure !== undefined) refusals.push(...disclosure.capabilityShortfalls);
+  // A MEASUREMENT THIS MATRIX WAS SUPPOSED TO MAKE AND CANNOT. Refused here — before anything is sent —
+  // because a route whose applied effort cannot be measured cannot qualify, and spending allowance on it
+  // would buy evidence nobody could use. A harness fact, never a provider or model one.
+  if (effortTelemetry.measurable && request.effortTelemetry !== undefined && !request.effortTelemetry.observerAvailable) {
+    refusals.push(`measurementUnavailable: the applied effort of this route is required for qualification and no loopback `
+      + `telemetry collector is available on this machine (${request.effortTelemetry.availabilityDetail}). Nothing is sent.`);
+  }
 
   return {
     modelID,
@@ -621,6 +735,7 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
     runnable: refusals.length === 0 && binding !== undefined && driver !== undefined,
     admission,
     appliedEffortEvidence: appliedEffortEvidenceOf(request, disclosure),
+    effortTelemetry,
   };
 }
 
@@ -935,6 +1050,16 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
       + `${model.identity.provenAt === undefined ? '' : `, proven ${model.identity.provenAt}`}`);
     lines.push(`    requested     ${model.modelID}${plan.effort === 'none' ? '' : ` · effort ${plan.effort}`}`);
     lines.push(`    effort        ${model.appliedEffortEvidence}`);
+    if (model.effortTelemetry.measurable) {
+      const telemetry = model.effortTelemetry;
+      lines.push(`    applied       ${telemetry.appliedEffort === 'toBeMeasuredLive'
+        ? 'TO BE MEASURED LIVE — this dry run has verified no applied effort'
+        : 'NOT MEASURED — no available collector is arranged, so no run of this route can qualify'}`);
+      lines.push(`    observer      ${telemetry.observerAvailable ? 'AVAILABLE' : 'UNAVAILABLE'} · ${telemetry.requirement}`);
+      lines.push(`    if missing    ${telemetry.onMissing}`);
+      lines.push(`    if mismatched ${telemetry.onMismatch}`);
+      lines.push(`    if ambiguous  ${telemetry.onAmbiguous}`);
+    }
     lines.push(`    billing       ${model.billingBasis ?? 'not bound'}`
       + `${model.executionClass === undefined ? '' : ` (${model.executionClass})`}`);
     lines.push(`    admission     ${describeModelAdmission(model)}`);
@@ -988,6 +1113,18 @@ export function describeWorkspaceMatrixPlan(plan: WorkspaceMatrixPlan): string[]
   lines.push(`throttle scope  ${plan.throttleScope.scope}${plan.throttleScope.declared
     ? ' (declared)' : ' — UNDECLARED: no throttle has been observed for this provider, so the conservative fallback applies'}`);
   lines.push(`                ${plan.throttleScope.note}`);
+  if (plan.models.some((model) => model.effortTelemetry.measurable)) {
+    const telemetry = plan.appliedEffortTelemetry;
+    lines.push(`effort telem.   ${telemetry.observerAvailable === true
+      ? `REQUIRED and ARMED — ${telemetry.measuredRunCount} runnable run(s) will have their applied effort measured live`
+      : telemetry.observerAvailable === false
+        ? 'REQUIRED and UNAVAILABLE — no loopback collector can be started, so the measured routes are refused'
+        : 'NOT ARRANGED — no collector was supplied, so no applied effort will be measured and no route can qualify'}`);
+    lines.push(`                ${telemetry.detail}`);
+    if (telemetry.endpoint !== undefined) lines.push(`                endpoint ${telemetry.endpoint}`);
+    lines.push(`                ${telemetry.correlationBoundary}`);
+    lines.push(`                ${telemetry.disclosure}`);
+  }
   if (plan.identityAdmission !== undefined) {
     lines.push('');
     for (const line of describeWorkspaceMatrixAdmission(plan.identityAdmission)) lines.push(line);
@@ -1048,7 +1185,13 @@ export type WorkspaceCellDisposition =
   /** A provider throttle had already been established, and it reaches this cell. */
   | 'providerThrottledBeforeExecution'
   /** The cell was attempted and the HARNESS broke — a missing fixture, an unusable sandbox. */
-  | 'harnessFault';
+  | 'harnessFault'
+  /**
+   * The applied-effort collector this route REQUIRES had failed before this cell started, so the cell
+   * was not launched: a run whose effort cannot be measured cannot qualify its route. A measurement
+   * fact about this machine — never a provider decline and never a model failure.
+   */
+  | 'measurementUnavailableBeforeExecution';
 
 export interface WorkspaceMatrixSkippedCell {
   cell: WorkspaceMatrixCell;
@@ -1081,6 +1224,24 @@ export interface WorkspaceMatrixRunResult {
    * substitution happened once, never which model answers next time.
    */
   identitySubstitutions: WorkspaceIdentitySubstitution[];
+  /** Why the applied-effort collector stopped working, when it did. Stops the Codex cells after it. */
+  measurementFailure?: string;
+  /** Runs never attempted because the collector their route requires had failed. NOT failures. */
+  notExecutedBecauseMeasurementUnavailableCount: number;
+  /** Every executed run's applied-effort verdict, in execution order. Empty when no run measured one. */
+  appliedEffortVerdicts: WorkspaceRunAppliedEffort[];
+}
+
+/** One executed run's requested and applied effort, as sealed. */
+export interface WorkspaceRunAppliedEffort {
+  candidate: string;
+  caseID: string;
+  repeatIndex: number;
+  recordRoot: string;
+  requestedEffort: string;
+  appliedEffort?: string;
+  verdict: AppliedEffortVerdict;
+  detail: string;
 }
 
 export interface WorkspaceIdentitySubstitution {
@@ -1128,6 +1289,11 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
   // identical decline would only restate it.
   let throttle: ProviderThrottleSignal | undefined;
   const substitutions: WorkspaceIdentitySubstitution[] = [];
+  const appliedEffortVerdicts: WorkspaceRunAppliedEffort[] = [];
+  // THE COLLECTOR IS SHARED; ATTRIBUTION IS NOT. Every run below is handed a source scoped to itself,
+  // which claims each conversation id that run reports. See `workspace-matrix-telemetry.ts`.
+  const collector = request.effortTelemetry?.collector;
+  let measurementFailure: string | undefined;
 
   for (const cell of plan.cells) {
     // FIRST, because a cell the breaker has already excluded must not even be looked up: no driver
@@ -1155,7 +1321,28 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
       });
       continue;
     }
-    const driver = factory({ provider: request.provider, requestedModelID: cell.modelID, effort: request.effort });
+    // A ROUTE THAT REQUIRES MEASUREMENT IS NOT LAUNCHED WITHOUT IT. Checked before the driver exists,
+    // so a collector that died stops the spend at once and every later cell says why.
+    const measured = model.effortTelemetry.measured;
+    const collectorFailure = !measured ? undefined
+      : collector === undefined ? 'this live run was given no collector, although its plan requires one'
+        : collector.failure();
+    if (collectorFailure !== undefined) {
+      measurementFailure ??= collectorFailure;
+      skipped.push({
+        cell,
+        disposition: 'measurementUnavailableBeforeExecution',
+        reasons: [`the applied-effort telemetry collector is unavailable (${measurementFailure}), so this run was not `
+          + 'launched: its route cannot qualify without the measurement. A harness fact, not a provider or model failure.'],
+      });
+      continue;
+    }
+    const otlp = measured && collector !== undefined ? collector.sourceFor({
+      runKey: cell.recordRoot, candidate: cell.candidate, caseID: cell.caseID, repeatIndex: cell.repeat.repeatIndex,
+      requestedModelID: cell.modelID, requestedEffort: request.effort,
+    }) : undefined;
+    const driver = factory({ provider: request.provider, requestedModelID: cell.modelID, effort: request.effort },
+      otlp === undefined ? undefined : { otlp });
     const workspaceCase = packCases.find((entry) => entry.id === cell.caseID);
     if (driver === undefined || workspaceCase === undefined) {
       skipped.push({
@@ -1189,6 +1376,7 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
         environmentSource: options.environmentSource,
         shouldCancel: options.shouldCancel,
         runCommand: options.runCommand,
+        telemetryCapture: otlp === undefined ? undefined : collector?.capture,
       });
       const { outcome } = await campaign.run();
       // 1. SEAL FIRST, ALWAYS. The run that observed the decline is a complete, durable record with
@@ -1207,6 +1395,16 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
           requestedModelID: cell.modelID,
           reportedModelID: outcome.frontier.reportedModelID ?? '',
           detail: outcome.frontier.executionIdentityDetail ?? '',
+        });
+      }
+      // THE EFFORT VERDICT, AS SEALED. Recorded, never acted on beyond this list: a mismatch does not
+      // stop the matrix, because the distribution of what the tool applied is itself the evidence.
+      const effort = runAppliedEffortEvidence(outcome.run.attempts.map((attempt) => attempt.agent.appliedEffortEvidence));
+      if (effort !== undefined) {
+        appliedEffortVerdicts.push({
+          candidate: cell.candidate, caseID: cell.caseID, repeatIndex: cell.repeat.repeatIndex,
+          recordRoot: cell.recordRoot, requestedEffort: effort.requestedEffort, appliedEffort: effort.appliedEffort,
+          verdict: effort.verdict, detail: effort.detail,
         });
       }
       options.onCellFinished?.(cell, outcome);
@@ -1239,6 +1437,7 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
   }
 
   const throttled = skipped.filter((entry) => entry.disposition === 'providerThrottledBeforeExecution');
+  const unmeasurable = skipped.filter((entry) => entry.disposition === 'measurementUnavailableBeforeExecution');
   return {
     plan,
     completed,
@@ -1248,8 +1447,11 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
     plannedRunCount: plan.cells.length,
     executedRunCount: completed.length,
     notExecutedBecauseThrottledCount: throttled.length,
-    notExecutedForOtherReasonCount: skipped.length - throttled.length,
+    notExecutedForOtherReasonCount: skipped.length - throttled.length - unmeasurable.length,
     identitySubstitutions: substitutions,
+    measurementFailure,
+    notExecutedBecauseMeasurementUnavailableCount: unmeasurable.length,
+    appliedEffortVerdicts,
   };
 }
 
@@ -1277,6 +1479,22 @@ export function describeWorkspaceMatrixRunResult(result: WorkspaceMatrixRunResul
       lines.push(`  ${entry.candidate} · ${entry.caseID} · repeat ${entry.repeatIndex}: requested ${entry.requestedModelID}, `
         + `reported ${entry.reportedModelID || '(unnamed)'}`);
     }
+  }
+  if (result.appliedEffortVerdicts.length > 0) {
+    const tally = (verdict: AppliedEffortVerdict) =>
+      result.appliedEffortVerdicts.filter((entry) => entry.verdict === verdict).length;
+    lines.push(`applied effort  ${tally('appliedEffortVerified')} verified · ${tally('appliedEffortMismatch')} MISMATCH · `
+      + `${tally('appliedEffortAmbiguous')} ambiguous · ${tally('appliedEffortUnavailable')} unavailable `
+      + `(of ${result.appliedEffortVerdicts.length} measured run(s); per candidate below)`);
+    for (const entry of result.appliedEffortVerdicts.filter((run) => run.verdict === 'appliedEffortMismatch')) {
+      lines.push(`  ${entry.candidate} · ${entry.caseID} · repeat ${entry.repeatIndex}: requested ${entry.requestedEffort}, `
+        + `applied ${entry.appliedEffort ?? 'mixed'} — kept as evidence, NOT evidence for @${entry.requestedEffort}`);
+    }
+  }
+  if (result.measurementFailure !== undefined) {
+    lines.push(`measurement     the effort telemetry collector FAILED (${result.measurementFailure}); `
+      + `${result.notExecutedBecauseMeasurementUnavailableCount} run(s) were not launched. A harness fact, not a finding `
+      + 'about the provider or the models.');
   }
   if (result.throttle !== undefined) {
     lines.push('');

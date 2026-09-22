@@ -30,7 +30,8 @@ import {
 } from './frontier-harness';
 import { REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE } from '../../src/engine/identity-admission';
 import {
-  CODEX_0155_CONVERSATION_STARTS, CODEX_0155_MODEL_MANAGER_SPAN,
+  CODEX_0155_CONVERSATION_STARTS, CODEX_0155_HTTP_SSE_COMPLETED_PAIR, CODEX_0155_MODEL_MANAGER_SPAN,
+  CODEX_0155_SPANS_CARRYING_THE_CONVERSATION,
 } from './fixtures/codex-otlp-0155-captured';
 
 async function post(endpoint: string, payload: unknown): Promise<void> {
@@ -208,5 +209,66 @@ describe('recovering the effort does NOT recover an identity', () => {
       expect(metrics.identityState).toBe(REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE);
       expect(metrics.reportedModelID).toBe('');
     }
+  });
+});
+
+// MARK: - Two shapes the real binary wrote that the fake did not (real-binary loopback matrix, 2026-09-21)
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/** The captured spans with RAW ids put back where the capture has placeholders. The ids are synthetic. */
+function spansWithRawIDs(conversationID: string): unknown {
+  return JSON.parse(JSON.stringify(CODEX_0155_SPANS_CARRYING_THE_CONVERSATION)
+    .split('[REDACTED:conversation.id:1]').join(conversationID)
+    .split('[REDACTED:identifier:2]').join('01a0c692-0000-7000-8000-0000000000aa'));
+}
+
+describe('real 0.155.0 records: the usage record is kept, and the conversation id reaches no file', () => {
+  it('keeps the usage record of an HTTP/SSE request, not the bare record written beside it, and counts a re-delivery once', async () => {
+    const observer = await observerFor('sse-pair');
+    await post(observer.endpoint, CODEX_0155_HTTP_SSE_COMPLETED_PAIR);
+    await post(observer.endpoint, CODEX_0155_HTTP_SSE_COMPLETED_PAIR);
+    const turn = await observer.observe('[REDACTED:conversation.id:1]');
+    expect(turn?.requestUsage).toHaveLength(1);
+    expect(turn?.requestUsage?.[0]).toMatchObject({
+      effort: 'medium', inputTokens: 1000, cachedInputTokens: 400, cacheWriteInputTokens: 0,
+      outputTokens: 50, reasoningTokens: 20, toolTokens: 1050,
+    });
+    expect(turn?.requestReasoningEfforts).toEqual(['medium']);
+    await observer.stop();
+  });
+
+  it('redacts the id under `thread.id`, `thread_id` and inside a debug string, to the conversation\'s own placeholder', async () => {
+    const raw = '01a0c692-0000-7000-8000-000000000001';
+    const observer = await observerFor('spans');
+    await post(observer.endpoint, withAttribute(captured('gpt-5.6-sol', 'medium').payload, 'conversation.id', raw));
+    await post(observer.endpoint, spansWithRawIDs(raw));
+    const turn = await observer.observe(raw);
+    const stopped = await observer.stop();
+    const written = fs.readFileSync(stopped.evidenceFile, 'utf8');
+    expect(written).not.toContain(raw);
+    expect(written).not.toMatch(UUID);
+    const key = turn!.correlationKey.replace(/[[\]]/g, '\\$&');
+    expect(written).toMatch(new RegExp(`Thread \\{ thread_id: \\\\"${key}\\\\" \\}`));
+    expect(written).toMatch(new RegExp(`"key":"thread_id","value":\\{"stringValue":"${key}"\\}`));
+    expect(stopped.leakAuditClean).toBe(true);
+  });
+
+  it('redacts an id it has not yet seen as a conversation too, and its audit names a leak without repeating it', async () => {
+    const raw = '01a0c692-0000-7000-8000-000000000002';
+    const observer = await observerFor('spans-first');
+    // Spans before any record naming the conversation: the id is not yet KNOWN, and still does not survive.
+    await post(observer.endpoint, spansWithRawIDs(raw));
+    await post(observer.endpoint, withAttribute(captured('gpt-5.6-sol', 'medium').payload, 'conversation.id', raw));
+    await observer.observe(raw);
+    // Something ELSE wrote the raw id into the file. The audit has to catch it, and must not echo it.
+    fs.appendFileSync(path.join(directory, 'spans-first.jsonl'), `${JSON.stringify({ stray: raw })}\n`);
+    const stopped = await observer.stop();
+    expect(stopped.leakAuditClean).toBe(false);
+    expect(stopped.leaks).toEqual([
+      expect.stringMatching(/^conversation id \[REDACTED:conversation\.id:\d+\] written unredacted$/),
+      '1 UUID-shaped identifier(s) written unredacted',
+    ]);
+    expect(JSON.stringify(stopped.leaks)).not.toContain(raw);
   });
 });

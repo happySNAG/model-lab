@@ -47,6 +47,7 @@ import {
 } from './frontier-metrics';
 import { WORKSPACE_REPEAT_IS_NOT_RETRY } from './workspace-pack';
 import { workspaceRecordPaths, workspaceRecordRoot } from './workspace-campaign';
+import { EFFORT_VALIDITY_IS_NOT_QUALITY } from './workspace-effort-evidence';
 
 export class WorkspaceAggregateError extends Error {
   constructor(readonly code: string, message: string) {
@@ -336,6 +337,27 @@ export interface WorkspaceCellIdentityProvenance {
   disclosure: string;
 }
 
+/**
+ * Applied-effort validity for one cell. Counted beside the quality figures, never folded into them.
+ *
+ * A cell whose runs carry no applied-effort verdict has no such block — every Claude cell, and every
+ * aggregate written before this existed, reads exactly as it did.
+ */
+export interface WorkspaceCellEffortProvenance {
+  requestedEffort: string;
+  /** How many runs ended with each verdict: appliedEffortVerified, appliedEffortMismatch, … */
+  verdicts: Record<string, number>;
+  /** Runs by the effort the telemetry measured; `unmeasured` and `mixed` are named, never folded. */
+  appliedEffortDistribution: Record<string, number>;
+  verifiedRunCount: number;
+  mismatchRunCount: number;
+  /** True only when every run of this cell verified the requested effort. */
+  qualifiedForRequestedEffort: boolean;
+  /** Runs that are NOT evidence for the requested effort. Their scores stay in the quality figures, labelled here. */
+  mismatchedRecordRoots: string[];
+  disclosure: string;
+}
+
 /** One `provider:model` × case cell of a comparative matrix. */
 export interface WorkspaceCellAggregate {
   candidate: string;
@@ -353,6 +375,8 @@ export interface WorkspaceCellAggregate {
    * every aggregate that existed before admissions reads exactly as it did.
    */
   identityProvenance?: WorkspaceCellIdentityProvenance;
+  /** Whether these runs ran at the requested effort, beside — never inside — the quality figures. */
+  effortProvenance?: WorkspaceCellEffortProvenance;
 
   caseID: string;
   caseVersion: string;
@@ -683,6 +707,7 @@ export function aggregateWorkspaceCell(runs: WorkspaceRunRow[]): WorkspaceCellAg
       ? (rows.map((row) => text(row, 'bindingIdentityState')).find((state) => state !== 'verified') ?? 'verified')
       : 'verified',
     ...identityProvenanceOf(rows),
+    ...effortProvenanceOf(ordered),
 
     caseID: text(first, 'caseID') ?? '',
     caseVersion: text(first, 'caseVersion') ?? '',
@@ -749,6 +774,42 @@ function identityProvenanceOf(rows: Record<string, unknown>[]): { identityProven
 }
 
 /**
+ * The applied-effort block of a cell, or nothing when no run of it measured one.
+ *
+ * Touches no quality figure. A mismatched run's score stays where verification put it, and this block
+ * is where a reader learns that the score does not describe the requested effort.
+ */
+function effortProvenanceOf(runs: WorkspaceRunRow[]): { effortProvenance?: WorkspaceCellEffortProvenance } {
+  const measured = runs.filter((run) => text(run.row, 'appliedEffortVerdict') !== undefined);
+  if (measured.length === 0) return {};
+  const verdicts: Record<string, number> = {};
+  const distribution: Record<string, number> = {};
+  for (const { row } of measured) {
+    const verdict = text(row, 'appliedEffortVerdict') as string;
+    verdicts[verdict] = (verdicts[verdict] ?? 0) + 1;
+    const attempts = Array.isArray(row.appliedEffortAttempts) ? row.appliedEffortAttempts as Record<string, unknown>[] : [];
+    const mixed = attempts.some((attempt) => Array.isArray(attempt.observedEfforts) && attempt.observedEfforts.length > 1);
+    const applied = text(row, 'appliedEffort') ?? (mixed ? 'mixed' : 'unmeasured');
+    distribution[applied] = (distribution[applied] ?? 0) + 1;
+  }
+  const verified = verdicts.appliedEffortVerified ?? 0;
+  return {
+    effortProvenance: {
+      requestedEffort: text(measured[0].row, 'requestedEffort') ?? '',
+      verdicts,
+      appliedEffortDistribution: distribution,
+      verifiedRunCount: verified,
+      mismatchRunCount: verdicts.appliedEffortMismatch ?? 0,
+      // Over EVERY run of the cell: a run that carries no verdict among runs that do is itself unverified.
+      qualifiedForRequestedEffort: verified === runs.length,
+      mismatchedRecordRoots: measured.filter(({ row }) => text(row, 'appliedEffortVerdict') === 'appliedEffortMismatch')
+        .map((run) => run.recordRoot),
+      disclosure: EFFORT_VALIDITY_IS_NOT_QUALITY,
+    },
+  };
+}
+
+/**
  * One line per cell, for a terminal table.
  *
  * Prints the success rate as a FRACTION rather than only as a percentage: "2/3" says how many runs
@@ -777,7 +838,19 @@ export function describeWorkspaceCell(cell: WorkspaceCellAggregate): string {
     (cell.identityProvenance?.admittedUnverifiableRunCount ?? 0) > 0 ? `[${ADMISSION_STAMP_SHORT}]` : '',
     (cell.identityProvenance?.substitutedRunCount ?? 0) > 0
       ? `[${cell.identityProvenance?.substitutedRunCount} run(s) reported another model]` : '',
+    // THE EFFORT VERDICT, on the same line as the numbers, for the same reason. Absent on a cell whose
+    // runs measured no effort, whose line is unchanged.
+    effortStamp(cell.effortProvenance, cell.runCount),
   ].join('  ').trimEnd();
+}
+
+function effortStamp(effort: WorkspaceCellEffortProvenance | undefined, runCount: number): string {
+  if (effort === undefined) return '';
+  if (effort.qualifiedForRequestedEffort) return `[applied effort ${effort.requestedEffort} verified ${runCount}/${runCount}]`;
+  if (effort.mismatchRunCount > 0) {
+    return `[EFFORT MISMATCH ${effort.mismatchRunCount}/${runCount} — not evidence for @${effort.requestedEffort}]`;
+  }
+  return `[applied effort UNVERIFIED ${runCount - effort.verifiedRunCount}/${runCount} — not qualified @${effort.requestedEffort}]`;
 }
 
 /**

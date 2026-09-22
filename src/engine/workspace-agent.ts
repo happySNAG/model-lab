@@ -38,6 +38,7 @@ import { ProviderID } from './provider';
 import { ScopePolicy } from './workspace-scope';
 import { ToolPolicy, NetworkPolicy, ENVIRONMENT_NAMES_A_CASE_MAY_UNLOCK } from './workspace-case';
 import { TranscriptBuilder, TranscriptEvent } from './workspace-transcript';
+import { AttemptAppliedEffortEvidence } from './workspace-effort-evidence';
 import { isForbiddenEnvironmentName, resolveInside } from './isolation';
 
 export class WorkspaceAgentError extends Error {
@@ -195,6 +196,13 @@ export interface WorkspaceAgentResult {
   usage?: Record<string, CanonicalValue | undefined>;
   /** Events the driver emitted. The runner already has them; returned so a driver can be tested alone. */
   events: TranscriptEvent[];
+  /**
+   * What the tool's own telemetry says about the effort it APPLIED, beside the effort requested.
+   *
+   * Written only by a driver that can measure it (Codex, through its OTLP export). ABSENT on every
+   * other driver, and absent means the question was never asked — not that the answer was "no".
+   */
+  appliedEffortEvidence?: AttemptAppliedEffortEvidence;
 }
 
 export interface WorkspaceAgentDriver {

@@ -583,6 +583,8 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
         activeIsolation: [...agentResult.activeIsolation, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX],
         elapsedMilliseconds: agentResult.elapsedMilliseconds,
         usage: agentResult.usage,
+        // Only when the driver measured one, so an attempt record from any other driver is unchanged.
+        ...(agentResult.appliedEffortEvidence === undefined ? {} : { appliedEffortEvidence: agentResult.appliedEffortEvidence }),
       },
       transcript: builtTranscript,
       terminationReason,

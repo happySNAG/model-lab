@@ -52,6 +52,7 @@ import { WorkspaceAgentDriver, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, driverSho
 import { WorkspaceAttemptRecord, WorkspaceRunOptions } from './workspace-execution';
 import { WorkspaceHostError, WorkspaceOutcome, WorkspaceRoutingHost } from './workspace-host';
 import { PATH_RECONCILIATION_IS_NOT_OBSERVATION } from './workspace-path-reconciliation';
+import { WorkspaceTelemetryCapture, appliedEffortRowFields, runAppliedEffortEvidence } from './workspace-effort-evidence';
 
 export class WorkspaceCampaignError extends Error {
   constructor(readonly code: string, message: string) {
@@ -295,6 +296,11 @@ export interface WorkspaceCampaignInputs {
   onAttempt?: (record: WorkspaceAttemptRecord) => void;
   /** Injected by the tests so a verification command need not be a real process. */
   runCommand?: WorkspaceRunOptions['runCommand'];
+  /**
+   * How this run's telemetry was captured, when a collector was attached. Written beside the applied-effort
+   * verdict so a reader can go from the row to the evidence file that verdict rests on.
+   */
+  telemetryCapture?: WorkspaceTelemetryCapture;
 }
 
 /**
@@ -364,6 +370,20 @@ export interface WorkspaceDurableRecord extends Record<string, CanonicalValue | 
   executionIdentityVerdict?: string;
   executionIdentityDetail?: string;
   reportedModelID?: string;
+  /**
+   * THE EFFORT ASKED FOR AND THE EFFORT MEASURED, as two fields — present only on a run whose driver can
+   * measure it (Codex). `appliedEffort` comes from the tool's own telemetry and is never copied from the
+   * request; `appliedEffortVerdict` says whether the two agree. See `workspace-effort-evidence.ts`.
+   */
+  requestedEffort?: string;
+  appliedEffort?: string;
+  appliedEffortVerdict?: string;
+  appliedEffortEvidenceSource?: string;
+  appliedEffortDetail?: string;
+  telemetryCorrelation?: string;
+  appliedEffortQualifiesRequestedRoute?: boolean;
+  appliedEffortAttempts?: CanonicalValue;
+  telemetryCapture?: CanonicalValue;
 
   driverID: string;
   driverExecutablePath?: string;
@@ -643,6 +663,11 @@ export class WorkspaceCampaign {
     const binding = this.inputs.binding;
     const transcriptEvidencePath = deciding === undefined ? undefined
       : path.posix.join('evidence', workspaceCase.id, `attempt-${deciding.attemptIndex}`, 'transcript.jsonl');
+    // REQUESTED BESIDE APPLIED, from every attempt's own telemetry. Empty for a driver that measures no
+    // effort, so those rows are written exactly as before.
+    const effortFields = appliedEffortRowFields(
+      runAppliedEffortEvidence(outcome.run.attempts.map((attempt) => attempt.agent.appliedEffortEvidence)),
+      this.inputs.telemetryCapture);
 
     const row = {
       slotKey: this.slotKey,
@@ -688,6 +713,7 @@ export class WorkspaceCampaign {
       executionContract: binding.executionContract ?? 'proseCompletion',
       tokenCeiling: binding.tokenCeiling ?? 'boundedByBinding',
       effort: binding.effort,
+      ...effortFields,
 
       // ---- identity, in two halves that never overwrite each other ----------------------------
       bindingIdentityState: outcome.frontier.bindingIdentityState,
@@ -786,6 +812,7 @@ export class WorkspaceCampaign {
       slotKey: this.slotKey, status: card.status, patchDigest: card.patchDigest,
       transcriptDigest: card.transcriptDigest, compositeMilli: card.compositeMilli.valueMilli,
       executionIdentityVerdict: outcome.frontier.executionIdentityVerdict,
+      ...(effortFields.appliedEffortVerdict === undefined ? {} : { appliedEffortVerdict: effortFields.appliedEffortVerdict }),
     });
 
     const record: WorkspaceDurableRecord = {
@@ -830,6 +857,7 @@ export class WorkspaceCampaign {
       executionIdentityVerdict: outcome.frontier.executionIdentityVerdict,
       executionIdentityDetail: outcome.frontier.executionIdentityDetail,
       reportedModelID: outcome.frontier.reportedModelID,
+      ...effortFields,
 
       driverID: outcome.run.driverID,
       driverExecutablePath: this.driverDisclosure.executablePath,

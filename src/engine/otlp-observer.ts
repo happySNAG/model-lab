@@ -82,16 +82,34 @@ const TURN_TTFT_EVENT = 'codex.turn_ttft';
  * arrive. Once ambiguous, always ambiguous: a third record agreeing with one of them does not break
  * the tie, it just makes the count 2-1.
  */
-function recordEffort(entry: OTLPTurnObservation, effort: string): void {
+function recordEffort(entry: OTLPTurnObservation, effort: string, source: string): void {
   if (entry.effortAmbiguous === true) return;
   if (entry.turnReasoningEffort !== undefined && entry.turnReasoningEffort !== effort) {
     entry.effortAmbiguous = true;
     entry.turnReasoningEffort = undefined;
+    entry.turnReasoningEffortSource = undefined;
     entry.correlated = false;
     return;
   }
   entry.turnReasoningEffort = effort;
+  entry.turnReasoningEffortSource = source;
   entry.correlated = true;
+}
+
+/** The per-request record 0.155.0 exports for each streamed response, carrying its effort and token counts. */
+const SSE_EVENT = 'codex.sse_event';
+
+/** One completed model request, as the tool's telemetry counted it. Verbatim; nothing here re-derives a figure. */
+export interface OTLPRequestUsage {
+  /** `event.timestamp` of the record, which is also how an exporter's re-delivery of it is recognised. */
+  at: string;
+  effort?: string;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  toolTokens?: number;
 }
 
 /** What one Codex turn said about itself. Every field optional: the tool may say nothing. */
@@ -120,8 +138,32 @@ export interface OTLPTurnObservation {
   correlated: boolean;
   /** The effort the CLI says it applied to the turn. See `CONVERSATION_STARTS_EVENT` for where it is read from. */
   turnReasoningEffort?: string;
+  /** Which attribute `turnReasoningEffort` was read from, so a row can say which record it rests on. */
+  turnReasoningEffortSource?: string;
   /** `codex.request.reasoning_effort` — the effort it says it sent on the request. */
   requestReasoningEffort?: string;
+  /**
+   * EVERY distinct per-request effort, sorted: 0.154.0's `codex.request.reasoning_effort` and 0.155.0's
+   * `model_reasoning_effort` on a `codex.sse_event` record. More than one value means the requests of one
+   * conversation were not all made at one effort — which is a finding, not a join error.
+   */
+  requestReasoningEfforts?: string[];
+  /**
+   * The model identifiers THE CLIENT SENT (`model`, `slug`), distinct and sorted. Never an identity: read
+   * only so an observation naming a different request can be refused rather than attributed.
+   */
+  clientSentModels?: string[];
+  /** `auth.env_openai_api_key_present` on the conversation-start record: the tool's own word on whether it saw a key. */
+  apiKeyEnvironmentPresent?: boolean;
+  /** One entry per completed request, de-duplicated by timestamp because the exporter re-delivers records. */
+  requestUsage?: OTLPRequestUsage[];
+  /**
+   * Set ONLY by a view that scopes this observer to one run, never by the observer itself: why the
+   * records carrying this conversation id cannot be attributed to the attempt that asked for them.
+   */
+  attributionRefused?: string;
+  /** Set when the collector itself had failed before this observation could be completed. */
+  observerFailure?: string;
   /**
    * Set when one conversation reported two DIFFERENT efforts. The value is then dropped and never
    * reinstated: a join that cannot say which of two figures belongs to this turn has not correlated
@@ -177,6 +219,9 @@ export class OTLPObserver implements OTLPTurnSource {
   private readonly waiting = new Map<string, Pending[]>();
   private readonly placeholders = new Map<string, string>();
   private redactionCount = 0;
+  private unreadableCount = 0;
+  private failureReason?: string;
+  private stopping = false;
 
   private constructor(private readonly server: http.Server, port: number,
                       private readonly options: OTLPObserverOptions) {
@@ -198,7 +243,53 @@ export class OTLPObserver implements OTLPTurnSource {
       });
     });
     server.on('request', (request, response) => observer.receive(request, response));
+    // A COLLECTOR THAT DIED IS A MEASUREMENT FAILURE, and it has to be visible as one. Without this, a
+    // socket that closed mid-matrix would look exactly like a tool that exported nothing.
+    server.on('error', (error) => { observer.failureReason ??= `the collector's socket failed: ${String(error)}`; });
+    server.on('close', () => {
+      if (!observer.stopping) observer.failureReason ??= 'the collector\'s socket closed before it was stopped';
+    });
     return observer;
+  }
+
+  /**
+   * Whether a loopback collector COULD be started here, without starting one.
+   *
+   * Binds 127.0.0.1 on an ephemeral port and releases it at once. Writes no file and makes no
+   * connection, which is what lets a dry run answer "observer available" honestly.
+   */
+  static async probeLoopback(): Promise<{ available: boolean; detail: string }> {
+    const server = http.createServer();
+    try {
+      const port = await new Promise<number>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port));
+      });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      return { available: true, detail: `a loopback socket was bound (127.0.0.1:${port}) and released; the live collector `
+        + 'takes its own ephemeral port when the run starts' };
+    } catch (error) {
+      return { available: false, detail: `no loopback socket could be bound: ${String(error)}` };
+    }
+  }
+
+  /** Why the collector stopped working, if it did. Undefined while it is healthy. */
+  get failure(): string | undefined {
+    return this.failureReason;
+  }
+
+  /** Payloads that arrived and could not be parsed. Counted; their bytes are never kept. */
+  get unreadablePayloadCount(): number {
+    return this.unreadableCount;
+  }
+
+  /** Every observation, keyed by its redacted placeholder — the same table `stop` writes. */
+  snapshot(): Record<string, OTLPTurnObservation> {
+    const index: Record<string, OTLPTurnObservation> = {};
+    for (const observation of this.byConversation.values()) {
+      index[observation.correlationKey] = JSON.parse(JSON.stringify(observation)) as OTLPTurnObservation;
+    }
+    return index;
   }
 
   private receive(request: http.IncomingMessage, response: http.ServerResponse): void {
@@ -219,6 +310,7 @@ export class OTLPObserver implements OTLPTurnSource {
       } else {
         // A payload this engine cannot read is recorded as having arrived, and its bytes are NOT
         // kept: an unparsed body cannot be redacted, and an unredactable body cannot be evidence.
+        this.unreadableCount += 1;
         fs.appendFileSync(path.resolve(this.options.evidenceFile),
           `${JSON.stringify({ at: new Date().toISOString(), url: request.url, unreadable: true, bytes: body.length })}\n`, 'utf8');
       }
@@ -248,14 +340,48 @@ export class OTLPObserver implements OTLPTurnSource {
       };
       // The record carrying the effort is what makes an observation complete. Everything else refines
       // it. WHICH record that is depends on the CLI version — see `CONVERSATION_STARTS_EVENT`.
-      const turnEffort = text('codex.turn.reasoning_effort')
-        ?? (text('event.name') === CONVERSATION_STARTS_EVENT ? text('reasoning_effort') : undefined);
-      if (turnEffort !== undefined) recordEffort(entry, turnEffort);
+      const spanEffort = text('codex.turn.reasoning_effort');
+      const startEffort = text('event.name') === CONVERSATION_STARTS_EVENT ? text('reasoning_effort') : undefined;
+      if (spanEffort !== undefined) recordEffort(entry, spanEffort, 'otlp:codex.turn.reasoning_effort');
+      else if (startEffort !== undefined) recordEffort(entry, startEffort, 'otlp:codex.conversation_starts.reasoning_effort');
       entry.requestReasoningEffort = text('codex.request.reasoning_effort') ?? entry.requestReasoningEffort;
+      // THE PER-REQUEST EFFORT, read ONLY from the record whose meaning is known: 0.155.0 puts it on the
+      // `codex.sse_event` for a completed response as `model_reasoning_effort`.
+      const requestEffort = text('codex.request.reasoning_effort')
+        ?? (text('event.name') === SSE_EVENT ? text('model_reasoning_effort') : undefined);
+      if (requestEffort !== undefined) {
+        entry.requestReasoningEfforts = [...new Set([...(entry.requestReasoningEfforts ?? []), requestEffort])].sort();
+      }
+      // What the CLIENT says it asked for. Kept to REFUSE a foreign observation, never as an identity.
+      for (const key of ['model', 'slug']) {
+        const sent = text(key);
+        if (sent !== undefined) entry.clientSentModels = [...new Set([...(entry.clientSentModels ?? []), sent])].sort();
+      }
+      if (text('event.name') === SSE_EVENT && text('event.kind') === 'response.completed') {
+        const request: OTLPRequestUsage = {
+          at: text('event.timestamp') ?? '', effort: text('model_reasoning_effort'),
+          inputTokens: count('input_token_count'), cachedInputTokens: count('cached_token_count'),
+          cacheWriteInputTokens: count('cache_write_token_count'), outputTokens: count('output_token_count'),
+          reasoningTokens: count('reasoning_token_count'), toolTokens: count('tool_token_count'),
+        };
+        // ONLY THE RECORD THAT CARRIES THE COUNTS IS A USAGE RECORD. On the HTTP/SSE transport 0.155.0 writes a
+        // second, bare `response.completed` for the same request, with the SAME timestamp and nothing but a
+        // duration; keyed by timestamp alone, whichever of the two landed first swallowed the other.
+        const carriesUsage = Object.entries(request).some(([key, value]) => key !== 'at' && value !== undefined);
+        const usage = entry.requestUsage ?? [];
+        // An exporter re-delivers a batch it is unsure of; the same record twice — identical in every
+        // field, not merely in its timestamp — is one request, not two.
+        if (carriesUsage && !usage.some((existing) => JSON.stringify(existing) === JSON.stringify(request))) {
+          usage.push(request);
+          entry.requestUsage = usage;
+        }
+      }
       entry.mcpServers = text('mcp_servers') ?? entry.mcpServers;
       // Read ONLY from the record whose meaning is known, for the reason given on
       // `CONVERSATION_STARTS_EVENT`: these are common attribute names.
       if (text('event.name') === CONVERSATION_STARTS_EVENT) {
+        const keyPresent = attributes['auth.env_openai_api_key_present'];
+        if (typeof keyPresent === 'boolean') entry.apiKeyEnvironmentPresent = keyPresent;
         entry.authMode = text('auth_mode') ?? entry.authMode;
         entry.sandboxPolicy = text('sandbox_policy') ?? entry.sandboxPolicy;
         entry.approvalPolicy = text('approval_policy') ?? entry.approvalPolicy;
@@ -340,6 +466,14 @@ export class OTLPObserver implements OTLPTurnSource {
 
   private redact(node: unknown): unknown {
     if (Array.isArray(node)) return node.map((entry) => this.redact(entry));
+    // THE CONVERSATION ID IS NOT ONLY WHERE IT IS NAMED. 0.155.0's spans carry it as `thread.id`, as
+    // `thread_id`, and inside a debug string (`Thread { thread_id: "…" }`), so a list of keys cannot be
+    // complete. Every UUID-shaped run of characters in any string is replaced; one this observer already
+    // knows as a conversation id gets that conversation's placeholder.
+    if (typeof node === 'string') {
+      return node.replace(UUID_SHAPE, (match) =>
+        this.placeholderFor(this.byConversation.has(match) ? 'conversation.id' : 'identifier', match));
+    }
     if (node === null || typeof node !== 'object') return node;
     const record = node as Record<string, unknown>;
     // An OTLP attribute is `{ key, value: { stringValue: ... } }`: the key and the value it governs
@@ -361,8 +495,10 @@ export class OTLPObserver implements OTLPTurnSource {
     payloadCount: number; redactionCount: number; distinctIdentifiers: number;
     conversationCount: number; correlatedCount: number; indexFile: string;
     leakAuditClean: boolean; leaks: string[]; evidenceFile: string; endpoint: string;
+    unreadablePayloadCount: number; failure?: string;
   }> {
     for (const [conversationID] of this.waiting) this.wake(conversationID);
+    this.stopping = true;
     // A grace period before the socket closes, so the spans still in the exporter's queue are not
     // thrown away by shutting down the thing they are being sent to. Measured at 3.8-10.8s per turn
     // on a live campaign; this covers the last few attempts' worth.
@@ -373,6 +509,13 @@ export class OTLPObserver implements OTLPTurnSource {
     const file = path.resolve(this.options.evidenceFile);
     const written = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     const leaks = [...written.matchAll(EMAIL_SHAPE)].map((match) => match[0]);
+    // And for the join key itself, which the email check cannot see. A leak is NAMED by its placeholder,
+    // never by its value, so the audit's own report does not repeat what it caught.
+    for (const [conversationID, observation] of this.byConversation) {
+      if (written.includes(conversationID)) leaks.push(`conversation id ${observation.correlationKey} written unredacted`);
+    }
+    const shaped = written.match(UUID_SHAPE)?.length ?? 0;
+    if (shaped > 0) leaks.push(`${shaped} UUID-shaped identifier(s) written unredacted`);
     // THE JOIN TABLE, keyed by the placeholder and never by the identifier. This is what turns a
     // late-arriving span into a figure a report can attach to an attempt.
     const indexFile = `${file.replace(/\.jsonl$/, '')}.index.json`;
@@ -390,11 +533,16 @@ export class OTLPObserver implements OTLPTurnSource {
       leaks,
       evidenceFile: file,
       endpoint: this.endpoint,
+      unreadablePayloadCount: this.unreadableCount,
+      failure: this.failureReason,
     };
   }
 }
 
 const EMAIL_SHAPE = new RegExp('[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}', 'g');
+
+/** A conversation, thread, turn or submission id as 0.155.0 writes them. None of them is evidence of anything. */
+const UUID_SHAPE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 /** One flat map per `attributes` array anywhere in an OTLP payload, values already unwrapped. */
 export function attributeSets(payload: unknown): Record<string, unknown>[] {

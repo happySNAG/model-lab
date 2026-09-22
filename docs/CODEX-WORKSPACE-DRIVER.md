@@ -300,6 +300,43 @@ removed, produce identical quality.
 **Throttle scope** for `codexCLI` stays **undeclared**, because no Codex usage limit has been observed. The
 breaker uses the conservative `provider` fallback, and the dry run labels it UNDECLARED.
 
-**Applied effort** is not measured in a matrix. `workspace-benchmark` attaches no OTLP collector, so the
-dry run says the requested effort is sent and the applied effort is not observed.
+**Applied effort** is measured in a matrix; see §11.
+
+## 11. Applied effort in a matrix, and the session preflight
+
+Sources: `src/engine/workspace-effort-evidence.ts`, `src/engine/workspace-matrix-telemetry.ts`.
+Tests: `test/engine/workspace-matrix-effort-telemetry.test.ts`.
+
+**Collector.** A live Codex `workspace-benchmark` with an effort starts one loopback OTLP collector
+(127.0.0.1, ephemeral port) before the first request, and every `codex exec` gets `-c otel=…` pointing
+at it. The override touches neither `forced_login_method` nor the child's environment. Evidence is written
+redacted to `<root>/workspace/<label>.otlp/` (or `--otlp-observer <dir>`). If the collector cannot start,
+the matrix is refused before anything is sent. If it fails part-way, later Codex cells are recorded as
+`measurementUnavailableBeforeExecution`, not as throttles or model failures.
+
+**Where applied effort comes from (0.155.0).** `reasoning_effort` on the `codex.conversation_starts` log
+record, and `model_reasoning_effort` on each `codex.sse_event` (`response.completed`). Both carry
+`conversation.id`, which equals the `thread_id` the run printed.
+
+**Correlation boundary.** A run's telemetry is only the set of records carrying its own conversation id.
+Time is never used to attribute a record. A run with no `thread_id` is `noConversationID`. A conversation
+id claimed by two attempts is attributed to neither. A record whose client-sent `model` differs from the
+request is refused. Records without an id, such as startup spans, join no run.
+
+**Verdicts.** `appliedEffortVerified`, `appliedEffortMismatch`, `appliedEffortUnavailable`,
+`appliedEffortAmbiguous` (and `appliedEffortNotRequested` for effort `none`). Rows carry `requestedEffort`
+and `appliedEffort` as separate fields, plus `appliedEffortVerdict`, `appliedEffortEvidenceSource`,
+`telemetryCorrelation`, `appliedEffortAttempts` and `telemetryCapture`. Rows from other drivers get none
+of these fields.
+
+**Mismatch policy.** The run keeps its workspace evidence, status and score. The row is flagged, the run is
+listed, and the candidate is **not qualified** at the requested effort. Unavailable or ambiguous telemetry
+also leaves the candidate unqualified. Quality figures are not adjusted. The matrix does not stop for a
+mismatch. Telemetry that arrives after a run is sealed is reported, and can only withdraw a qualification.
+
+**Session preflight.** `codex doctor --json` is the non-model probe, run with every `OPENAI_*`/`CODEX_*` name
+removed. It reads the credential store and does an HTTP reachability probe (405) and a WebSocket handshake
+that carries the bearer and sends no request frame. It refuses a matrix with no stored credentials, or with
+an API-key session. It cannot tell whether stored tokens are still valid for inference, so the first run
+still discovers that. A dry run does not run it, because a dry run contacts nothing.
 

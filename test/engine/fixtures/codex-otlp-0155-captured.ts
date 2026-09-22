@@ -987,3 +987,738 @@ export const CODEX_0155_MODEL_MANAGER_SPAN: unknown = {
     }
   ]
 };
+
+/**
+ * The two `codex.sse_event` / `response.completed` records 0.155.0 wrote for ONE request on the HTTP/SSE
+ * transport, verbatim from a real-binary loopback matrix run on 2026-09-21 (no provider contacted).
+ *
+ * THE FIRST ONE IS BARE: a duration and nothing else. The second carries the counts and
+ * `model_reasoning_effort`. They share one `event.timestamp`, so an observer that de-duplicated by
+ * timestamp kept the bare record and threw the usage away. Note the value types, which are the tool's
+ * own: `input_token_count`, `output_token_count` and `tool_token_count` are strings; the cached, cache-write
+ * and reasoning counts are integers. (The live WebSocket captures of 2026-09-20/21 have no bare record.)
+ */
+export const CODEX_0155_HTTP_SSE_COMPLETED_PAIR: unknown = {
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.155.0"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "dev"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "[REDACTED:host.name:4]"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          }
+        ],
+        "droppedAttributesCount": 0,
+        "entityRefs": []
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "codex_otel.log_only",
+            "version": "",
+            "attributes": [],
+            "droppedAttributesCount": 0
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "0",
+              "observedTimeUnixNano": "1790038185532348000",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": null,
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.completed"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "stringValue": "0"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-09-22T00:49:45.532Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "[REDACTED:conversation.id:1]"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.155.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "[REDACTED:user.account_id:5]"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "[REDACTED:user.email:6]"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "unknown"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.6-sol"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.6-sol"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 0,
+              "traceId": "",
+              "spanId": "",
+              "eventName": "event otel/src/events/session_telemetry.rs:971"
+            },
+            {
+              "timeUnixNano": "0",
+              "observedTimeUnixNano": "1790038185532369000",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": null,
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "codex.sse_event"
+                  }
+                },
+                {
+                  "key": "event.kind",
+                  "value": {
+                    "stringValue": "response.completed"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "stringValue": "1000"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "stringValue": "50"
+                  }
+                },
+                {
+                  "key": "cached_token_count",
+                  "value": {
+                    "intValue": "400"
+                  }
+                },
+                {
+                  "key": "cache_write_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "reasoning_token_count",
+                  "value": {
+                    "intValue": "20"
+                  }
+                },
+                {
+                  "key": "tool_token_count",
+                  "value": {
+                    "stringValue": "1050"
+                  }
+                },
+                {
+                  "key": "model_reasoning_effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2026-09-22T00:49:45.532Z"
+                  }
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {
+                    "stringValue": "[REDACTED:conversation.id:1]"
+                  }
+                },
+                {
+                  "key": "app.version",
+                  "value": {
+                    "stringValue": "0.155.0"
+                  }
+                },
+                {
+                  "key": "auth_mode",
+                  "value": {
+                    "stringValue": "Chatgpt"
+                  }
+                },
+                {
+                  "key": "originator",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {
+                    "stringValue": "[REDACTED:user.account_id:5]"
+                  }
+                },
+                {
+                  "key": "user.email",
+                  "value": {
+                    "stringValue": "[REDACTED:user.email:6]"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "unknown"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.6-sol"
+                  }
+                },
+                {
+                  "key": "slug",
+                  "value": {
+                    "stringValue": "gpt-5.6-sol"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "flags": 0,
+              "traceId": "",
+              "spanId": "",
+              "eventName": "event otel/src/events/session_telemetry.rs:1035"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+};
+
+/**
+ * Four spans from the same run, verbatim, that carry the CONVERSATION ID under names other than
+ * `conversation.id`: `thread.id` (beside the OS thread's own integer `thread.id`), `thread_id`, and inside a
+ * debug string, `Thread { thread_id: "…" }`. The observer's key-based redactor let all of them reach the
+ * evidence file in clear. Here they read `[REDACTED:conversation.id:1]` because this capture was taken
+ * after the fix; a test puts a raw id back to show it no longer survives.
+ */
+export const CODEX_0155_SPANS_CARRYING_THE_CONVERSATION: unknown = {
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "codex_exec"
+            }
+          },
+          {
+            "key": "env",
+            "value": {
+              "stringValue": "dev"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.155.0"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "rust"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "stringValue": "0.31.0"
+            }
+          }
+        ],
+        "droppedAttributesCount": 0,
+        "entityRefs": []
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "codex_exec",
+            "version": "",
+            "attributes": [],
+            "droppedAttributesCount": 0
+          },
+          "spans": [
+            {
+              "traceId": "7eab96e910caef3d6cd3f81f6326a79b",
+              "spanId": "88589b10d271f804",
+              "traceState": "",
+              "parentSpanId": "2d81c97a81b35b98",
+              "flags": 257,
+              "name": "app_server.serialized_request_queue",
+              "kind": 1,
+              "startTimeUnixNano": "1790038185516315000",
+              "endTimeUnixNano": "1790038185518459000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "app-server/src/request_serialization.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_app_server::request_serialization"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "228"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "6"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_app_server::request_serialization"
+                  }
+                },
+                {
+                  "key": "key",
+                  "value": {
+                    "stringValue": "Thread { thread_id: \"[REDACTED:conversation.id:1]\" }"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "236959"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1906916"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "links": [],
+              "droppedLinksCount": 0,
+              "status": {
+                "message": "",
+                "code": 0
+              }
+            },
+            {
+              "traceId": "7eab96e910caef3d6cd3f81f6326a79b",
+              "spanId": "6131fccb1976b34a",
+              "traceState": "",
+              "parentSpanId": "6fdd046bd385729c",
+              "flags": 257,
+              "name": "session_task.turn",
+              "kind": 1,
+              "startTimeUnixNano": "1790038185518409000",
+              "endTimeUnixNano": "1790038185533391000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/tasks/mod.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::tasks"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "345"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "10"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::tasks"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "stringValue": "[REDACTED:conversation.id:1]"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "[REDACTED:identifier:2]"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "gpt-5.6-sol"
+                  }
+                },
+                {
+                  "key": "codex.turn.reasoning_effort",
+                  "value": {
+                    "stringValue": "medium"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.input_tokens",
+                  "value": {
+                    "intValue": "1000"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.cached_input_tokens",
+                  "value": {
+                    "intValue": "400"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.cache_write_input_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.non_cached_input_tokens",
+                  "value": {
+                    "intValue": "600"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.output_tokens",
+                  "value": {
+                    "intValue": "50"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.reasoning_output_tokens",
+                  "value": {
+                    "intValue": "20"
+                  }
+                },
+                {
+                  "key": "codex.turn.token_usage.total_tokens",
+                  "value": {
+                    "intValue": "1050"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "13581875"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "1400625"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "links": [],
+              "droppedLinksCount": 0,
+              "status": {
+                "message": "",
+                "code": 0
+              }
+            },
+            {
+              "traceId": "6f458651454f05bb7bf8526c43efcea3",
+              "spanId": "04b0f332b9cc6fe9",
+              "traceState": "",
+              "parentSpanId": "",
+              "flags": 257,
+              "name": "session_loop",
+              "kind": 1,
+              "startTimeUnixNano": "1790038185512819000",
+              "endTimeUnixNano": "1790038185534395000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "core/src/session/mod.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_core::session"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "874"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "5"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "tokio-rt-worker"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_core::session"
+                  }
+                },
+                {
+                  "key": "thread_id",
+                  "value": {
+                    "stringValue": "[REDACTED:conversation.id:1]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "1447544"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "20127998"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "links": [],
+              "droppedLinksCount": 0,
+              "status": {
+                "message": "",
+                "code": 0
+              }
+            },
+            {
+              "traceId": "a8e3cb9fafb2eff36ad66e88b1672e1d",
+              "spanId": "9b247b1c8a95d5a9",
+              "traceState": "",
+              "parentSpanId": "",
+              "flags": 257,
+              "name": "codex.exec",
+              "kind": 1,
+              "startTimeUnixNano": "1790038185469804000",
+              "endTimeUnixNano": "1790038185534697000",
+              "attributes": [
+                {
+                  "key": "code.file.path",
+                  "value": {
+                    "stringValue": "exec/src/lib.rs"
+                  }
+                },
+                {
+                  "key": "code.module.name",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "code.line.number",
+                  "value": {
+                    "intValue": "243"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "intValue": "2"
+                  }
+                },
+                {
+                  "key": "thread.name",
+                  "value": {
+                    "stringValue": "codex-main"
+                  }
+                },
+                {
+                  "key": "target",
+                  "value": {
+                    "stringValue": "codex_exec"
+                  }
+                },
+                {
+                  "key": "thread.id",
+                  "value": {
+                    "stringValue": "[REDACTED:conversation.id:1]"
+                  }
+                },
+                {
+                  "key": "turn.id",
+                  "value": {
+                    "stringValue": "[REDACTED:identifier:2]"
+                  }
+                },
+                {
+                  "key": "busy_ns",
+                  "value": {
+                    "intValue": "549291"
+                  }
+                },
+                {
+                  "key": "idle_ns",
+                  "value": {
+                    "intValue": "64344793"
+                  }
+                }
+              ],
+              "droppedAttributesCount": 0,
+              "events": [],
+              "droppedEventsCount": 0,
+              "links": [],
+              "droppedLinksCount": 0,
+              "status": {
+                "message": "",
+                "code": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+};
