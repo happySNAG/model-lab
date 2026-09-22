@@ -559,6 +559,8 @@ export const COMMAND_SPECS: CommandSpec[] = [
       { name: 'require-verified-identity', takesValue: false,
         summary: 'exclude routes whose served-model identity cannot be independently verified' },
       { name: 'policy', takesValue: true, summary: 'routing policy version to decide under: crp1 or crp2 (default)' },
+      { name: 'evidence-roots', takesValue: true,
+        summary: 'also read sealed benchmark records from these campaign roots. Repeatable by comma' },
       { name: 'json', takesValue: false, summary: 'print the candidate set as JSON' }],
     detail: [
       'Returns a SET, with every excluded route and every reason beside it. Nothing here ranks, scores',

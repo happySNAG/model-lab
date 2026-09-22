@@ -615,14 +615,45 @@ export interface ObservationBundle {
   exportedFromMachine: string;
   exportedFromLabel: string;
   records: ObservationRecord[];
-  /** The digest of everything above. A bundle whose bytes moved is refused on import. */
+  /**
+   * The digest of WHAT THIS BUNDLE HOLDS — the records alone, sorted by their own identity.
+   *
+   * TWO DIGESTS, BECAUSE THEY ANSWER TWO DIFFERENT QUESTIONS, and one value cannot answer both.
+   * This one answers "do we hold the same thing?", so it must NOT move when the same set is
+   * exported again a minute later, from the other machine, or by a different person.
+   */
+  contentDigest: string;
+  /**
+   * The digest of everything above, INCLUDING who exported it and when. A bundle whose bytes moved
+   * is refused on import.
+   *
+   * This one answers "did these bytes arrive as they left?", so it must move when anything at all
+   * moves — which is exactly why it cannot double as the comparability digest.
+   */
   bundleDigest: string;
+}
+
+/**
+ * What a bundle's CONTENT digest is taken over: the records, and the schema they are written under.
+ *
+ * `exportedAt`, `exportedFromMachine` and `exportedFromLabel` are deliberately excluded. They
+ * describe the ACT of exporting, not the thing exported, and folding them in is what made the
+ * documented comparability guarantee unachievable: `exportedAt` is a wall clock, so two exports of
+ * an identical set could never agree, and "two machines can tell whether they hold the same thing"
+ * was false for every bundle this engine had ever written.
+ */
+function digestableContent(records: ObservationRecord[]): CanonicalValue {
+  return {
+    recordSchema: OBSERVATION_STORE_SCHEMA,
+    records: records as unknown as CanonicalValue,
+  } as CanonicalValue;
 }
 
 function digestableBundle(bundle: Omit<ObservationBundle, 'bundleDigest'>): CanonicalValue {
   return {
     schema: bundle.schema, recordSchema: bundle.recordSchema, exportedAt: bundle.exportedAt,
     exportedFromMachine: bundle.exportedFromMachine, exportedFromLabel: bundle.exportedFromLabel,
+    contentDigest: bundle.contentDigest,
     records: bundle.records as unknown as CanonicalValue,
   } as CanonicalValue;
 }
@@ -634,8 +665,14 @@ function digestableBundle(bundle: Omit<ObservationBundle, 'bundleDigest'>): Cano
  * a record, and it would be a lie on the other side. The receiving store decides its own origin, and
  * the record's `machineKey` — which travels — is what actually says who observed it.
  *
- * SORTED BY RECORD IDENTITY, so exporting the same set twice produces the same bytes and the same
- * bundle digest. A bundle is comparable, and two machines can tell whether they hold the same thing.
+ * SORTED BY RECORD IDENTITY, so exporting the same set twice produces the same `contentDigest`.
+ * A bundle is comparable on THAT value, and two machines can tell whether they hold the same thing.
+ *
+ * THE WHOLE BYTES ARE NOT STABLE, AND SAYING SO IS THE POINT. `exportedAt` moves on every export, so
+ * `bundleDigest` — which seals it, on purpose — moves too. Comparability and integrity are separate
+ * questions and this returns a separate answer to each. Comparing `bundleDigest` between two
+ * machines answers neither: it reports that two exports happened at two times, which was never in
+ * doubt.
  */
 export function exportObservations(root: string, options: {
   exportedFromMachine: string; exportedFromLabel: string; exportedAt: string;
@@ -655,7 +692,9 @@ export function exportObservations(root: string, options: {
   const withoutDigest: Omit<ObservationBundle, 'bundleDigest'> = {
     schema: OBSERVATION_BUNDLE_SCHEMA, recordSchema: OBSERVATION_STORE_SCHEMA,
     exportedAt: options.exportedAt, exportedFromMachine: options.exportedFromMachine,
-    exportedFromLabel: options.exportedFromLabel, records,
+    exportedFromLabel: options.exportedFromLabel,
+    contentDigest: digestObject(digestableContent(records)),
+    records,
   };
   return {
     bundle: { ...withoutDigest, bundleDigest: digestObject(digestableBundle(withoutDigest)) },
@@ -693,10 +732,16 @@ export function readObservationBundle(filePath: string): ObservationBundle {
       + 'Nothing was imported; a later build that understands both can migrate it.');
   }
   const records = Array.isArray(parsed.records) ? parsed.records : [];
+  // RECOMPUTED FROM THE RECORDS, NEVER READ OFF THE FILE. A content digest a bundle asserts about
+  // itself is worth nothing; this one is derived from the bytes that arrived. It then goes INTO the
+  // bundle digest below, so a file whose `contentDigest` was edited to match some other machine's
+  // fails the integrity check rather than passing a comparison it was doctored to pass.
   const withoutDigest: Omit<ObservationBundle, 'bundleDigest'> = {
     schema: OBSERVATION_BUNDLE_SCHEMA, recordSchema: OBSERVATION_STORE_SCHEMA,
     exportedAt: String(parsed.exportedAt ?? ''), exportedFromMachine: String(parsed.exportedFromMachine ?? ''),
-    exportedFromLabel: String(parsed.exportedFromLabel ?? ''), records,
+    exportedFromLabel: String(parsed.exportedFromLabel ?? ''),
+    contentDigest: digestObject(digestableContent(records)),
+    records,
   };
   let recomputed: string;
   try {

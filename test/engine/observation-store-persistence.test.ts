@@ -329,6 +329,46 @@ describe('a bundle is one value, sealed, and refused whole when its bytes moved'
     expect(JSON.stringify(one.bundle)).not.toContain('observedHere');
   });
 
+  // THE TEST ABOVE EXPORTS TWICE AT THE SAME INSTANT, WHICH NOTHING IN THE WORLD DOES.
+  //
+  // It passed while the documented guarantee — "two machines can tell whether they hold the same
+  // thing" — was false for every bundle this engine had ever written, because `exportedAt` was
+  // inside the only digest there was. Holding the clock still hid the one variable that always
+  // moves. This one moves it on purpose.
+  it('gives the same CONTENT digest for the same records exported at different times, from different machines', () => {
+    const root = temporary();
+    appendObservations(root, [seen('ollama:gemma3:4b', A, true), seen('ollama:qwen3:8b', A, true)],
+      { origin: 'observedHere', receivedAt: AT });
+    const morning = exportObservations(root,
+      { exportedFromMachine: A, exportedFromLabel: 'a-machine', exportedAt: '2026-09-22T09:00:00Z' });
+    const evening = exportObservations(root,
+      { exportedFromMachine: B, exportedFromLabel: 'the-other', exportedAt: '2026-09-22T21:30:00Z' });
+
+    // WHAT THEY HOLD IS THE SAME, and that is the question comparability asks.
+    expect(evening.bundle.contentDigest).toBe(morning.bundle.contentDigest);
+    // WHICH BYTES THEY ARE IS NOT, and that is the question integrity asks. A single digest cannot
+    // answer both, which is exactly why there are two.
+    expect(evening.bundle.bundleDigest).not.toBe(morning.bundle.bundleDigest);
+  });
+
+  it('recomputes the content digest from the records rather than believing the file', () => {
+    const root = temporary();
+    const file = path.join(temporary(), 'bundle.json');
+    appendObservations(root, [seen('ollama:gemma3:4b', A, true)], { origin: 'observedHere', receivedAt: AT });
+    const { bundle } = exportObservations(root, { exportedFromMachine: A, exportedFromLabel: 'a-machine', exportedAt: AT });
+
+    // A bundle doctored to CLAIM it holds what some other machine holds — the shape of lie that
+    // would matter, because the whole point of the value is that two machines compare it.
+    fs.writeFileSync(file, JSON.stringify({ ...bundle, contentDigest: 'a'.repeat(64) }, null, 2));
+
+    // The claim is not read. It is DERIVED from the records that arrived, so the forgery does not
+    // need to be caught and refused — it simply never takes effect, and what comes back is the
+    // digest of what is actually in the file.
+    const read = readObservationBundle(file);
+    expect(read.contentDigest).toBe(bundle.contentDigest);
+    expect(read.contentDigest).not.toBe('a'.repeat(64));
+  });
+
   it('refuses a truncated, edited or foreign bundle WHOLE, importing nothing from it', () => {
     const root = temporary();
     const target = temporary();

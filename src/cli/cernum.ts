@@ -2991,8 +2991,13 @@ async function commandObservations(options: Options): Promise<void> {
     fail(`${contents.corrupt.length} observation file(s) did not verify and were not read. `
       + 'They are listed above, by path. Nothing was changed.', 2);
   }
-  say('');
-  say(IMPORTED_OBSERVATION_IS_NOT_LOCAL);
+  // ONLY BESIDE AN IMPORTED ROW, which is what this sentence says it is for. Printed unconditionally
+  // it is false of what is on screen: a store holding nothing but its own observations would show
+  // 220 rows marked "observed here" and then assert "This was observed on ANOTHER machine".
+  if (contents.observations.some((entry) => entry.origin === 'imported')) {
+    say('');
+    say(IMPORTED_OBSERVATION_IS_NOT_LOCAL);
+  }
 }
 
 async function commandObservationsExport(options: Options): Promise<void> {
@@ -3011,7 +3016,11 @@ async function commandObservationsExport(options: Options): Promise<void> {
   });
   const observed = [...new Set(bundle.records.map((record) => record.machineKey))].sort();
   say(`${bundle.records.length} observation(s) from ${observed.length} machine(s): ${observed.join(', ') || '(none)'}`);
-  say(`bundle digest  ${bundle.bundleDigest}`);
+  // BOTH, LABELLED, because they answer different questions and a reader who compares the wrong one
+  // learns nothing. The content digest is the one two machines compare to see whether they hold the
+  // same observations; the bundle digest moves on every export because it seals the export itself.
+  say(`content digest ${bundle.contentDigest}  (what this holds — compare this between machines)`);
+  say(`bundle digest  ${bundle.bundleDigest}  (these bytes, including when and by whom)`);
   if (corrupt.length > 0) {
     say('');
     say(`${corrupt.length} file(s) in the store did not verify and are NOT in this bundle:`);
@@ -3046,6 +3055,7 @@ async function commandObservationsImport(positional: string[], options: Options)
   say(`${file}`);
   say(`  exported by    ${bundle.exportedFromMachine} (${bundle.exportedFromLabel}) at ${bundle.exportedAt}`);
   say(`  digest         ${bundle.bundleDigest} — verified`);
+  say(`  content        ${bundle.contentDigest} — what it holds, independent of when it was exported`);
   say(`  carries        ${bundle.records.length} observation(s) from ${observed.length} machine(s)`);
   for (const machine of observed) {
     say(`                 ${machine}: ${bundle.records.filter((record) => record.machineKey === machine).length}`);
@@ -3094,8 +3104,13 @@ async function commandAvailability(options: Options): Promise<void> {
       for (const line of wrap(entry.availability.reason, 70)) say(`      ${line}`);
     }
   }
-  say('');
-  say(IMPORTED_OBSERVATION_IS_NOT_LOCAL);
+  // As above: the caveat belongs beside an imported row, and this view shows none unless the fleet
+  // put one here. A reader of an all-local availability table is not at risk of the misreading it
+  // guards against, and telling them otherwise spends the warning where it does not apply.
+  if (view.some((route) => route.machines.some((entry) => entry.origin !== 'observedHere'))) {
+    say('');
+    say(IMPORTED_OBSERVATION_IS_NOT_LOCAL);
+  }
 }
 
 /**
@@ -3235,6 +3250,20 @@ async function commandDiscoveryRefresh(positional: string[], options: Options): 
     + `${appended.alreadyPresent.length > 0 ? ` (${appended.alreadyPresent.length} were already held, unchanged)` : ''}.`);
 }
 
+/**
+ * A workspace run's identity, for recognising the SAME run read through two different roots.
+ *
+ * TAKEN FROM THE SEALED ROW, NOT FROM WHERE THE FILE SITS. `recordRoot` is a path, and a path is a
+ * fact about this filesystem rather than about the run: the same sealed run reached through two
+ * roots has two paths and is one measurement. Its own content is what says which run it is, which is
+ * the same rule the observation store names its records by.
+ */
+function workspaceRunIdentity(run: { row: Record<string, unknown> }): string {
+  const row = run.row;
+  const stable = Object.keys(row).sort().map((key) => `${key}=${JSON.stringify(row[key])}`).join('\u0000');
+  return createHash('sha256').update(stable).digest('hex');
+}
+
 async function commandCandidates(positional: string[], options: Options): Promise<void> {
   const capability = positional[0];
   if (capability === undefined) {
@@ -3288,7 +3317,30 @@ async function commandCandidates(positional: string[], options: Options): Promis
   // `collectWorkspaceRunRows` is the same reader `workspace-report` uses, and it only reads.
   const snapshot = latestDiscoverySnapshot(contents, machine);
   const availability = observationsForRouting(contents);
-  const workspaceRows = collectWorkspaceRunRows(root);
+  // EVIDENCE LIVES IN MORE THAN ONE ROOT, BECAUSE EACH SEALED MATRIX GOT ITS OWN.
+  //
+  // A route's evidence is spread across the campaigns that produced it — Sonnet has discriminator,
+  // foundation, tier-two and tier-three records in four different directories — so reading only the
+  // root the observation store happens to live in reports "no benchmark evidence exists" for routes
+  // that have been measured for weeks. That is the false negative this option exists to prevent, and
+  // it is the dangerous direction: an empty candidate set reads like a policy decision.
+  //
+  // NOTHING IS COPIED OR MOVED. These roots are read where they are, by the same reader
+  // `workspace-report` uses, and the sealed records stay the single authoritative copy of themselves.
+  const evidenceRoots = [root, ...(options['evidence-roots'] === undefined ? []
+    : String(options['evidence-roots']).split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+  for (const directory of evidenceRoots) {
+    if (!fs.existsSync(directory)) {
+      fail(`candidates: --evidence-roots names ${directory}, which does not exist. Nothing was read. `
+        + 'A root that is not there would contribute no rows and silently narrow the answer.', 2);
+    }
+  }
+  // DE-DUPLICATED BY RUN IDENTITY. Naming a root twice, or naming one that is also the default, must
+  // not count a run twice: the qualification policy asks for "at least N scored runs", and a
+  // double-counted run would buy a route a qualification it did not earn.
+  const seenRuns = new Set<string>();
+  const workspaceRows = evidenceRoots.flatMap((directory) => collectWorkspaceRunRows(directory))
+    .filter((row) => { const id = workspaceRunIdentity(row); if (seenRuns.has(id)) return false; seenRuns.add(id); return true; });
   const cases = allWorkspaceCases();
   const profiles = registeredWorkspaceDifficultyProfiles();
   const routes = [...new Set(availability.filter((entry) => entry.machineKey === machine).map((entry) => entry.routeKey))].sort();

@@ -280,6 +280,25 @@ export const DESIRED_CANDIDATE_LADDER: LadderEntry[] = [
   // verified by a single authorized probe on 2026-09-02 whose STRUCTURED stream self-named
   // `claude-fable-5-1` while its prose said "Claude Fable 5". History earns a model its place in the
   // plan. It never earns it a place in a cohort: these rows are born `unproven` like every other.
+  // OPUS 5.5 WAS DISCOVERED, NOT ASSUMED, AND THE DISTINCTION IS THE WHOLE POINT.
+  //
+  // The `claude` CLI has NO model-listing command — it says so itself during discovery — so the
+  // question "which models may this account call" has no enumerable answer on this provider. That
+  // is exactly the gap a person fills by typing a plausible identifier out of a release
+  // announcement, which is a guess wearing the costume of a fact: `claude-opus-5.5`,
+  // `claude-opus-5-5-20260922` and `opus-5.5` are all things somebody could reasonably write, and
+  // at most one of them is the string this account is served under.
+  //
+  // So it was ASKED instead. The CLI resolves the bare alias `opus` to "the latest Opus", and
+  // `--output-format json` reports, in its own metadata rather than in any model's prose, the
+  // identifier that actually served the request. On 2026-09-22 that metadata named
+  // `claude-opus-5-5` (`canonicalModel: claude-opus-5-5`, `provider: firstParty`, context window
+  // 1,000,000, max output 128,000). The alias is the discovery instrument; the canonical id is the
+  // finding; neither was copied from a prompt or a changelog.
+  //
+  // This row is born `unproven` like every other, and the observation above is not what promotes
+  // it. An identity smoke test is.
+  { provider: 'claudeCLI', modelID: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', desiredEfforts: ['none'] },
   { provider: 'claudeCLI', modelID: 'claude-opus-5', displayName: 'Claude Opus 5', desiredEfforts: ['none'] },
   { provider: 'claudeCLI', modelID: 'claude-fable-5-1', displayName: 'Claude Fable 5.1', desiredEfforts: ['high'] },
   { provider: 'claudeCLI', modelID: 'claude-haiku-4-5', displayName: 'Claude Haiku 4.5', desiredEfforts: ['none'] },
