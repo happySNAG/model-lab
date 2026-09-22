@@ -318,6 +318,34 @@ export interface ProviderBinding {
   /** Required for a metered binding, forbidden for the other two: they have no per-token price. */
   pricing: PricingSnapshot | null;
   authorizationMode: AuthorizationMode;
+  /**
+   * THE SIGNED OBSERVATION THAT THIS METERED ROUTE COSTS THIS ACCOUNT NOTHING AT THE MARGIN.
+   *
+   * ABSENT ON EVERY BINDING WRITTEN BEFORE IT EXISTED, and absent keeps every rule exactly as it was.
+   * Present, it is the one thing that lets a METERED binding declare a workspace contract with no token
+   * ceiling: the worst case of an unbounded attempt is unbounded tokens times a rate, and the rate here
+   * has been OBSERVED to be zero on this account — not read off a price list. The fields are the same
+   * ones `ZeroMarginalCostConfirmation` requires and `cost-eligibility.ts` validates in full; the
+   * validator below checks that they are present and name THIS route, and frozen into the envelope they
+   * make the basis of the run visible to anyone reading the manifest.
+   */
+  zeroMarginalCostBasis?: ZeroMarginalCostBasis;
+  /**
+   * THE WEIGHTS DIGEST a LOCAL workspace binding was planned against. The identity on that route.
+   *
+   * Absent on every prose binding and every binding written before local workspace runs existed.
+   */
+  localModelDigest?: string;
+}
+
+/** The observation behind `free_confirmed`, as a binding carries it. Mirrors `ZeroMarginalCostConfirmation`. */
+export interface ZeroMarginalCostBasis {
+  provider: ProviderID;
+  modelID: string;
+  accountBasis: string;
+  observedBillingRecord: string;
+  observedAt: string;
+  confirmedBy: string;
 }
 
 /**
@@ -575,7 +603,15 @@ export function validateBinding(binding: ProviderBinding, options: BindingValida
         + 'number frozen here would never reach the tool, and a manifest that recorded it would describe a limit '
         + 'that was never in force.');
     }
-    if (isMetered(binding)) {
+    const basis = binding.zeroMarginalCostBasis;
+    const basisHolds = basis !== undefined && basis.provider === binding.provider && basis.modelID === binding.requestedModelID
+      && [basis.accountBasis, basis.observedBillingRecord, basis.observedAt, basis.confirmedBy].every((field) => field.trim().length > 0);
+    if (isMetered(binding) && basis !== undefined && !basisHolds) {
+      throw new ProviderBindingError('zeroMarginalCostBasisIncomplete',
+        `${binding.candidate}: this binding carries a zero-marginal-cost basis that does not name this exact route with every `
+        + 'field present (account, observed billing record, when, and who). A basis nobody can check permits nothing.');
+    }
+    if (isMetered(binding) && !basisHolds) {
       // FAIL CLOSED, and this is the one refusal that keeps the exception from becoming a hole in
       // the spending ceiling. `worstCaseAttemptMicroUSD` bounds a metered attempt from the frozen
       // budgets; with no budgets it would bound it at zero, and a ceiling that computes every
@@ -587,6 +623,15 @@ export function validateBinding(binding: ProviderBinding, options: BindingValida
         + 'paid run it cannot bound. A subscription workspace run is unaffected: its marginal API charge is zero and '
         + 'the allowance it consumes is recorded rather than bounded.');
     }
+  }
+  if (!isMetered(binding) && binding.zeroMarginalCostBasis !== undefined) {
+    throw new ProviderBindingError('zeroMarginalCostBasisOnUnmetered',
+      `${binding.candidate}: ${binding.billingBasis} execution has no per-token charge to confirm as zero; a zero-marginal-cost `
+      + 'basis on it would be a claim about nothing.');
+  }
+  if (binding.localModelDigest !== undefined && binding.executionClass !== 'localRuntime') {
+    throw new ProviderBindingError('localDigestOnRemoteBinding',
+      `${binding.candidate}: a weights digest is the identity of a LOCAL model; ${binding.provider} is not one.`);
   }
   if (binding.timeoutMilliseconds <= 0) {
     throw new ProviderBindingError('noTimeout', `${binding.candidate}: a binding with no timeout can hang a campaign indefinitely`);

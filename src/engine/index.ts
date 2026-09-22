@@ -67,6 +67,11 @@ export * from './workspace-matrix-telemetry';
 export * from './provider-session-status';
 export * from './workspace-claude-driver';
 export * from './workspace-codex-driver';
+export * from './workspace-opencode-driver';
+export * from './workspace-ollama-driver';
+export * from './execution-sandbox';
+export { publishedPriceFor, snapshotFor, OPENCODE_ZEN_PUBLISHED_PRICES, OPENCODE_ZEN_PRICING_CAPTURED_AT, OPENCODE_ZEN_PRICING_SOURCE } from './opencode-pricing';
+export type { PublishedCataloguePrice } from './opencode-pricing';
 export * from './blinded';
 export * from './adjudication';
 export * from './adjudication-markdown';
@@ -116,3 +121,11 @@ export {
   DEVELOPMENT_EXECUTABLE_PROVIDERS, DevelopmentEligibilityError, SYNTHETIC_DEVELOPMENT_PROVIDER,
   SyntheticDevelopmentAdapter, developmentExecutionRefusals, parseSyntheticDevelopmentScript,
 } from './development-synthetic';
+// Free + local route enablement: structured descriptions, refresh and staleness, machines, the
+// qualification read model, the spend posture, and the Ordra-facing candidate contract.
+export * from './model-description';
+export * from './discovery-refresh';
+export * from './machine-availability';
+export * from './route-spend-posture';
+export * from './route-qualification';
+export * from './routing-contract';

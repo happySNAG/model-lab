@@ -727,6 +727,20 @@ export class WorkspaceCampaign {
       tokenCeiling: binding.tokenCeiling ?? 'boundedByBinding',
       effort: binding.effort,
       ...effortFields,
+      // ---- local-runtime and zero-cost provenance, ONLY where they exist ----------------------
+      // Undefined on every Claude, Codex and OpenCode row — JSON drops the key — so those rows are
+      // written exactly as before. A local row carries the weights digest it ran under and the machine
+      // it ran on, because a local result is a statement about those two things together.
+      localModelDigest: (deciding?.agent.usage as { localModelDigest?: string } | undefined)?.localModelDigest
+        ?? binding.localModelDigest,
+      localRuntimeVersion: (deciding?.agent.usage as { localRuntimeVersion?: string } | undefined)?.localRuntimeVersion,
+      executionMachine: (deciding?.agent.usage as { executionMachine?: string } | undefined)?.executionMachine,
+      executionMachineLabel: (deciding?.agent.usage as { executionMachineLabel?: string } | undefined)?.executionMachineLabel,
+      executionPlatform: (deciding?.agent.usage as { executionPlatform?: string } | undefined)?.executionPlatform,
+      zeroMarginalCostObservedAt: binding.zeroMarginalCostBasis?.observedAt,
+      zeroMarginalCostConfirmedBy: binding.zeroMarginalCostBasis?.confirmedBy,
+      commandExecutionScope: (this.driverDisclosure.capabilities as { commandExecutionScope?: string } | undefined)
+        ?.commandExecutionScope,
 
       // ---- identity, in two halves that never overwrite each other ----------------------------
       bindingIdentityState: outcome.frontier.bindingIdentityState,

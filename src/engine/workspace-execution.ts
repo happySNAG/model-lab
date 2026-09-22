@@ -42,9 +42,13 @@ import {
   TerminationReason, TranscriptBuilder, WorkspaceTranscript, executablesOutsidePolicy, terminationReasonFor,
 } from './workspace-transcript';
 import {
-  WorkspaceAgentDriver, WorkspaceAgentRequest, WorkspaceAgentResult, PriorAttemptBriefing,
-  driverShortfalls, retryBriefingText, workspaceEnvironment, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX,
+  WorkspaceAgentDriver, WorkspaceAgentRequest, WorkspaceAgentResult, PriorAttemptBriefing, SealedCheckOutcome,
+  SealedCheckRunner, driverShortfalls, retryBriefingText, workspaceEnvironment, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX,
 } from './workspace-agent';
+import {
+  EXECUTION_POLICY_RULE, EXECUTION_SANDBOX_UNAVAILABLE, ExecutionSandbox, executableReadRoots, homeDirectoriesToDeny,
+  probeExecutionSandbox, seatbeltProfile, seatbeltProfileDigest,
+} from './execution-sandbox';
 
 export class WorkspaceExecutionError extends Error {
   constructor(readonly code: string, message: string) {
@@ -74,6 +78,13 @@ export interface CommandOutcome extends Record<string, CanonicalValue | undefine
   stdoutTail: string;
   stderrTail: string;
   failureDetail?: string;
+  /**
+   * The OS sandbox this command ran under, as `<profile version>:<digest>`. See `execution-sandbox.ts`.
+   *
+   * ABSENT on every record written before the V1 execution policy existed, and absent means exactly
+   * that: those commands ran behind an allow-listed environment and nothing stronger.
+   */
+  executionSandbox?: string;
 }
 
 export const COMMAND_TAIL_CHARACTERS = 4_000;
@@ -156,6 +167,11 @@ export interface WorkspaceRunResult {
   totalElapsedMilliseconds: number;
   /** Reasons the driver could not run this case at all. Non-empty means nothing was attempted. */
   refusedBecause: string[];
+  /**
+   * The OS sandbox every sealed command in this run executed under, and the rule that required it.
+   * Absent on a run recorded before the V1 execution policy, and on a run refused before it resolved one.
+   */
+  executionSandbox?: { kind: string; detail: string; rule: string };
 }
 
 // MARK: - Options
@@ -178,6 +194,11 @@ export interface WorkspaceRunOptions {
   runCommand?: (options: Parameters<typeof runCLI>[0]) => Promise<CLIResult>;
   /** Called after every attempt, so a caller can render progress without waiting for the run. */
   onAttempt?: (record: WorkspaceAttemptRecord) => void;
+  /**
+   * The OS sandbox sealed commands run under. Injected by the tests that exercise the refusal; in life
+   * it is established once per process by `probeExecutionSandbox`, which runs a canary.
+   */
+  executionSandbox?: ExecutionSandbox;
 }
 
 /**
@@ -269,6 +290,23 @@ export async function runWorkspaceCase(options: WorkspaceRunOptions): Promise<Wo
     };
   }
 
+  // THE V1 EXECUTION POLICY, BEFORE ANY DIRECTORY IS MADE AND BEFORE ANYTHING IS SPENT. Every attempt
+  // ends by executing sealed commands on a tree a model has edited, and that code runs under an OS
+  // sandbox or not at all. A machine with none refuses the run here, as a recorded outcome rather than
+  // a throw, exactly as a driver shortfall does — nothing was attempted, so nothing is scored.
+  const sandbox = options.executionSandbox ?? await probeExecutionSandbox();
+  const executionSandbox = { kind: sandbox.kind, detail: sandbox.detail, rule: EXECUTION_POLICY_RULE };
+  if (sandbox.kind === 'unavailable') {
+    return {
+      caseID: workspaceCase.id, caseVersion: workspaceCase.version, caseDigest,
+      comparabilityKey: workspaceComparabilityKey(workspaceCase),
+      driverID: options.driver.driverID, attempts: [], attemptsUsed: 0,
+      totalElapsedMilliseconds: now() - startedAtMilliseconds,
+      refusedBecause: [`${EXECUTION_SANDBOX_UNAVAILABLE} (${sandbox.detail})`],
+      executionSandbox,
+    };
+  }
+
   const fixtureSource = resolveInside(options.fixtureRoot, workspaceCase.source.fixturePath);
   if (!fs.existsSync(fixtureSource)) {
     throw new WorkspaceExecutionError('fixtureMissing',
@@ -299,6 +337,7 @@ export async function runWorkspaceCase(options: WorkspaceRunOptions): Promise<Wo
     attemptsUsed: attempts.length,
     totalElapsedMilliseconds: now() - startedAtMilliseconds,
     refusedBecause: [],
+    executionSandbox,
   };
 }
 
@@ -486,6 +525,7 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
       prior: context.prior,
       transcript,
       shouldCancel: options.shouldCancel,
+      sealedChecks: sealedCheckRunner(options, workRoot, attemptRoot, scratchRoot, transcript, attemptIndex),
     };
 
     let agentResult: WorkspaceAgentResult;
@@ -609,7 +649,8 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
  */
 async function runWorkspaceCommand(options: WorkspaceRunOptions, command: WorkspaceCommand, workRoot: string,
                                    scratchRoot: string, transcript: TranscriptBuilder, attemptIndex: number,
-                                   phase: 'setup' | 'baseline' | 'afterChange' = 'afterChange'): Promise<CommandOutcome> {
+                                   phase: 'setup' | 'baseline' | 'afterChange' | 'modelRequestedCheck' = 'afterChange'):
+  Promise<CommandOutcome> {
   const run = options.runCommand ?? runCLI;
   const workingDirectory = command.workingSubdirectory.length === 0
     ? fs.realpathSync(workRoot)
@@ -622,6 +663,16 @@ async function runWorkspaceCommand(options: WorkspaceRunOptions, command: Worksp
   }
   environment.TMPDIR = scratchRoot;
 
+  // THE SANDBOX, per command. The tree this command may change is the one it runs in plus its scratch
+  // directory; the home directory is unreadable except where the executable's own install tree lives.
+  // See `execution-sandbox.ts` for the rule and for what each clause was observed to do.
+  const homes = homeDirectoriesToDeny(options.environmentSource ?? process.env);
+  const profile = seatbeltProfile({
+    writableRoots: [workRoot, scratchRoot],
+    readableRoots: executableReadRoots(command.executable, environment, homes),
+    homeDirectories: homes,
+  });
+
   const result = await run({
     executable: command.executable,
     args: command.args,
@@ -629,6 +680,7 @@ async function runWorkspaceCommand(options: WorkspaceRunOptions, command: Worksp
     workingDirectory,
     replaceEnvironment: environment,
     shouldCancel: options.shouldCancel,
+    sandboxProfile: profile,
   });
 
   const timedOut = result.failure?.kind === 'timeout';
@@ -650,9 +702,11 @@ async function runWorkspaceCommand(options: WorkspaceRunOptions, command: Worksp
     stdoutTail: tail(result.stdout),
     stderrTail: tail(result.stderr),
     failureDetail: result.failure?.detail,
+    executionSandbox: seatbeltProfileDigest(profile),
   };
 
-  transcript.emit(command.kind === 'setup' ? 'commandExecuted' : 'verificationRan', 'engineObserved', attemptIndex,
+  transcript.emit(phase === 'modelRequestedCheck' || command.kind === 'setup' ? 'commandExecuted' : 'verificationRan',
+    'engineObserved', attemptIndex,
     `${command.id}: ${command.executable} ${command.args.join(' ')}`.trim(), {
       commandID: command.id,
       commandKind: command.kind,
@@ -676,6 +730,51 @@ async function runWorkspaceCommand(options: WorkspaceRunOptions, command: Worksp
     });
 
   return outcome;
+}
+
+/**
+ * The ONE way a Cernum-owned agent loop may ask for a command: by naming a VISIBLE sealed check.
+ *
+ * CATEGORY C, NEVER D (see `execution-sandbox.ts`). The model supplies an identifier from a closed list
+ * the case froze; the argv is the case's, the working tree is a THROWAWAY COPY of the model's current
+ * work, and the command runs under the same sandbox and the same stripped environment as verification.
+ * The copy is what keeps a test runner's caches out of the tree being measured — the same reason the
+ * baseline probe runs in a copy.
+ *
+ * HIDDEN CHECKS ARE NEVER OFFERED. They exist to measure what a model does without being told, and a
+ * tool that could run one would be a tool that tells it.
+ *
+ * Absent for a case with no visible verification command, so a driver cannot offer an empty tool.
+ */
+function sealedCheckRunner(options: WorkspaceRunOptions, workRoot: string, attemptRoot: string, scratchRoot: string,
+                           transcript: TranscriptBuilder, attemptIndex: number): SealedCheckRunner | undefined {
+  const visible = options.case.verification.commands;
+  if (visible.length === 0) return undefined;
+  let counter = 0;
+  return {
+    checks: visible.map((command) => ({ id: command.id, kind: command.kind, executable: command.executable, argv: [...command.args] })),
+    run: async (checkID: string): Promise<SealedCheckOutcome> => {
+      const command = visible.find((entry) => entry.id === checkID);
+      if (command === undefined) {
+        return { checkID, known: false, passed: false, exitCode: null, timedOut: false, output: '',
+          detail: `'${checkID}' is not one of this case's visible checks (${visible.map((entry) => entry.id).join(', ')})` };
+      }
+      counter += 1;
+      const checkRoot = path.join(attemptRoot, `check-${counter}`);
+      try {
+        copyTree(workRoot, checkRoot, { skipDirectories: options.case.source.skipDirectories });
+        const outcome = await runWorkspaceCommand(options, command, checkRoot, scratchRoot, transcript, attemptIndex,
+          'modelRequestedCheck');
+        return {
+          checkID, known: true, passed: outcome.passed, exitCode: outcome.exitCode, timedOut: outcome.timedOut,
+          output: `${outcome.stdoutTail}${outcome.stderrTail.length > 0 ? `\n${outcome.stderrTail}` : ''}`.trim(),
+          detail: outcome.failureDetail ?? '',
+        };
+      } finally {
+        fs.rmSync(checkRoot, { recursive: true, force: true });
+      }
+    },
+  };
 }
 
 function checkInvariant(workRoot: string, invariant: { path: string; mustExist?: boolean; mustContain: string[]; mustNotContain: string[] }): InvariantOutcome {

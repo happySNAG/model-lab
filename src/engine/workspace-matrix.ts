@@ -53,8 +53,11 @@ import {
 } from './workspace-matrix-admission';
 import { WorkspaceAgentDriver } from './workspace-agent';
 import {
-  PreRunIdentity, WorkspaceBindingError, buildWorkspaceBinding, resolvePreRunIdentity, workspaceTimeoutFor,
+  LocalModelIdentitySource, PreRunIdentity, WorkspaceBindingError, buildWorkspaceBinding, resolveLocalPreRunIdentity,
+  resolvePreRunIdentity, workspaceTimeoutFor,
 } from './workspace-binding';
+import { CostPolicyError, ZeroMarginalCostConfirmation } from './cost-eligibility';
+import { publishedPriceFor, snapshotFor } from './opencode-pricing';
 import { WorkspaceRunRow } from './workspace-aggregate';
 import {
   CELL_SELECTION_IS_NOT_A_NEW_EXPERIMENT, SOURCE_CAMPAIGN_IS_IMMUTABLE, WorkspaceCellSelection,
@@ -181,8 +184,20 @@ export interface WorkspaceMatrixRequest {
    */
   cellSelection?: WorkspaceCellSelection;
   /** Injected by the tests, so a matrix can be planned and run without a provider's CLI installed. */
-  driverFactory?: (binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>,
+  driverFactory?: (binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>
+                     & Partial<Pick<ProviderBinding, 'localModelDigest'>>,
                    context?: { otlp?: OTLPTurnSource }) => WorkspaceAgentDriver | undefined;
+  /**
+   * THIS MACHINE'S installed local models, from `discoverLocalModels`. Required for an `ollama` matrix:
+   * a local route's identity is the weights digest THIS runtime reports, never one carried from another
+   * machine or from an earlier listing. Ignored for every other provider.
+   */
+  localModels?: LocalModelIdentitySource[];
+  /**
+   * Signed zero-marginal-cost confirmations, per exact route. The only way a METERED route (OpenCode)
+   * may run a workspace task, which carries no token ceiling. Never inferred from a published price.
+   */
+  zeroMarginalCostConfirmations?: ZeroMarginalCostConfirmation[];
   /** Injected by the tests. Defaults to this process's environment. */
   environmentSource?: NodeJS.ProcessEnv;
   now?: () => Date;
@@ -550,7 +565,12 @@ export function buildWorkspaceMatrixPlan(request: WorkspaceMatrixRequest): Works
     // A TRUE ZERO, and the only kind of zero this engine writes. Every workspace driver that exists
     // is a subscription CLI: no card is billed for any of these runs. The allowance beside it is a
     // different currency and is never folded into this number.
-    marginalAPIChargeMicroUSD: metered
+    marginalAPIChargeMicroUSD: metered && models.every((model) => model.binding === undefined || !isMetered(model.binding)
+      || model.binding.zeroMarginalCostBasis !== undefined)
+      ? estimatedQuantity(0, 'every metered route here carries a signed zero-marginal-cost confirmation for its exact route — an '
+        + 'observation of the account\'s billing, not a price list. It is an estimate: the charge is not read back per request, '
+        + 'and post-run reconciliation against the account is still required.')
+      : metered
       ? unavailableQuantity('at least one model in this matrix is billed per token, and a workspace request carries '
         + 'no token ceiling, so the worst case for one attempt cannot be computed. A spending ceiling enforced '
         + 'against an uncomputable bound is not a ceiling.')
@@ -869,7 +889,12 @@ function effortTelemetryOf(request: WorkspaceMatrixRequest): WorkspaceMatrixMode
 function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: WorkspaceCase[],
                    packDigest: string): WorkspaceMatrixModel {
   const candidate = matrixCandidateName(request.provider, modelID, request.effort);
-  const known = resolvePreRunIdentity(request.discovery, request.provider, modelID, request.now?.() ?? new Date());
+  // A LOCAL ROUTE IS IDENTIFIED BY THIS MACHINE'S RUNTIME; every other route by the discovery store.
+  const local = request.provider === 'ollama';
+  const known = local
+    ? resolveLocalPreRunIdentity(request.localModels ?? [], modelID)
+    : resolvePreRunIdentity(request.discovery, request.provider, modelID, request.now?.() ?? new Date());
+  const localModelDigest = local ? (request.localModels ?? []).find((entry) => entry.modelID === modelID)?.runtimeDigest : undefined;
   const refusals: string[] = [];
 
   const factory = request.driverFactory ?? buildWorkspaceDriver;
@@ -878,8 +903,9 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
   // prints the `-c otel=…` the live run will send — with a placeholder port, because none is bound yet.
   const planningSource: OTLPTurnSource | undefined = effortTelemetry.measurable && request.effortTelemetry !== undefined
     ? { endpoint: request.effortTelemetry.endpoint, observe: async () => undefined } : undefined;
-  const driver = factory({ provider: request.provider, requestedModelID: modelID, effort: request.effort },
-    planningSource === undefined ? undefined : { otlp: planningSource });
+  const driver = factory({ provider: request.provider, requestedModelID: modelID, effort: request.effort,
+    ...(localModelDigest === undefined ? {} : { localModelDigest }) },
+  planningSource === undefined ? undefined : { otlp: planningSource });
   if (driver === undefined) {
     refusals.push(`workspace driver unavailable: ${request.provider} has no workspace driver in this build, so a `
       + 'repository cannot be handed to it. Cernum does not fall back to prose execution for a workspace case.');
@@ -912,12 +938,21 @@ function planModel(request: WorkspaceMatrixRequest, modelID: string, packCases: 
     // the pack will use, because the envelope has one timeout and a binding claiming the longest
     // would describe a bound no run of the shortest case was held to.
     const timeout = Math.min(...packCases.map((entry) => workspaceTimeoutFor(entry, request.timeoutMilliseconds)));
+    // THE PUBLISHED PRICE, where one was captured, labelled as a list price. It is the input to an
+    // estimate and never a charge; a metered route still needs a SIGNED confirmation to run at all.
+    const published = request.provider === 'opencodeCLI' ? publishedPriceFor(modelID) : undefined;
+    const zeroMarginalCost = (request.zeroMarginalCostConfirmations ?? [])
+      .find((entry) => entry.provider === request.provider && entry.modelID === modelID);
     binding = buildWorkspaceBinding({
       candidate, provider: request.provider, modelID, effort: request.effort,
       timeoutMilliseconds: timeout, identity,
+      ...(published === undefined ? {} : { pricing: snapshotFor(published) }),
+      ...(zeroMarginalCost === undefined ? {} : { zeroMarginalCost }),
+      ...(localModelDigest === undefined ? {} : { localModelDigest }),
+      now: request.now?.(),
     });
   } catch (error) {
-    if (error instanceof WorkspaceBindingError || error instanceof ProviderBindingError) {
+    if (error instanceof WorkspaceBindingError || error instanceof ProviderBindingError || error instanceof CostPolicyError) {
       refusals.push(`${error.code}: ${error.message}`);
     } else {
       throw error;
@@ -1622,8 +1657,9 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
       runKey: cell.recordRoot, candidate: cell.candidate, caseID: cell.caseID, repeatIndex: cell.repeat.repeatIndex,
       requestedModelID: cell.modelID, requestedEffort: request.effort,
     }) : undefined;
-    const driver = factory({ provider: request.provider, requestedModelID: cell.modelID, effort: request.effort },
-      otlp === undefined ? undefined : { otlp });
+    const driver = factory({ provider: request.provider, requestedModelID: cell.modelID, effort: request.effort,
+      ...(model.binding.localModelDigest === undefined ? {} : { localModelDigest: model.binding.localModelDigest }) },
+    otlp === undefined ? undefined : { otlp });
     const workspaceCase = packCases.find((entry) => entry.id === cell.caseID);
     if (driver === undefined || workspaceCase === undefined) {
       skipped.push({

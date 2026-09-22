@@ -228,6 +228,7 @@ export const COMMAND_SPECS: CommandSpec[] = [
       { name: 'preserve-failed', takesValue: false, summary: 'keep a failed attempt\'s tree for diagnosis' },
       { name: 'admit-identity-unverifiable', takesValue: true, summary: 'a written, sealed identity admission (codexCLI only) for this one run' },
       { name: 'otlp-observer', takesValue: true, summary: 'codexCLI only: collect the CLI\'s own telemetry on loopback into this directory' },
+      { name: 'zero-cost-confirmation', takesValue: true, summary: 'opencodeCLI only: a signed observation of the account\'s billing that this exact route costs nothing' },
       { name: 'yes', takesValue: false, summary: 'confirm the live run (required; --dry-run needs none)' }],
     supportsDryRun: true,
     detail: [
@@ -307,6 +308,7 @@ export const COMMAND_SPECS: CommandSpec[] = [
       { name: 'preserve-failed', takesValue: false, summary: "keep a failed attempt's tree for diagnosis" },
       { name: 'admit-identity-unverifiable', takesValue: true, summary: 'codexCLI only: a written MATRIX admission, sealed per route to this matrix and pack' },
       { name: 'otlp-observer', takesValue: true, summary: 'codexCLI only: where the REQUIRED loopback effort collector writes. Default: beside the records' },
+      { name: 'zero-cost-confirmation', takesValue: true, summary: 'opencodeCLI only: a signed observation of the account\'s billing that this exact route costs nothing' },
       { name: 'cells', takesValue: true, summary: 'run ONLY these cells: <case-id>@<repeat>,… — the ORIGINAL repeat number, for every model named' },
       { name: 'cells-file', takesValue: true, summary: 'the same, as JSON { "cells": [ { "caseID", "repeatIndex", "modelID"? } ] }' },
       { name: 'continue-from', takesValue: true, summary: 'the LABEL of a stopped matrix to continue: runs only its cells that produced no evidence' },

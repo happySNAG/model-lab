@@ -30,6 +30,8 @@ import { OperationalEnvelope, PROVIDER_IDS, ProviderBinding, ProviderID, isLocal
 import { WorkspaceAgentDriver } from './workspace-agent';
 import { ClaudeWorkspaceDriver } from './workspace-claude-driver';
 import { CodexWorkspaceDriver } from './workspace-codex-driver';
+import { OpenCodeWorkspaceDriver } from './workspace-opencode-driver';
+import { OllamaWorkspaceDriver } from './workspace-ollama-driver';
 import { SpendTracker, SpendingAuthorization, restoreSpendFromRows } from './spending';
 import { CredentialLookupOptions } from './credentials';
 import { OTLPTurnSource } from './otlp-observer';
@@ -89,7 +91,9 @@ export function buildAdapter(provider: ProviderID, environment: NodeJS.ProcessEn
 /**
  * The WORKSPACE driver for a provider, where one exists yet.
  *
- * TWO ENTRIES, EACH A CLAIM THAT A DRIVER WAS WRITTEN AND CHECKED AGAINST THAT TOOL'S INSTALLED CLI.
+ * FOUR ENTRIES. The first two are claims that a driver was written and checked against that tool's
+ * installed CLI; `opencodeCLI` is checked the same way (see its driver's header); `ollama` is Cernum's
+ * own loop over the local runtime, and its checks are the harness's own tests.
  * `buildAdapter` above answers "can Cernum send this provider a prompt?"; this answers "can Cernum hand
  * this provider a repository?". `claudeCLI` was verified against `claude` 2.1.278 and `codexCLI` against
  * `codex` 0.155.0 — see each driver's header. `undefined` is the honest answer for every other provider,
@@ -100,8 +104,10 @@ export function buildAdapter(provider: ProviderID, environment: NodeJS.ProcessEn
  * workspace attempt through it needs Cernum itself to run the agent loop and the tools, which is a
  * different piece of engineering from driving a CLI. See `docs/OPENAI-API-WORKSPACE.md`.
  */
-export function buildWorkspaceDriver(binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>,
-                                     options: { executablePath?: string; otlp?: OTLPTurnSource } = {}): WorkspaceAgentDriver | undefined {
+export function buildWorkspaceDriver(binding: Pick<ProviderBinding, 'provider' | 'requestedModelID' | 'effort'>
+                                       & Partial<Pick<ProviderBinding, 'localModelDigest'>>,
+                                     options: { executablePath?: string; otlp?: OTLPTurnSource; ollamaEndpoint?: string } = {}):
+  WorkspaceAgentDriver | undefined {
   if (binding.provider === 'claudeCLI') {
     return new ClaudeWorkspaceDriver({
       requestedModelID: binding.requestedModelID,
@@ -115,6 +121,25 @@ export function buildWorkspaceDriver(binding: Pick<ProviderBinding, 'provider' |
       effort: binding.effort,
       executablePath: options.executablePath,
       otlp: options.otlp,
+    });
+  }
+  if (binding.provider === 'opencodeCLI') {
+    // Verified against opencode-ai 1.18.31 through local, network-denied probes of its own resolved
+    // configuration. METERED: a binding through it runs a workspace task only under a signed
+    // zero-marginal-cost confirmation for its exact route — see `validateBinding`.
+    return new OpenCodeWorkspaceDriver({
+      requestedModelID: binding.requestedModelID,
+      effort: binding.effort,
+      executablePath: options.executablePath,
+    });
+  }
+  if (binding.provider === 'ollama') {
+    // CERNUM'S OWN LOOP over the loopback runtime. No executable; the weights digest is the identity,
+    // and an empty one is refused by the driver before anything is sent.
+    return new OllamaWorkspaceDriver({
+      requestedModelID: binding.requestedModelID,
+      expectedDigest: binding.localModelDigest ?? '',
+      endpoint: options.ollamaEndpoint,
     });
   }
   return undefined;

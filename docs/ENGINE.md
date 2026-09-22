@@ -528,9 +528,12 @@ credential-shaped variable, no vendor prefixes. The workspace is deleted afterwa
 attempt succeeded or not.
 
 **What it does not do**, stated so nobody relies on it: it is not an OS sandbox, and it does not stop
-a child process from opening a socket. The engine never spawns one on a candidate's behalf. Executing
-untrusted candidate *code* — as opposed to scoring candidate *text* — stays out of this product until
-there is a real sandbox to put it in.
+a child process from opening a socket. The development runner never spawns one on a candidate's
+behalf, and its executed tier stays NOT MEASURED. Where the product does execute candidate-modified
+code — the WORKSPACE benchmark's sealed verification commands — it does so only under the OS sandbox
+in `execution-sandbox.ts` (macOS Seatbelt: no network, writes confined to the workspace, HOME
+unreadable), and refuses the run on a machine that has none. See "Execution of model-modified code"
+in `ARCHITECTURE.md`.
 
 ---
 
@@ -685,7 +688,13 @@ environment is built; only `HOME` may be unlocked by name, and only because a su
 cannot find its own session without it. Unlocking it is bound explicitly into `cwk1:`, so a run with
 `HOME` and a run without it are never merged into one row.
 
-**Not enforced, and said plainly.** This is not an OS sandbox. A case that unlocks `HOME` has unlocked
+**Enforced since the V1 execution policy.** Every sealed command Cernum runs on a workspace — setup,
+the baseline probe, visible and hidden verification, and the Ollama loop's `run_check` — runs under
+macOS Seatbelt (`execution-sandbox.ts`): no sockets, writes confined to that tree and its scratch
+directory, the home directory unreadable. A machine with no such sandbox refuses the run before any
+attempt. Cernum never executes a command a model chose.
+
+**Not enforced, and said plainly.** The AGENT's environment is not an OS sandbox. A case that unlocks `HOME` has unlocked
 a directory that tool can read, and Cernum states that rather than implying otherwise. `networkPolicy`
 is a declaration this engine records and expresses through whatever switches a tool documents; it is
 not a firewall. `codex-cli.ts` already documents, with evidence, that a validly-set switch on one of

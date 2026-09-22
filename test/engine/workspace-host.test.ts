@@ -220,18 +220,24 @@ describe('a driver that cannot do what the case requires is refused before anyth
 });
 
 describe('the registry names only the providers a workspace driver has actually been written for', () => {
-  it('builds the Claude and Codex workspace drivers and nothing else', () => {
+  it('builds the Claude, Codex, OpenCode and Ollama workspace drivers and nothing else', () => {
     const claude = buildWorkspaceDriver({ provider: 'claudeCLI', requestedModelID: 'claude-haiku-4-5', effort: 'none' });
     expect(claude?.driverID).toBe(CLAUDE_WORKSPACE_DRIVER_ID);
     expect(claude?.provider).toBe('claudeCLI');
     const codex = buildWorkspaceDriver({ provider: 'codexCLI', requestedModelID: 'gpt-5.6-sol', effort: 'medium' });
     expect(codex?.driverID).toBe(CODEX_WORKSPACE_DRIVER_ID);
     expect(codex?.provider).toBe('codexCLI');
-    // The metered OpenAI API is NOT a workspace route: nothing in this build runs an agent loop for it.
-    for (const provider of ['opencodeCLI', 'anthropicAPI', 'openaiAPI', 'ollama'] as const) {
+    // OpenCode (its own CLI, verified against 1.18.31) and Ollama (Cernum's own loop over the loopback
+    // runtime) joined in the free + local route pass. The metered HTTP APIs are still NOT workspace
+    // routes: nothing in this build runs an agent loop against them.
+    expect(buildWorkspaceDriver({ provider: 'opencodeCLI', requestedModelID: 'opencode/big-pickle', effort: 'none' })?.driverID)
+      .toBe('driver.opencode-cli.workspace');
+    expect(buildWorkspaceDriver({ provider: 'ollama', requestedModelID: 'gemma3:4b', effort: 'none', localModelDigest: 'sha256:x' })?.driverID)
+      .toBe('driver.ollama.workspace');
+    for (const provider of ['anthropicAPI', 'openaiAPI'] as const) {
       expect(buildWorkspaceDriver({ provider, requestedModelID: 'm', effort: 'none' })).toBeUndefined();
     }
-    expect(providersWithWorkspaceDriver()).toEqual(['claudeCLI', 'codexCLI']);
+    expect(providersWithWorkspaceDriver()).toEqual(['ollama', 'claudeCLI', 'codexCLI', 'opencodeCLI']);
   });
 });
 

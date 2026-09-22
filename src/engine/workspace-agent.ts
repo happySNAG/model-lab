@@ -71,6 +71,16 @@ export interface WorkspaceAgentCapabilities extends Record<string, CanonicalValu
   expressesToolPolicy: boolean;
   /** The tool documents a network switch. Recording `false` is what keeps `networkPolicy` honest. */
   expressesNetworkPolicy: boolean;
+  /**
+   * WHICH commands `canExecuteCommands` means, when it does not mean "whatever the model types".
+   *
+   * ABSENT ON EVERY DRIVER WRITTEN BEFORE THIS FIELD, and absent keeps the meaning it always had: the
+   * tool runs model-chosen commands (`modelChosen`). `sealedChecksOnly` is a Cernum-owned agent loop
+   * whose only command tool runs a VISIBLE check the case sealed, by identifier, through
+   * `SealedCheckRunner` — see `execution-sandbox.ts`, category C. The two are different experiments,
+   * and a result produced under one is never read as the other; the disclosure prints which.
+   */
+  commandExecutionScope?: 'modelChosen' | 'sealedChecksOnly';
 }
 
 /**
@@ -132,6 +142,38 @@ export function retryBriefingText(prior: PriorAttemptBriefing): string {
   ].join('\n');
 }
 
+/** One visible check a Cernum-owned agent loop may ask the engine to run. The argv is the case's. */
+export interface SealedCheckDescriptor {
+  id: string;
+  kind: string;
+  executable: string;
+  argv: string[];
+}
+
+/** What running one sealed check told the model. Bounded and redacted by the runner. */
+export interface SealedCheckOutcome {
+  checkID: string;
+  /** False when the identifier named no visible check. Nothing was run. */
+  known: boolean;
+  passed: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  output: string;
+  detail: string;
+}
+
+/**
+ * The runner's offer to execute a VISIBLE sealed check on a throwaway copy of the current tree.
+ *
+ * Supplied by the RUNNER on every attempt of a case that has visible checks; used only by a driver
+ * whose `commandExecutionScope` is `sealedChecksOnly`. Every run goes through the same sandbox and the
+ * same stripped environment as verification, and is recorded as an `engineObserved` command.
+ */
+export interface SealedCheckRunner {
+  checks: SealedCheckDescriptor[];
+  run(checkID: string): Promise<SealedCheckOutcome>;
+}
+
 export interface WorkspaceAgentRequest {
   /** Identity, so a driver can label what it starts and a log can be traced back to a task version. */
   caseID: string;
@@ -167,6 +209,8 @@ export interface WorkspaceAgentRequest {
   transcript: TranscriptBuilder;
   /** Polled, so a pause reaches a child process. Same contract as the prose adapters. */
   shouldCancel?: () => boolean;
+  /** The visible sealed checks, runnable by identifier. See `SealedCheckRunner`. Absent when there are none. */
+  sealedChecks?: SealedCheckRunner;
 }
 
 export type WorkspaceAgentFailureKind =

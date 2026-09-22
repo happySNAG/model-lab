@@ -156,6 +156,36 @@ export function assertObservedNotPublished(confirmation: ZeroMarginalCostConfirm
   }
 }
 
+/**
+ * HOW LONG A ZERO-MARGINAL-COST OBSERVATION IS GOOD FOR.
+ *
+ * A free tier is a commercial decision, and it changes on no schedule: OpenCode's catalogue dropped
+ * Union Alpha between two readings. So a confirmation is a statement about a MOMENT, exactly like a
+ * discovery proof, and it expires. Thirty days is chosen against how often an account's billing record
+ * can sensibly be re-read by a person; a discovery refresh that sees the route's published price or free
+ * status change stales it earlier than that — see `discovery-refresh.ts`.
+ */
+export const ZERO_MARGINAL_COST_CONFIRMATION_MAX_AGE_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
+
+/** Whether a confirmation is still current. An undated one cannot be shown to be, so it is not. */
+export function zeroMarginalCostConfirmationFreshness(confirmation: Pick<ZeroMarginalCostConfirmation, 'modelID' | 'observedAt'>,
+                                                      now: Date,
+                                                      maxAge = ZERO_MARGINAL_COST_CONFIRMATION_MAX_AGE_MILLISECONDS):
+  { fresh: boolean; reason: string } {
+  const at = Date.parse(confirmation.observedAt);
+  if (Number.isNaN(at)) {
+    return { fresh: false, reason: `${confirmation.modelID}: the zero-marginal-cost observation carries no readable date `
+      + `('${confirmation.observedAt}'), so it cannot be shown to be current. Re-read the account's billing record.` };
+  }
+  const age = now.getTime() - at;
+  if (age > maxAge) {
+    return { fresh: false, reason: `${confirmation.modelID}: the zero-marginal-cost observation was made ${confirmation.observedAt}, `
+      + `${Math.floor(age / 86_400_000)} day(s) ago, and expires after ${Math.floor(maxAge / 86_400_000)}. A free tier changes on no `
+      + 'schedule; re-read the account\'s billing record before treating this route as free.' };
+  }
+  return { fresh: true, reason: `observed ${confirmation.observedAt}, within ${Math.floor(maxAge / 86_400_000)} days` };
+}
+
 /** Every field is required. An unsigned, unsourced, undated confirmation confirms nothing. */
 export function validateZeroMarginalCostConfirmation(confirmation: ZeroMarginalCostConfirmation): void {
   const missing = ([

@@ -44,6 +44,8 @@ import {
   admitPreRunIdentity, describePreRunIdentity, describeScorecard, describeWorkspaceRequest, discloseWorkspaceDriver, isMetered,
   manifestSeal, providersWithWorkspaceDriver, readDiscoveryStore as readDiscoveryStoreForWorkspace,
   describeWorkspaceDifficulty, registeredWorkspaceDifficultyProfiles, resolvePreRunIdentity, sha256Text,
+  resolveLocalPreRunIdentity, LocalModelIdentitySource, ZeroMarginalCostConfirmation, CostPolicyError,
+  publishedPriceFor, snapshotFor,
   validateWorkspaceCatalog, workspaceDifficultyProfileFor,
   workspaceCapabilityEvidence, workspaceInstructionText, workspaceTierEvidence,
   describeWorkspaceCapabilityEvidence, describeWorkspaceTierEvidence,
@@ -1098,6 +1100,39 @@ export function parseFrontierSpec(spec: string, thinkingMode: ThinkingMode, pric
  * resting on which evidence captured when — must be in the file, and the record is refused if any
  * of it is missing.
  */
+/**
+ * THIS MACHINE'S installed local models, for a local workspace route. A READ of the loopback runtime's
+ * listing: it pulls nothing, sends no prompt, and is refused outright for a non-loopback endpoint.
+ * Every other provider gets an empty list and never touches the runtime.
+ */
+async function localModelsForWorkspace(provider: ProviderID, options: Options): Promise<LocalModelIdentitySource[]> {
+  if (provider !== 'ollama') return [];
+  const endpoint = String(options.endpoint ?? DEFAULT_ENDPOINT);
+  try {
+    return (await discoverLocalModels(endpoint)).map((model) => ({ modelID: model.modelID, runtimeDigest: model.runtimeDigest }));
+  } catch (error) {
+    return fail(`the local runtime at ${endpoint} could not be listed: ${error instanceof Error ? error.message : String(error)}\n`
+      + 'A local workspace route is bound to the weights digest this machine reports; with no listing there is nothing to bind. '
+      + 'Nothing was sent.', 2);
+  }
+}
+
+/**
+ * Signed zero-marginal-cost confirmations, read from `--zero-cost-confirmation <file>` and nowhere else.
+ * A single object or an array. Each is validated in full where the binding is built.
+ */
+function readZeroCostConfirmations(options: Options): ZeroMarginalCostConfirmation[] {
+  const file = options['zero-cost-confirmation'];
+  if (file === undefined || file === true) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(String(file), 'utf8')) as unknown;
+    return (Array.isArray(parsed) ? parsed : [parsed]) as ZeroMarginalCostConfirmation[];
+  } catch (error) {
+    return fail(`--zero-cost-confirmation ${String(file)} could not be read as JSON: `
+      + `${error instanceof Error ? error.message : String(error)}`, 2);
+  }
+}
+
 function readIdentityAdmission(options: Options, campaignLabel: string): IdentityAdmission | undefined {
   const file = options['admit-identity-unverifiable'];
   if (file === undefined || file === true) return undefined;
@@ -1651,8 +1686,11 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   const otlpSource: OTLPTurnSource | undefined = observer
     ?? (otlpDirectory === undefined ? undefined
       : { endpoint: 'http://127.0.0.1:<ephemeral port chosen when the run starts>', observe: async () => undefined });
-  const driver = buildWorkspaceDriver({ provider, requestedModelID: modelID, effort: effort as EffortLevel },
-    { otlp: otlpSource });
+  const localModels = await localModelsForWorkspace(provider, options);
+  const localModelDigest = localModels.find((model) => model.modelID === modelID)?.runtimeDigest;
+  const driver = buildWorkspaceDriver({ provider, requestedModelID: modelID, effort: effort as EffortLevel,
+    ...(localModelDigest === undefined ? {} : { localModelDigest }) },
+  { otlp: otlpSource, ollamaEndpoint: String(options.endpoint ?? DEFAULT_ENDPOINT) });
   if (!driver) {
     fail(`workspace driver unavailable: ${provider} has no workspace driver in this build, so a repository cannot be `
       + 'handed to it.\n'
@@ -1669,7 +1707,8 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   //    authorization bound to this one record's label — never proven, and never upgraded later.
   const recordLabel = `${workspaceCase.id}@${workspaceCase.version} · ${provider}:${modelID}`;
   const identityAdmission = readIdentityAdmission(options, recordLabel);
-  const admission = admitPreRunIdentity(resolvePreRunIdentity(readDiscoveryStoreForWorkspace(root), provider, modelID), {
+  const admission = admitPreRunIdentity(provider === 'ollama' ? resolveLocalPreRunIdentity(localModels, modelID)
+    : resolvePreRunIdentity(readDiscoveryStoreForWorkspace(root), provider, modelID), {
     provider, modelID, effort: effort as EffortLevel, campaignLabel: recordLabel, admission: identityAdmission,
   });
   if (identityAdmission !== undefined && admission.identity.resolvedFrom !== 'identityAdmission') {
@@ -1697,9 +1736,14 @@ async function commandWorkspace(positional: string[], options: Options): Promise
       effort: effort as EffortLevel,
       timeoutMilliseconds,
       identity,
+      ...(provider === 'opencodeCLI' && publishedPriceFor(modelID) !== undefined
+        ? { pricing: snapshotFor(publishedPriceFor(modelID)!) } : {}),
+      zeroMarginalCost: readZeroCostConfirmations(options)
+        .find((entry) => entry.provider === provider && entry.modelID === modelID),
+      ...(localModelDigest === undefined ? {} : { localModelDigest }),
     });
   } catch (error) {
-    if (error instanceof WorkspaceBindingError || error instanceof ProviderBindingError) {
+    if (error instanceof WorkspaceBindingError || error instanceof ProviderBindingError || error instanceof CostPolicyError) {
       return fail(`${error.code}: ${error.message}\nNothing was sent and nothing was written.`, 2);
     }
     throw error;
@@ -2184,11 +2228,19 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   const repeatsPerCase = selected.repeatsPerCase ?? numeric('repeats');
 
   // 3. THE PLAN. Every binding, every disclosure and every refusal, decided before anything is sent.
+  const localModels = await localModelsForWorkspace(provider, options);
+  const ollamaEndpoint = String(options.endpoint ?? DEFAULT_ENDPOINT);
   let plan;
   try {
     plan = buildWorkspaceMatrixPlan({
       identityAdmission,
       effortTelemetry,
+      localModels,
+      zeroMarginalCostConfirmations: readZeroCostConfirmations(options),
+      ...(provider === 'ollama' ? {
+        driverFactory: (binding: Parameters<typeof buildWorkspaceDriver>[0], context?: { otlp?: OTLPTurnSource }) =>
+          buildWorkspaceDriver(binding, { ...context, ollamaEndpoint }),
+      } : {}),
       pack,
       cases: allWorkspaceCases(),
       provider,
@@ -2308,6 +2360,12 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   // 4. EXECUTION. One durable record per run, sealed as it finishes.
   const result = await runWorkspaceMatrix(plan, {
     identityAdmission,
+    localModels,
+    zeroMarginalCostConfirmations: readZeroCostConfirmations(options),
+    ...(provider === 'ollama' ? {
+      driverFactory: (binding: Parameters<typeof buildWorkspaceDriver>[0], context?: { otlp?: OTLPTurnSource }) =>
+        buildWorkspaceDriver(binding, { ...context, ollamaEndpoint }),
+    } : {}),
     effortTelemetry: collector === undefined || effortTelemetry === undefined ? effortTelemetry
       : { ...effortTelemetry, endpoint: collector.endpoint, collector },
     pack,

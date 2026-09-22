@@ -109,6 +109,24 @@ test.beforeAll(async () => {
   providerRequests = [];
   providerServer = http.createServer((request, response) => {
     providerRequests.push(`${request.method} ${request.url}`);
+    // THE ONE COMPLETION REQUEST a metered run sends, answered in the documented streaming shape and
+    // naming the model it was asked for. Loopback only.
+    if (request.method === 'POST' && request.url === '/v1/messages') {
+      let body = '';
+      request.on('data', (chunk) => { body += chunk; });
+      request.on('end', () => {
+        const model = (JSON.parse(body) as { model: string }).model;
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end([
+          `event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_fixture', type: 'message', role: 'assistant', model, content: [], usage: { input_tokens: 12, output_tokens: 0 } } })}`,
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `I am ${model}.` } })}`,
+          `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 6 } })}`,
+          `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}`,
+          '',
+        ].join('\n\n'));
+      });
+      return;
+    }
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ data: [{ id: 'a-metered-model' }] }));
   });
@@ -168,7 +186,9 @@ test('an identity smoke proves a model — discovery alone cannot — and then a
   const discovered = await cernum('discover', 'claudeCLI');
   expect(discovered).toContain('signed in');
   expect(discovered).toContain('offers NO model-listing command');
-  expect(discovered).toContain('0 model(s) are now selectable');
+  // Reworded by d40ec65, which made every listing — and the absence of one — prove nothing. The COUNT
+  // is unchanged: no smoke has run, so nothing is proven and nothing is selectable.
+  expect(discovered).toContain('0 model(s) are selectable, none of them proved by this run');
   expect(providerRequests).toEqual([]);
 
   // The smoke test is what proves one, by asking it who it is. It says out loud that it spends.
@@ -232,7 +252,21 @@ test('an identity smoke proves a model — discovery alone cannot — and then a
 });
 
 test('a metered campaign refuses to run until it is explicitly authorized, with a ceiling', async () => {
+  // DISCOVERED, NOT PROVEN (d40ec65): `/v1/models` says what a key is advertised, not what answered.
   await cernum('discover', 'anthropicAPI');
+  // THIS SPEC IS ABOUT SPENDING AUTHORIZATION, NOT PROOF, so the proof is SEEDED as the record of an
+  // earlier identity smoke — the same arrangement the unit suite's `provenModel` makes. It cannot be
+  // produced here: `smoke` asks only for identifiers on the intended ladder, and `a-metered-model` is a
+  // fixture name that is deliberately on no ladder.
+  const store = path.join(campaignRoot, '.providers', 'discovered.json');
+  const existing = fs.existsSync(store) ? JSON.parse(fs.readFileSync(store, 'utf8')) as { models: unknown[] } : { models: [] };
+  fs.mkdirSync(path.dirname(store), { recursive: true });
+  fs.writeFileSync(store, JSON.stringify({ writtenAt: new Date().toISOString(), models: [
+    ...existing.models.filter((row) => (row as { modelID?: string }).modelID !== 'a-metered-model'),
+    { provider: 'anthropicAPI', modelID: 'a-metered-model', displayName: 'a-metered-model', availability: 'proven',
+      evidence: 'identity smoke test (seeded by the e2e fixture): the fake provider named a-metered-model',
+      verifiedModelID: 'a-metered-model', desiredEfforts: ['none'], discoveredAt: new Date().toISOString() },
+  ] }, null, 2));
   const created = await cernum('create', 'paid-run', '--frontier', 'anthropicAPI:a-metered-model',
     '--suites', SUITE, '--repeats', '1', '--pricing', pricingFile);
   expect(created).toContain('billed per token');

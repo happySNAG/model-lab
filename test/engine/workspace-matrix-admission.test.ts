@@ -362,9 +362,18 @@ describe('an admission for gpt-5.6-sol @ medium authorises nothing else', () => 
     expect(() => sealed([{ provider: 'openaiAPI', executionClass: 'meteredAPI', billingBasis: 'meteredAPI' }]))
       .toThrow(WorkspaceMatrixAdmissionError);
     expect(() => sealed([{ provider: 'claudeCLI' }])).toThrow(/providerNotAdmissible|cannot be admitted/);
-    // OpenCode joined the identity exception on the Mac mini line, but the limitation a matrix admission
-    // seals is written about `codex exec`; sealing it over an OpenCode route would misstate that route.
-    expect(() => sealed([{ provider: 'opencodeCLI' }])).toThrow(/not to a workspace MATRIX admission/);
+    // OpenCode joined the identity exception on the Mac mini line. A matrix admission for it now seals
+    // OpenCode's OWN limitation — never Codex's sentence, which would misstate what that route can prove —
+    // and an admission mixing the two providers is refused rather than sealed under either wording.
+    const opencode = sealed([{ provider: 'opencodeCLI', requestedModelID: 'opencode/big-pickle', requestedEffort: 'none',
+      driverID: 'driver.opencode-cli.workspace', cliVersion: '1.18.31', executionClass: 'meteredAPI', billingBasis: 'meteredAPI' }]);
+    expect(opencode.identityLimitation).toContain('opencode run --format json');
+    expect(opencode.identityLimitation).toContain('cannot DETECT substitution');
+    expect(opencode.identityLimitation).not.toBe(MATRIX_IDENTITY_LIMITATION);
+    expect(() => sealed([{}, { provider: 'opencodeCLI', requestedModelID: 'opencode/big-pickle' }]))
+      .toThrow(/one admission per provider/);
+    // …and a Codex admission still seals the Codex sentence byte for byte.
+    expect(sealed().identityLimitation).toBe(MATRIX_IDENTITY_LIMITATION);
     const metered = buildWorkspaceMatrixPlan(request({ identityAdmission: sealed([{ billingBasis: 'meteredAPI' }]) }));
     expect(metered.runnableRunCount).toBe(0);
     expect(metered.models[0].refusals.join(' ')).toContain('billing basis (admitted meteredAPI, bound subscriptionIncluded)');

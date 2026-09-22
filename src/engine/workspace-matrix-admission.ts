@@ -36,6 +36,7 @@ import {
   MatrixAdmissionReference, NEVER_AFFECTS, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, authorizeIdentityAdmission,
 } from './identity-admission';
 import { EFFORT_LEVELS, EffortLevel, PROVIDER_IDS, ProviderID } from './provider';
+import { OPENCODE_WORKSPACE_IDENTITY_LIMITATION } from './workspace-opencode-driver';
 
 export class WorkspaceMatrixAdmissionError extends Error {
   constructor(readonly code:
@@ -70,7 +71,21 @@ export const MATRIX_IDENTITY_LIMITATION =
  * would be false about any other tool, so a matrix admission refuses a route it does not describe
  * rather than sealing a limitation that misstates what that route can and cannot prove.
  */
-export const MATRIX_IDENTITY_LIMITATION_DESCRIBES: ProviderID[] = ['codexCLI'];
+export const MATRIX_IDENTITY_LIMITATION_DESCRIBES: ProviderID[] = ['codexCLI', 'opencodeCLI'];
+
+/**
+ * THE SEALED LIMITATION, PER PROVIDER, because the two routes are not the same fault.
+ *
+ * `codexCLI` keeps `MATRIX_IDENTITY_LIMITATION` byte for byte, so every Codex admission already sealed
+ * — and the Codex discriminator evidence that ran under one — keeps its digest. `opencodeCLI` gets its
+ * own sentence, written in the OpenCode driver, which says the thing Codex's does not: this route cannot
+ * even DETECT a substitution. An admission naming routes on both providers is refused rather than sealed
+ * under one provider's wording.
+ */
+export const MATRIX_IDENTITY_LIMITATIONS: Partial<Record<ProviderID, string>> = {
+  codexCLI: MATRIX_IDENTITY_LIMITATION,
+  opencodeCLI: OPENCODE_WORKSPACE_IDENTITY_LIMITATION,
+};
 
 /**
  * What every admitted run still records, printed before the matrix runs so the operator knows what the
@@ -339,6 +354,13 @@ export function sealWorkspaceMatrixAdmission(request: WorkspaceMatrixAdmissionRe
     }
     seen.add(key);
   }
+  const providers = [...new Set(request.admitted.map((route) => route.provider))];
+  if (providers.length > 1) {
+    throw new WorkspaceMatrixAdmissionError('providerNotAdmissible',
+      `this admission names routes on ${providers.join(' and ')}. Their identity limitations are different facts, and one `
+      + 'sealed admission carries one; write one admission per provider.');
+  }
+  const identityLimitation = MATRIX_IDENTITY_LIMITATIONS[providers[0]] ?? MATRIX_IDENTITY_LIMITATION;
   const scope = {
     matrixLabel: sealing.matrixLabel,
     packID: request.pack.id,
@@ -361,7 +383,7 @@ export function sealWorkspaceMatrixAdmission(request: WorkspaceMatrixAdmissionRe
     reason: request.reason,
     intent: request.intent,
     sourceFileSHA256: request.sourceFileSHA256,
-    identityLimitation: MATRIX_IDENTITY_LIMITATION,
+    identityLimitation,
     approval: `${ADMISSION_APPROVAL.pass}, decision ${ADMISSION_APPROVAL.decision}`,
     entries,
   };

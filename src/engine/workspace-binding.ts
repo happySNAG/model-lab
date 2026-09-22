@@ -40,6 +40,38 @@ import { WorkspaceCase } from './workspace-case';
 import {
   IdentityAdmission, REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, admissionFor, admissionProvenance,
 } from './identity-admission';
+import {
+  ZeroMarginalCostConfirmation, validateZeroMarginalCostConfirmation, zeroMarginalCostConfirmationFreshness,
+} from './cost-eligibility';
+
+/** One installed local model, as discovery reported it. The digest is its identity. */
+export interface LocalModelIdentitySource {
+  modelID: string;
+  runtimeDigest: string;
+}
+
+/**
+ * What this machine's runtime says about a LOCAL route, as a pre-run identity.
+ *
+ * `verified` ONLY WITH A DIGEST, exactly as `localOllamaBinding` has always decided it: a model the
+ * runtime reported a weights digest for is identified by those weights; one it did not is not. A model
+ * the runtime does not list at all is `nothing` — never a digest carried over from another machine.
+ */
+export function resolveLocalPreRunIdentity(installed: LocalModelIdentitySource[], modelID: string): PreRunIdentity {
+  const found = installed.find((model) => model.modelID === modelID);
+  if (found === undefined) {
+    return { state: 'unverifiable', verifiedModelID: '', resolvedFrom: 'nothing',
+      evidence: `the local runtime on this machine does not list ${modelID}. Discovery is authoritative, and a local model `
+        + 'is never assumed installed because it was installed somewhere else.' };
+  }
+  if (found.runtimeDigest.length === 0) {
+    return { state: 'unverifiable', verifiedModelID: '', resolvedFrom: 'nothing',
+      evidence: `the local runtime lists ${modelID} and reports no weights digest for it, so nothing establishes which weights answer.` };
+  }
+  return { state: 'verified', verifiedModelID: modelID, resolvedFrom: 'localRuntimeDigest',
+    evidence: `the local runtime on this machine reported weights digest ${found.runtimeDigest} for ${modelID}; inference runs on `
+      + 'this machine, so the digest — not a remote identity admission — is what identifies the model' };
+}
 
 export class WorkspaceBindingError extends Error {
   constructor(readonly code: string, message: string) {
@@ -64,7 +96,7 @@ export interface PreRunIdentity {
    * person's sealed, campaign-bound authorization, under the Pass 6 exception, for `codexCLI` only.
    * It never produces `verified`, and it never fills `verifiedModelID`.
    */
-  resolvedFrom: 'discoveryStore' | 'nothing' | 'identityAdmission';
+  resolvedFrom: 'discoveryStore' | 'nothing' | 'identityAdmission' | 'localRuntimeDigest';
   /** When the proof was established, ISO-8601, when there was one. */
   provenAt?: string;
 }
@@ -152,6 +184,15 @@ export interface WorkspaceBindingRequest {
   pricing?: PricingSnapshot;
   /** What discovery proved. Read through `resolvePreRunIdentity`; never bypassed. */
   identity: PreRunIdentity;
+  /**
+   * The signed observation that this METERED route costs this account nothing at the margin. The only
+   * thing that lets a metered route run a workspace task, which carries no token ceiling. Validated in
+   * full here — every field, the published-price tells, the exact route, and its age.
+   */
+  zeroMarginalCost?: ZeroMarginalCostConfirmation;
+  /** The weights digest of a LOCAL route, from this machine's runtime. Required for `ollama`. */
+  localModelDigest?: string;
+  now?: Date;
 }
 
 /**
@@ -168,6 +209,27 @@ export function buildWorkspaceBinding(request: WorkspaceBindingRequest): Provide
   }
   const admitted = request.identity.state === REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE
     && request.identity.resolvedFrom === 'identityAdmission';
+  if (request.provider === 'ollama') {
+    // A LOCAL ROUTE IS IDENTIFIED BY ITS WEIGHTS, and the digest the binding freezes must be the one the
+    // identity was resolved from — a digest supplied separately from the identity would be two claims.
+    if (request.identity.resolvedFrom !== 'localRuntimeDigest' || (request.localModelDigest ?? '').length === 0
+        || !request.identity.evidence.includes(request.localModelDigest ?? '\u0000')) {
+      throw new WorkspaceBindingError('localIdentityUnresolved',
+        `${request.modelID} is a local route, and a local workspace run is bound to the weights digest this machine's runtime `
+        + `reports. ${request.identity.evidence}`);
+    }
+  }
+  if (request.zeroMarginalCost !== undefined) {
+    const confirmation = request.zeroMarginalCost;
+    validateZeroMarginalCostConfirmation(confirmation);
+    if (confirmation.provider !== request.provider || confirmation.modelID !== request.modelID) {
+      throw new WorkspaceBindingError('zeroMarginalCostForAnotherRoute',
+        `the zero-marginal-cost confirmation names ${confirmation.provider}:${confirmation.modelID}, not `
+        + `${request.provider}:${request.modelID}. A confirmation is about one route on one account.`);
+    }
+    const freshness = zeroMarginalCostConfirmationFreshness(confirmation, request.now ?? new Date());
+    if (!freshness.fresh) throw new WorkspaceBindingError('zeroMarginalCostStale', freshness.reason);
+  }
   if (request.identity.state !== 'verified' && !admitted) {
     // THE SAME REFUSAL `buildCampaignPlan` MAKES, on the same evidence, for the same reason. A model
     // nobody proved this account can call must not be spendable on, and must not be recorded as
@@ -208,6 +270,14 @@ export function buildWorkspaceBinding(request: WorkspaceBindingRequest): Provide
     billingBasis: billingBasisOf(executionClass),
     pricing: request.pricing ?? null,
     authorizationMode: authorizationModeForProvider(request.provider),
+    ...(request.zeroMarginalCost === undefined ? {} : {
+      zeroMarginalCostBasis: {
+        provider: request.zeroMarginalCost.provider, modelID: request.zeroMarginalCost.modelID,
+        accountBasis: request.zeroMarginalCost.accountBasis, observedBillingRecord: request.zeroMarginalCost.observedBillingRecord,
+        observedAt: request.zeroMarginalCost.observedAt, confirmedBy: request.zeroMarginalCost.confirmedBy,
+      },
+    }),
+    ...(request.provider === 'ollama' ? { localModelDigest: request.localModelDigest } : {}),
   };
 
   // VALIDATED WHERE IT IS BUILT. Every caller — the preflight, the durable record, the live run —
@@ -230,6 +300,12 @@ export function workspaceTimeoutFor(workspaceCase: WorkspaceCase, operatorTimeou
 
 /** The lines a preflight prints about what was known before the request. Rendered in one place. */
 export function describePreRunIdentity(identity: PreRunIdentity): string[] {
+  if (identity.resolvedFrom === 'localRuntimeDigest') {
+    return [
+      `pre-run identity  ${identity.state} as ${identity.verifiedModelID} — resolved from THIS machine's local runtime`,
+      `                  ${identity.evidence}`,
+    ];
+  }
   if (identity.resolvedFrom === 'identityAdmission') {
     return [
       `pre-run identity  ${identity.state} — ADMITTED BY A SEALED IDENTITY ADMISSION, NOT PROVEN`,

@@ -93,6 +93,41 @@ export interface CLIRunOptions {
   shouldCancel?: () => boolean;
   /** Injected for tests; defaults to the real clock. */
   now?: () => number;
+  /**
+   * A macOS Seatbelt profile to run the command under, as text. See `execution-sandbox.ts`.
+   *
+   * THE COMMAND IS RESOLVED ON THE CHILD'S PATH FIRST, and the resolved binary is what the sandbox
+   * launches. That keeps two things exactly as they were without a sandbox: WHICH binary runs (spawn
+   * resolves on the child's PATH too), and what a missing one looks like — `notInstalled`, never an
+   * exit status from the launcher that would read as a check that started and failed.
+   */
+  sandboxProfile?: string;
+}
+
+/** The absolute launcher `sandboxProfile` runs through. Never looked up on PATH. */
+const SEATBELT_LAUNCHER = '/usr/bin/sandbox-exec';
+
+/**
+ * Where a command name resolves on a child's PATH, without running it. Mirrors `spawn`'s own lookup,
+ * which reads the PATH of the environment the child is given, not this process's.
+ */
+export function resolveOnChildPath(executable: string, environment: Record<string, string | undefined>): string | undefined {
+  const isFile = (candidate: string): boolean => {
+    try {
+      const stats = fs.statSync(candidate);
+      return stats.isFile() && (process.platform === 'win32' || (stats.mode & 0o111) !== 0);
+    } catch {
+      return false;
+    }
+  };
+  if (executable.includes('/')) return isFile(executable) ? path.resolve(executable) : undefined;
+  const separator = process.platform === 'win32' ? ';' : ':';
+  for (const directory of (environment.PATH ?? '').split(separator)) {
+    if (directory.length === 0) continue;
+    const candidate = path.join(directory, executable);
+    if (isFile(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 /** Every process this module currently owns. Module-level so a signal handler can reach them all. */
@@ -176,18 +211,37 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
   const grace = options.graceMilliseconds ?? 2_000;
   const startedAt = now();
 
+  const environment = {
+    ...(options.replaceEnvironment ?? environmentWithoutCredentials(process.env)),
+    ...(options.extraEnvironment ?? {}),
+  };
+  let executable = options.executable;
+  let args = options.args;
+  if (options.sandboxProfile !== undefined) {
+    const resolved = resolveOnChildPath(options.executable, environment);
+    if (resolved === undefined) {
+      return Promise.resolve({
+        stdout: '', stderr: '', exitCode: null, signal: null, elapsedMilliseconds: now() - startedAt,
+        failure: {
+          kind: 'notInstalled',
+          detail: `${options.executable} is not on the PATH this command was given, so there was nothing to run under the `
+            + 'sandbox and nothing was run.',
+        },
+      });
+    }
+    executable = SEATBELT_LAUNCHER;
+    args = ['-p', options.sandboxProfile, resolved, ...options.args];
+  }
+
   return new Promise<CLIResult>((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(options.executable, options.args, {
+      child = spawn(executable, args, {
         cwd: options.workingDirectory,
         // Its own process group, so terminate() reaches whatever it spawns.
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...(options.replaceEnvironment ?? environmentWithoutCredentials(process.env)),
-          ...(options.extraEnvironment ?? {}),
-        },
+        env: environment,
         windowsHide: true,
       });
     } catch (error) {

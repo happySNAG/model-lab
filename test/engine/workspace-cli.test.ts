@@ -147,12 +147,14 @@ describe('the dry run shows everything and does none of it', () => {
 describe('the refusals, each of which happens before anything is sent', () => {
   it('refuses a provider with no WORKSPACE driver, rather than falling through to prose execution', () => {
     proveHaiku();
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'opencodeCLI',
-      '--model', 'opencode/gpt-5.5', '--dry-run');
+    // OpenCode gained a workspace driver in the free + local route pass; the metered HTTP APIs have none.
+    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'anthropicAPI',
+      '--model', 'claude-haiku-4-5', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('workspace driver unavailable');
     expect(result.output).toContain('claudeCLI');
     expect(result.output).toContain('codexCLI');
+    expect(result.output).toContain('opencodeCLI');
     // The reason, not just the refusal: an answer about describing a fix is not an answer about making one.
     expect(result.output).toMatch(/does not fall back to prose execution/);
     expect(invocations()).toEqual([]);

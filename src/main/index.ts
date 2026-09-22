@@ -190,7 +190,10 @@ async function bootstrap(): Promise<void> {
     applicationName: PRODUCT_NAME,
     applicationVersion: info.version,
     version: `${info.commit} · ${info.builtAt}`,
-    copyright: 'Cernum contributors. Local benchmarking; nothing leaves this computer.',
+    // TRUE OF EVERY CONFIGURATION, which "nothing leaves this computer" was not: a frontier route sends
+    // its task content to the provider you configured. See SECURITY.md.
+    copyright: 'Copyright (c) 2026 Cernum contributors. MIT licensed. Local models stay on this computer; '
+      + 'configured remote providers receive the task content their inference needs.',
     credits: `Evidence store: ${service.evidenceRoot}`,
   });
   installMenu();

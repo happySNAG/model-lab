@@ -1,20 +1,26 @@
-Model Lab
-MIT License — Copyright (c) 2026 Model Lab contributors
+Cernum
+MIT License — Copyright (c) 2026 Cernum contributors
 
 WHAT THIS PROGRAM DOES
 
-Model Lab is a benchmarking environment for language models that run on this
-computer through Ollama. It sends fixed, synthetic prompts to the models you
-choose, judges the answers with fixed deterministic rules, and keeps every
-result on this computer as permanent evidence.
+Cernum is a benchmarking environment for language models: local models that run
+on this computer through Ollama, and frontier models reached through the command
+line tools or API keys you configure yourself. It sends fixed, sealed benchmark
+tasks to the models you choose, judges the results with deterministic rules, and
+keeps every result on this computer as permanent evidence.
 
-Model Lab does not collect personal data and has no telemetry, no update check
-and no account. The only network connection it makes is to Ollama on this same
-computer, over loopback. It never installs a language model unless you
-explicitly ask it to download one. Benchmark results are evidence for your own
-decisions; Model Lab changes nothing about how any model is used anywhere.
+WHERE YOUR DATA GOES
 
-Uninstalling Model Lab removes the application but keeps your evidence store
+Local models stay local: Cernum talks to Ollama on this computer over loopback
+only. If you configure a remote provider, the benchmark task content that
+provider needs for inference is sent to it, under that provider's own terms;
+Cernum tells you before any campaign that does this runs. Cernum itself has no
+telemetry, no update check and no account, never reads a tool's stored login,
+and never installs a language model unless you explicitly ask it to download
+one. Benchmark results are evidence for your own decisions; Cernum changes
+nothing about how any model is used anywhere.
+
+Uninstalling Cernum removes the application but keeps your evidence store
 (under your user application data folder), so your history is never silently
 deleted.
 

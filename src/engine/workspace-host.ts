@@ -134,6 +134,21 @@ export interface WorkspaceAgentUsage extends Record<string, CanonicalValue | und
   otlpCorrelationKey?: string;
   /** The telemetry's own total, kept to settle how the token fields decompose. */
   otlpTotalTokens?: number;
+  /**
+   * LOCAL-RUNTIME PROVENANCE, written only by the Ollama driver. Absent on every other driver, and
+   * absent means the question does not apply — a hosted model has no weights digest this engine can read.
+   * The digest is the identity on that route; the machine is where the latency was measured, and a local
+   * result is never assumed to transfer to another machine. See `machine-availability.ts`.
+   */
+  localModelDigest?: string;
+  localRuntimeVersion?: string;
+  localRuntimeEndpoint?: string;
+  localModelContextLengthTokens?: number;
+  localModelSizeBytes?: number;
+  /** The `cmk1:` machine key (see `machine-availability.ts`), and the hostname as a label beside it. */
+  executionMachine?: string;
+  executionMachineLabel?: string;
+  executionPlatform?: string;
   /** The provider's usage block verbatim, so a figure here can be reconciled against a bill. */
   rawUsage?: CanonicalValue;
 }
@@ -220,6 +235,12 @@ export class WorkspaceRoutingHost {
    */
   async authorizeAttempt(request: { case: WorkspaceCase; binding: ProviderBinding }): Promise<AttemptAuthorization> {
     if (!isMetered(request.binding)) return { allowed: true };
+    // A METERED ROUTE WITH A SIGNED ZERO-MARGINAL-COST BASIS needs no dollar ceiling: the binding cannot
+    // have been built without a current, validated observation that this account is charged nothing for
+    // this exact route (`buildWorkspaceBinding`), and a ceiling enforced against $0 per attempt would stop
+    // nothing. Its tokens are still recorded against the tracker after the run, at the published rate,
+    // so a free tier that silently started billing is visible in the evidence and post-run reconciliation.
+    if (request.binding.zeroMarginalCostBasis !== undefined) return { allowed: true };
     try {
       this.options.spend.check(request.binding, worstCaseAttemptMicroUSD(request.binding));
       return { allowed: true };
