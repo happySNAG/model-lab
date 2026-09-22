@@ -17,8 +17,12 @@
 //   and refused for preserve-unknown migration says exactly that, in two entries, and nothing overall.
 //   NOT A ROUTER. It says whether a route is SAFE to route for a capability and why; choosing among
 //   routes is `routing-contract.ts`'s job, and even that returns a candidate set, not a winner.
-//   NOT A NEW IDENTITY RULE. A route admitted under the identity exception is measured in full here and
-//   is never routable, because `isRoutable` says so and the Pass 6/7 approvals say so in writing.
+//   NOT A NEW IDENTITY RULE, AND NOT THE PLACE THE RULE LIVES. A route admitted under the identity
+//   exception is measured in full here, and whether that route may be ROUTED is decided by the
+//   versioned policy in `routing-policy.ts` — `crp1` (Pass 6/7) refuses it outright, `crp2` (Pass 8)
+//   admits it under nine conditions. This module applies whichever version it was asked for, carries
+//   that version on the record, and invents nothing: `routingPolicyVersion` is always stated so a
+//   reader of a verdict can tell which rule produced it rather than assuming today's.
 //
 // THE QUALIFICATION POLICY IS EXPLICIT AND VERSIONED. "Qualified" means: at least N scored runs of cases
 // exercising the capability, a success rate at or above R, and no case that never passed. The numbers
@@ -30,6 +34,9 @@ import { DiscoveryEvidence, isEvidenceExpired } from './discovery-store';
 import { DiscoverySnapshot, QualificationStalenessReason, RouteFreshness, qualificationStaleness, routeFreshness } from './discovery-refresh';
 import { Quantity, measuredQuantity, unavailableQuantity } from './frontier-metrics';
 import { REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE, isRoutable } from './identity-admission';
+import {
+  CURRENT_ROUTING_POLICY_VERSION, ROUTED_BUT_NOT_VERIFIED, RoutingPolicyVersion, routingPolicy,
+} from './routing-policy';
 import {
   LOCAL_QUALIFICATION_DOES_NOT_TRANSFER, MachineAvailability, QualificationScope, RouteAvailabilityObservation,
   availabilityOnMachine, qualificationAppliesOn, qualificationScopeFor,
@@ -109,6 +116,13 @@ export interface RouteQualificationInputs {
   policy?: QualificationPolicy;
   /** The workspace driver this build would use now, to detect a route whose driver moved. */
   currentDriverID?: string;
+  /**
+   * Which routing policy decides an identity-admitted route. Defaults to the current version.
+   *
+   * Pass `crp1` to re-derive a record under the Pass 6/7 rule — which is what reading a historical
+   * decision means, and the only honest way to ask "what would this build have said then".
+   */
+  routingPolicyVersion?: RoutingPolicyVersion;
   now: Date;
 }
 
@@ -126,6 +140,12 @@ export interface RouteQualificationRecord {
   identityConfidence: IdentityConfidence;
   /** The strongest binding identity state any of this route's rows ran under. */
   bindingIdentityStates: string[];
+  /** True when a run of this route carried the accepted-request identity exception. */
+  identityAdmitted: boolean;
+  /** Which routing policy produced `safeToRoute`. Always stated; never inferred by a reader. */
+  routingPolicyVersion: RoutingPolicyVersion;
+  /** Said whenever `identityAdmitted`: the permission and its limit, in one sentence. */
+  identityDisclosure?: string;
   billing: RouteSpendPosture | undefined;
 
   evidence: {
@@ -226,11 +246,17 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
         : inputs.provider === 'opencodeCLI' ? 'unverifiableSubstitutionUndetectable' : 'unknown');
   const admitted = bindingIdentityStates.includes(REQUEST_ACCEPTED_IDENTITY_UNVERIFIABLE);
   const verified = bindingIdentityStates.length > 0 && bindingIdentityStates.every((state) => isRoutable(state as 'verified'));
-  if (admitted) {
+  // WHICH POLICY DECIDES THIS ROUTE. crp1 (Pass 6/7) refuses an admitted route outright; crp2 (Pass 8)
+  // permits it and leaves the remaining conditions to the blockers below and to the routing query,
+  // which is where `requireVerifiedIdentity` is answered. The version is carried onto the record, so a
+  // consumer reading a verdict can always tell WHICH rule produced it rather than assuming today's.
+  const policyVersion = inputs.routingPolicyVersion ?? CURRENT_ROUTING_POLICY_VERSION;
+  const routingRules = routingPolicy(policyVersion);
+  if (admitted && !routingRules.identityAdmittedRoutesMayBeRouted) {
     block('identity', 'this route ran under the accepted-request identity exception. Its measurements are '
       + 'complete and published; the exception was approved in writing on the condition that such a route is never a routing '
       + 'target without stronger identity proof (NEVER_AFFECTS: production routing, Ordra).');
-  } else if (!verified && rows.length > 0) {
+  } else if (!verified && rows.length > 0 && !admitted) {
     block('identity', `no run of this route ran under a verified identity (${bindingIdentityStates.join(', ') || 'none'})`);
   }
 
@@ -356,6 +382,11 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
     availableOnThisMachine,
     identityConfidence,
     bindingIdentityStates,
+    identityAdmitted: admitted,
+    routingPolicyVersion: policyVersion,
+    ...(admitted ? { identityDisclosure: routingRules.identityAdmittedRoutesMayBeRouted
+      ? ROUTED_BUT_NOT_VERIFIED
+      : routingRules.statement } : {}),
     billing: inputs.spend,
     evidence: {
       prose: { present: proseRankings.length > 0, candidates: proseRankings.map((ranking) => ranking.candidate),

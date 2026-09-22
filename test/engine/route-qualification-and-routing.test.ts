@@ -208,10 +208,16 @@ describe('36–39 · failures, existence without qualification, unavailability a
     expect(record.blockers.map((entry) => entry.kind)).toEqual(['staleness']);
   });
 
-  it('keeps an identity-admitted route measured and NEVER routable, per the written approval', async () => {
+  // SUPERSEDED PROSPECTIVELY BY crp2 (Pass 8), AND STILL EVALUABLE. This was the unconditional rule
+  // when this file was written; Pass 8 made it one of two policy VERSIONS rather than the only one.
+  // The assertion is unchanged in substance — it now names the version it was always describing, so
+  // that a build which routes admitted routes by default can still prove it refuses them under crp1.
+  // The crp2 behaviour is asserted in `routing-policy-governance.test.ts`.
+  it('keeps an identity-admitted route measured and NEVER routable under crp1, per the written approval', async () => {
     const { rows } = await records();
     const admitted = rows.map((run) => ({ ...run, row: { ...run.row, bindingIdentityState: 'requestAcceptedIdentityUnverifiable' } }));
-    const record = recordFor(admitted, HAIKU);
+    const record = recordFor(admitted, HAIKU, { routingPolicyVersion: 'crp1' });
+    expect(record.routingPolicyVersion).toBe('crp1');
     expect(record.capabilities.some((entry) => entry.verdict === 'qualified')).toBe(true);
     expect(record.safeToRoute).toBe(false);
     expect(record.blockers.find((entry) => entry.kind === 'identity')?.reason).toContain('never a routing target');

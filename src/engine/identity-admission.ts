@@ -161,6 +161,16 @@ export const ADMISSION_PROVIDER_APPROVALS: Partial<Record<ProviderID, {
  *
  * The exception exists to let a MEASUREMENT be taken. Everything on this list is a decision made ON
  * a measurement, and a decision made on an identity nobody established is a decision about nothing.
+ *
+ * SUPERSEDED PROSPECTIVELY ON THE ROUTING ENTRY, AND LEFT STANDING. Pass 8 decided that an admitted
+ * route MAY be a routing candidate under stated conditions, as routing policy `crp2` — see
+ * `routing-policy.ts`. This list is NOT edited to match, because it is the Pass 6/7 record and a
+ * record that silently agrees with every later decision is not a record. `crp1` — the policy this
+ * list states — still ships, is still evaluable, and is still what `isRoutable` below returns.
+ *
+ * SO READ THE FIRST ENTRY AS: routing NEVER consults an admitted candidate under crp1, which was
+ * the whole policy when this was written and is now one of two versions. Under crp2 it may, and only
+ * when nine conditions hold, and its identity is still reported as unverifiable every time.
  */
 export const NEVER_AFFECTS: string[] = [
   'production routing — see isRoutable; an admitted candidate is never a routing target',
@@ -464,6 +474,19 @@ export function admissionProvenance(evidence: AdmittedCandidateEvidence): string
  * Present as a named function so the rule is greppable and testable rather than a line in a comment
  * somebody has to remember. Measurement and routing are different questions, and a candidate whose
  * identity is unknown can answer only the first.
+ *
+ * THIS FUNCTION IS ROUTING POLICY `crp1`, AND IS DELIBERATELY UNCHANGED.
+ *
+ * Pass 8 superseded the rule PROSPECTIVELY with `crp2`, which admits such a route under nine
+ * conditions — see `routing-policy.ts`. It did not edit this function, for two reasons. Sealed
+ * campaign manifests and written approvals cite `isRoutable` BY NAME as the thing that keeps the
+ * Pass 6/7 promise, so changing what it returns would retroactively change what those records say
+ * was guaranteed. And `crp1` has to stay EVALUABLE: `crp1RefusesAdmittedState` calls this function
+ * to prove the old policy still refuses what it always refused, rather than proving it against a
+ * second copy of the rule that could drift.
+ *
+ * A caller deciding whether to route TODAY should ask `routing-policy.ts`, not this function, and
+ * pass the policy version it means. This one answers exactly one question: what crp1 said.
  */
 export function isRoutable(state: IdentityAdmissionState | 'verified' | 'unverifiable'): boolean {
   return state === 'verified';

@@ -129,3 +129,8 @@ export * from './machine-availability';
 export * from './route-spend-posture';
 export * from './route-qualification';
 export * from './routing-contract';
+// Governance and fleet persistence: the versioned routing policy that supersedes the Pass 6/7
+// restriction prospectively, and the append-only store two machines share observations through.
+export * from './routing-policy';
+export * from './observation-store';
+export * from './zero-cost-authorization';

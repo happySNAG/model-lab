@@ -270,7 +270,10 @@ describe('28–31 · availability is per machine, and a local qualification does
     expect(machineKey({ ...fingerprint, totalMemoryBytes: fingerprint.totalMemoryBytes + 1 })).not.toBe(machineKey(fingerprint));
     const engine = path.resolve(__dirname, '../../src/engine');
     for (const file of ['machine-availability.ts', 'route-qualification.ts', 'routing-contract.ts', 'discovery-refresh.ts',
-      'workspace-ollama-driver.ts', 'workspace-opencode-driver.ts', 'model-description.ts', 'route-spend-posture.ts']) {
+      'workspace-ollama-driver.ts', 'workspace-opencode-driver.ts', 'model-description.ts', 'route-spend-posture.ts',
+      // The fleet modules are held to it too, and they are the ones most tempted to name a machine:
+      // every sentence about importing an observation wants a second computer to point at.
+      'observation-store.ts', 'routing-policy.ts']) {
       const source = fs.readFileSync(path.join(engine, file), 'utf8');
       expect(source).not.toMatch(/mac ?mini|macbook/i);
     }

@@ -87,6 +87,17 @@ import {
   unrunnableAttempts, contractVersionRefusal,
   DEVELOPMENT_REINTERPRETATIONS_DIRECTORY, describeDevelopmentReinterpretation, listDevelopmentReinterpretations,
   reinterpretDevelopmentCampaign, readBenchmarkCommit, readWorkingTreeDirty,
+  // The fleet: one append-only observation store, the routing policy that reads it, and the
+  // machine-scoped availability that keeps one Mac's observations from becoming another's.
+  ALL_WORKSPACE_DIFFICULTY_TIERS, CURRENT_ROUTING_POLICY_VERSION, DiscoveryProbe,
+  IMPORTED_OBSERVATION_IS_NOT_LOCAL, MachineFingerprint, ObservationRecord, RouteCandidateQuery,
+  WorkspaceDifficultyTier, appendObservations, deriveRouteQualification, describeObservationStore,
+  discoveryDeltaObservation, discoverySnapshotObservation, exportObservations, fleetAvailability,
+  importObservations, latestDiscoverySnapshot, machineKey, machineObservation, machinesInStore,
+  observationStorePath, observationsForRouting, observationsFromLocalModels, observationsFromProviderStatus,
+  providerAvailabilityObservation, qualifiedRouteCandidatesFromStore, readMachineFingerprint, routeSpendPosture,
+  readObservationBundle, readObservationStore, refreshDiscovery, routeAvailabilityObservation,
+  writeObservationBundle,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
@@ -2939,6 +2950,391 @@ async function commandUnlock(positional: string[], options: Options): Promise<vo
   }
 }
 
+// MARK: - The fleet: observations, availability, refresh and candidates
+//
+// SIX READ-MOSTLY COMMANDS OVER ONE APPEND-ONLY STORE. None of them invokes a model, and the one that
+// runs anything at all — `discovery-refresh` — runs the same read-only probes `discover` runs. The
+// engine decides everything; these functions read options, call one engine function and print.
+
+/** This machine, as the fleet knows it. Read from what the OS reports; no name is configured. */
+function thisMachine(): { fingerprint: MachineFingerprint; key: string } {
+  const fingerprint = readMachineFingerprint();
+  return { fingerprint, key: machineKey(fingerprint) };
+}
+
+function machineFromOptions(options: Options): string {
+  const asked = options.machine === undefined ? undefined : String(options.machine).trim();
+  return asked !== undefined && asked.length > 0 ? asked : thisMachine().key;
+}
+
+async function commandObservations(options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const contents = readObservationStore(root);
+  if (options.json === true) { say(JSON.stringify(contents, null, 2)); return; }
+
+  const here = thisMachine();
+  say(`Observation store: ${contents.root}`);
+  say(`This machine:      ${here.key}  (${here.fingerprint.hostname})`);
+  say('');
+  say(`${contents.observations.length} observation(s) from ${machinesInStore(contents).length} machine(s):`);
+  sayLines(describeObservationStore(contents));
+  say('');
+  const kinds = [...new Set(contents.observations.map((entry) => entry.record.kind))].sort();
+  for (const kind of kinds) {
+    const mine = contents.observations.filter((entry) => entry.record.kind === kind);
+    say(`  ${kind.padEnd(24)} ${String(mine.length).padStart(5)}`);
+  }
+  if (contents.corrupt.length > 0) {
+    say('');
+    // A corrupt file is a FINDING. It is named here and the command exits non-zero, because a store
+    // that reports damage in a line somebody scrolls past is a store that reports nothing.
+    fail(`${contents.corrupt.length} observation file(s) did not verify and were not read. `
+      + 'They are listed above, by path. Nothing was changed.', 2);
+  }
+  say('');
+  say(IMPORTED_OBSERVATION_IS_NOT_LOCAL);
+}
+
+async function commandObservationsExport(options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const out = options.out === undefined ? undefined : String(options.out);
+  if (out === undefined || out.trim().length === 0) fail('observations-export: --out <file> is required. Nothing was written.', 2);
+  const here = thisMachine();
+  const machines = options.machine === undefined ? undefined
+    : String(options.machine).split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  const { bundle, corrupt } = exportObservations(root, {
+    exportedFromMachine: here.key,
+    exportedFromLabel: here.fingerprint.hostname,
+    exportedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    ...(machines === undefined ? {} : { machineKeys: machines }),
+    ...(options.since === undefined ? {} : { since: String(options.since) }),
+  });
+  const observed = [...new Set(bundle.records.map((record) => record.machineKey))].sort();
+  say(`${bundle.records.length} observation(s) from ${observed.length} machine(s): ${observed.join(', ') || '(none)'}`);
+  say(`bundle digest  ${bundle.bundleDigest}`);
+  if (corrupt.length > 0) {
+    say('');
+    say(`${corrupt.length} file(s) in the store did not verify and are NOT in this bundle:`);
+    for (const entry of corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+  }
+  if (options['dry-run'] === true) {
+    say('');
+    say(`--dry-run: nothing was written. This bundle would have gone to ${out}.`);
+    return;
+  }
+  writeObservationBundle(out, bundle);
+  say('');
+  say(`Written to ${out}.`);
+  say('Copy it to the other machine however you like — this file does not care how it travels — and run:');
+  say(`  ${TERMINAL_COMMAND} observations-import <the copy>`);
+}
+
+async function commandObservationsImport(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const file = positional[0];
+  if (file === undefined) fail(`observations-import: name the bundle to import. ${TERMINAL_COMMAND} observations-import <bundle>`, 2);
+
+  // READ AND VERIFIED BEFORE ANYTHING IS WRITTEN, so --dry-run and a real import refuse the same
+  // bundles for the same reasons — a dry run that accepts what the real one rejects is worse than none.
+  let bundle;
+  try {
+    bundle = readObservationBundle(file);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error), 2);
+  }
+  const observed = [...new Set(bundle.records.map((record) => record.machineKey))].sort();
+  say(`${file}`);
+  say(`  exported by    ${bundle.exportedFromMachine} (${bundle.exportedFromLabel}) at ${bundle.exportedAt}`);
+  say(`  digest         ${bundle.bundleDigest} — verified`);
+  say(`  carries        ${bundle.records.length} observation(s) from ${observed.length} machine(s)`);
+  for (const machine of observed) {
+    say(`                 ${machine}: ${bundle.records.filter((record) => record.machineKey === machine).length}`);
+  }
+  if (options['dry-run'] === true) {
+    say('');
+    say('--dry-run: the bundle verified and nothing was imported.');
+    return;
+  }
+  const outcome = importObservations(root, file, new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
+  say('');
+  say(`  imported       ${outcome.imported.length}`);
+  say(`  already held   ${outcome.duplicates.length} (unchanged, including their original origin)`);
+  if (outcome.refused.length > 0) {
+    say(`  REFUSED        ${outcome.refused.length}`);
+    for (const entry of outcome.refused) say(`    ${entry.record.recordID.slice(0, 16)}…: ${entry.reason}`);
+  }
+  say('');
+  say(IMPORTED_OBSERVATION_IS_NOT_LOCAL);
+}
+
+async function commandAvailability(options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const contents = readObservationStore(root);
+  const now = new Date();
+  const asked = options.route === undefined ? undefined : String(options.route);
+  const view = fleetAvailability(contents, now).filter((entry) => asked === undefined || entry.routeKey === asked);
+  if (options.json === true) { say(JSON.stringify(view, null, 2)); return; }
+
+  const here = thisMachine();
+  const machine = machineFromOptions(options);
+  say(`Availability as of ${now.toISOString()}`);
+  say(`  asking about   ${machine}${machine === here.key ? '  (this machine)' : '  (NOT this machine)'}`);
+  say('');
+  if (view.length === 0) {
+    say('No route availability has been observed or imported yet.');
+    say(`Observe this machine:  ${TERMINAL_COMMAND} discovery-refresh`);
+    return;
+  }
+  for (const route of view) {
+    say(`  ${route.routeKey}`);
+    for (const entry of route.machines) {
+      const where = entry.machineKey === machine ? 'HERE' : 'elsewhere';
+      const origin = entry.origin === 'observedHere' ? 'observed locally' : `imported from ${entry.importedFromMachine ?? 'another machine'}`;
+      say(`    ${entry.availability.state.padEnd(14)} ${where.padEnd(10)} ${entry.machineKey}  (${entry.machineLabel})  · ${origin}`);
+      for (const line of wrap(entry.availability.reason, 70)) say(`      ${line}`);
+    }
+  }
+  say('');
+  say(IMPORTED_OBSERVATION_IS_NOT_LOCAL);
+}
+
+/**
+ * Observe what is here now, persist it, and say what moved.
+ *
+ * WHAT IT SENDS: nothing to any model. `offlineProviderStatuses` is a PATH lookup and a credential
+ * check, and `discoverLocalModels` asks the local runtime for its own inventory. Both are the probes
+ * `providers` and `models` already run.
+ */
+async function commandDiscoveryRefresh(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const here = thisMachine();
+  const now = new Date();
+  const observedAt = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const asked = positional.filter((entry) => entry.trim().length > 0);
+
+  const contents = readObservationStore(root);
+  const previous = latestDiscoverySnapshot(contents, here.key);
+
+  // THE LOCAL RUNTIME IS REFRESHED TOO, and it is not in `DISCOVERABLE_PROVIDERS`.
+  //
+  // That list is the set of providers `discover` interrogates, and it excludes `ollama` deliberately:
+  // a local runtime has its own read-only inventory command and needs no discovery subcommand run
+  // against it. A FLEET view cannot make that exclusion — which machine has which weights is the
+  // single most machine-specific fact there is, and a refresh that skipped it would persist a fleet
+  // with no local models in it at all.
+  const REFRESHABLE: ProviderID[] = [...DISCOVERABLE_PROVIDERS, 'ollama' as ProviderID].sort();
+  const unknown = asked.filter((entry) => !REFRESHABLE.includes(entry as ProviderID));
+  if (unknown.length > 0) {
+    fail(`discovery-refresh: ${unknown.join(', ')} is not a provider this can refresh. `
+      + `Try ${REFRESHABLE.join(', ')}. Nothing was probed.`, 2);
+  }
+
+  // One probe per provider, each returning what it saw and whether it answered AT ALL. A probe that
+  // throws is `refreshed: false` — the engine turns that into `notRefreshed`, never `disappeared`.
+  const probes: Partial<Record<ProviderID, DiscoveryProbe>> = {};
+  for (const provider of REFRESHABLE) {
+    if (asked.length > 0 && !asked.includes(provider)) continue;
+    probes[provider] = async () => {
+      if (provider === 'ollama') {
+        const endpoint = String(options.endpoint ?? DEFAULT_ENDPOINT);
+        const models = await discoverLocalModels(endpoint);
+        return {
+          refreshed: true, detail: `the local runtime at ${endpoint} listed ${models.length} model(s)`,
+          routes: observationsFromLocalModels(models.map((model) => ({
+            modelID: model.name, runtimeDigest: model.runtimeDigest,
+          })), observedAt),
+        };
+      }
+      const status = await discoverProvider(provider);
+      // THE PUBLISHED PRICES ARE PASSED IN, and they are the reason `priceChanged` and
+      // `freeStatusChanged` can ever fire. Without them every hosted route observes with no price
+      // fingerprint, every comparison is `undefined === undefined`, and the two deltas that stale a
+      // zero-marginal-cost confirmation are dead. A published price is still only a published price:
+      // it is recorded as the catalogue's claim and never makes a route free.
+      return {
+        refreshed: status.reachability !== 'notInstalled',
+        detail: `${status.reachability}: ${status.detail}`,
+        routes: observationsFromProviderStatus(status, status.models
+          .map((model) => publishedPriceFor(model.modelID))
+          .filter((price): price is NonNullable<typeof price> => price !== undefined)),
+      };
+    };
+  }
+
+  const { snapshot, deltas } = await refreshDiscovery({ previous, probes, machineKey: here.key, now });
+  if (options.json === true) { say(JSON.stringify({ snapshot, deltas }, null, 2)); return; }
+
+  say(`Discovery refresh on ${here.key} (${here.fingerprint.hostname}) at ${snapshot.takenAt}`);
+  say('Nothing below invoked a model. These are the same read-only probes `providers` and `models` run.');
+  say('');
+  for (const provider of snapshot.providers) {
+    say(`  ${provider.provider.padEnd(14)} ${provider.refreshed ? 'answered' : 'DID NOT ANSWER'} — ${provider.detail}`);
+  }
+  say('');
+  say(`${snapshot.routes.length} route(s) in this snapshot; ${deltas.length} compared against the previous one`
+    + `${previous === undefined ? ' (there was none — this is the first refresh on this machine)' : ` taken ${previous.takenAt}`}.`);
+  for (const delta of deltas) {
+    if (delta.kinds.length === 1 && delta.kinds[0] === 'noMaterialChange') continue;
+    say('');
+    say(`  ${delta.routeKey}  [${delta.kinds.join(', ')}]${delta.qualificationNowStale ? '  — QUALIFICATION NOW STALE' : ''}`);
+    for (const line of delta.detail) for (const wrapped of wrap(line, 70)) say(`    ${wrapped}`);
+  }
+  const unchanged = deltas.filter((delta) => delta.kinds.length === 1 && delta.kinds[0] === 'noMaterialChange').length;
+  if (unchanged > 0) { say(''); say(`  ${unchanged} route(s): nothing that describes the route moved.`); }
+
+  if (options['dry-run'] === true) {
+    say('');
+    say('--dry-run: nothing was persisted.');
+    return;
+  }
+
+  // PERSISTED AS OBSERVATIONS, not as a current-truth file. The snapshot, each provider's answer, each
+  // route's availability and every material delta become records; the store keeps all of them.
+  const records: ObservationRecord[] = [
+    machineObservation(here.fingerprint, here.key, observedAt, `${TERMINAL_COMMAND} discovery-refresh`),
+    discoverySnapshotObservation(snapshot, here.fingerprint.hostname, `${TERMINAL_COMMAND} discovery-refresh`),
+  ];
+  for (const provider of snapshot.providers) {
+    records.push(providerAvailabilityObservation({
+      provider: provider.provider, machineKey: here.key, machineLabel: here.fingerprint.hostname,
+      observedAt, answered: provider.refreshed, detail: provider.detail,
+      provenance: `${TERMINAL_COMMAND} discovery-refresh`,
+    }));
+  }
+  for (const route of snapshot.routes) {
+    // A ROUTE A FAILED PROBE CARRIED FORWARD IS NOT RE-OBSERVED. Writing an availability record for it
+    // would date somebody else's observation to now, which is the one thing a durable store must not do.
+    if (snapshot.providers.find((entry) => entry.provider === route.provider)?.refreshed !== true) continue;
+    // WHEN THIS OBSERVATION WAS MADE IS NOW, NOT WHEN THE ROUTE WAS LAST SEEN.
+    //
+    // A route the provider ANSWERED about but did not name is carried into the snapshot as
+    // `listed: false` with its last-seen `observedAt` — correct for the snapshot, whose `observedAt`
+    // means "last actually seen". It is wrong for an availability observation, which means "when I
+    // looked". Dating the not-listed record to the last-seen time produced two records with the SAME
+    // instant and opposite verdicts, so which one `availabilityOnMachine` returned was decided by a
+    // digest tie-break — and, because the record then digested identically on every later refresh, the
+    // disappearance could never be re-observed and the route aged into `stale` rather than
+    // `unavailable`. A listed route keeps the provider's own timestamp; a vanished one is dated now.
+    const listed = route.listed && route.availability !== 'refused';
+    records.push(routeAvailabilityObservation({
+      routeKey: route.routeKey, machineKey: here.key, machineLabel: here.fingerprint.hostname,
+      observedAt: route.listed ? route.observedAt : observedAt, available: listed,
+      reason: route.listed ? `named by this refresh (${route.availability ?? 'listed'})`
+        : `${route.provider} answered this refresh and did not name it (last seen ${route.observedAt})`,
+      ...(route.runtimeDigest === undefined ? {} : { runtimeDigest: route.runtimeDigest }),
+    }, route.provider, `${TERMINAL_COMMAND} discovery-refresh`));
+  }
+  for (const delta of deltas) {
+    if (!delta.qualificationNowStale) continue;
+    records.push(discoveryDeltaObservation(delta, here.key, here.fingerprint.hostname, observedAt,
+      `${TERMINAL_COMMAND} discovery-refresh`));
+  }
+  const appended = appendObservations(root, records, { origin: 'observedHere', receivedAt: observedAt });
+  say('');
+  say(`Persisted ${appended.written.length} observation(s) to ${observationStorePath(root)}`
+    + `${appended.alreadyPresent.length > 0 ? ` (${appended.alreadyPresent.length} were already held, unchanged)` : ''}.`);
+}
+
+async function commandCandidates(positional: string[], options: Options): Promise<void> {
+  const capability = positional[0];
+  if (capability === undefined) {
+    fail(`candidates: name the capability. ${TERMINAL_COMMAND} candidates workspace:multiFileEditing`, 2);
+  }
+  const root = String(options.root ?? defaultCampaignRoot());
+  const contents = readObservationStore(root);
+  const machine = machineFromOptions(options);
+  const now = new Date();
+  const policyAsked = options.policy === undefined ? CURRENT_ROUTING_POLICY_VERSION : String(options.policy);
+  if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
+    fail(`candidates: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
+  }
+  const tier = options.tier === undefined ? undefined : String(options.tier);
+  if (tier !== undefined && !ALL_WORKSPACE_DIFFICULTY_TIERS.includes(tier as WorkspaceDifficultyTier)) {
+    fail(`candidates: --tier must be one of ${ALL_WORKSPACE_DIFFICULTY_TIERS.join(', ')}, not '${tier}'.`, 2);
+  }
+  // A REQUIREMENT THAT CANNOT BE READ IS REFUSED, NOT SILENTLY DROPPED. `Number('abc')` is NaN, and
+  // every `< NaN` comparison is false — so an unreadable --min-context would have ADMITTED every
+  // route instead of narrowing anything, which is the opposite of what was asked for.
+  let minimumContextTokens: number | undefined;
+  if (options['min-context'] !== undefined) {
+    minimumContextTokens = Number(options['min-context']);
+    if (!Number.isFinite(minimumContextTokens) || minimumContextTokens < 0 || !Number.isInteger(minimumContextTokens)) {
+      fail(`candidates: --min-context must be a whole number of tokens, not '${String(options['min-context'])}'. Nothing was read.`, 2);
+    }
+  }
+  const costAsked = options['cost-policy'] === undefined ? 'zero' : String(options['cost-policy']);
+  if (costAsked !== 'zero' && costAsked !== 'metered') {
+    fail(`candidates: --cost-policy must be 'zero' or 'metered', not '${costAsked}'.`, 2);
+  }
+
+  const query: RouteCandidateQuery = {
+    machineKey: machine,
+    capability,
+    ...(tier === undefined ? {} : { structuralTier: tier as WorkspaceDifficultyTier }),
+    ...(minimumContextTokens === undefined ? {} : { minimumContextTokens }),
+    costPolicy: costAsked === 'metered' ? 'allowMeteredWithAuthorization' : 'zeroMarginalCostOnly',
+    ...(options['local-only'] === true ? { localOnly: true } : {}),
+    requireVerifiedIdentity: options['require-verified-identity'] === true,
+    routingPolicyVersion: policyAsked,
+  };
+
+  // THE RECORDS ARE DERIVED HERE, FROM EVIDENCE ALREADY ON DISK. Nothing is invoked and nothing is
+  // written: the qualification read model is pure over the rows, snapshots and observations it is given.
+  //
+  // THE BENCHMARK ROWS ARE THE POINT, AND HAVE TO BE READ. Without them every route derives with no
+  // capabilities at all and is excluded as "no benchmark evidence exists" — which is the right answer
+  // for a route nobody has measured and the WRONG one for a route somebody has, so a query that never
+  // loaded the rows would report an empty candidate set forever and look like a policy decision.
+  // `collectWorkspaceRunRows` is the same reader `workspace-report` uses, and it only reads.
+  const snapshot = latestDiscoverySnapshot(contents, machine);
+  const availability = observationsForRouting(contents);
+  const workspaceRows = collectWorkspaceRunRows(root);
+  const cases = allWorkspaceCases();
+  const profiles = registeredWorkspaceDifficultyProfiles();
+  const routes = [...new Set(availability.filter((entry) => entry.machineKey === machine).map((entry) => entry.routeKey))].sort();
+  const derived = routes.map((routeKey) => {
+    const [provider, ...rest] = routeKey.split(':');
+    const modelID = rest.join(':');
+    const record = deriveRouteQualification({
+      provider: provider as ProviderID, modelID, machineKey: machine,
+      ...(snapshot === undefined ? {} : { snapshot }), availability,
+      workspaceRows, workspaceCases: cases, difficultyProfiles: profiles,
+      spend: routeSpendPosture({ provider: provider as ProviderID, modelID, now }),
+      routingPolicyVersion: policyAsked, now,
+    });
+    return { record };
+  });
+  const set = qualifiedRouteCandidatesFromStore(query, contents, derived, now);
+  if (options.json === true) { say(JSON.stringify(set, null, 2)); return; }
+
+  say(`Routing contract ${set.contract} · routing policy ${set.routingPolicyVersion} · machine ${machine}`);
+  say(`Capability: ${capability}${tier === undefined ? '' : ` at ${tier}`}`);
+  say(`requireVerifiedIdentity: ${query.requireVerifiedIdentity === true ? 'YES' : 'no (the default)'}`);
+  say('');
+  if (set.candidates.length === 0) say('No route qualifies for this query.');
+  for (const candidate of set.candidates) {
+    say(`  ${candidate.routeKey}  [${candidate.group}]  ${candidate.locality}`);
+    say(`    identity     ${candidate.identityConfidence}${candidate.identityAdmitted ? '  — ADMITTED, NOT VERIFIED' : ''}`);
+    say(`    availability ${candidate.availability.state} on ${candidate.availability.observedOnMachine} `
+      + `(${candidate.availability.origin === 'observedHere' ? 'observed locally' : 'imported'})`);
+    say(`    evidence     ${candidate.capabilityEvidence.reason}`);
+    if (candidate.identityDisclosure !== undefined) {
+      for (const line of wrap(candidate.identityDisclosure, 70)) say(`    ${line}`);
+    }
+  }
+  if (set.excluded.length > 0) {
+    say('');
+    say(`${set.excluded.length} route(s) excluded, each with every reason:`);
+    for (const entry of set.excluded) {
+      say(`  ${entry.routeKey}`);
+      for (const reason of entry.reasons) for (const line of wrap(reason, 70)) say(`    ${line}`);
+    }
+  }
+  say('');
+  say(`Ordering: ${set.ordering}`);
+  for (const line of wrap(set.disclosure, 76)) say(line);
+}
+
 // MARK: - The installed command
 
 function renderTerminalCommandStatus(): void {
@@ -3819,6 +4215,12 @@ export async function main(argv: string[]): Promise<void> {
     case 'lock': return commandLock(positional, options);
     case 'unlock': return commandUnlock(positional, options);
     case 'endpoints': return commandEndpoints(options);
+    case 'observations': return commandObservations(options);
+    case 'observations-export': return commandObservationsExport(options);
+    case 'observations-import': return commandObservationsImport(positional, options);
+    case 'availability': return commandAvailability(options);
+    case 'discovery-refresh': return commandDiscoveryRefresh(positional, options);
+    case 'candidates': return commandCandidates(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();

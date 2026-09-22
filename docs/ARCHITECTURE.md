@@ -29,10 +29,13 @@ state; neither holds a qualification of its own.
 | Execution of model-modified code | `engine/execution-sandbox.ts` | The V1 rule: sealed commands only, always under macOS Seatbelt; no sandbox, no run. |
 | Unified qualification (read model) | `engine/route-qualification.ts` (`deriveRouteQualification`) | Derived from existing evidence, per capability; writes nothing. |
 | Spend posture | `engine/route-spend-posture.ts` (`routeSpendPosture`) | Exists / may benchmark / may auto-spend / may route by default. |
-| Ordra-facing query | `engine/routing-contract.ts` (`qualifiedRouteCandidates`) | Returns a grouped candidate set and every exclusion; never a winner. |
+| Ordra-facing query | `engine/routing-contract.ts` (`qualifiedRouteCandidates`, `qualifiedRouteCandidatesFromStore`) | Contract `crc2`. Returns a grouped candidate set and every exclusion; never a winner. Answers for the machine the query NAMES, from persisted fleet observations, and accepts `requireVerifiedIdentity` and freshness limits. |
+| Routing policy (versioned) | `engine/routing-policy.ts` (`ROUTING_POLICY_CRP1`, `ROUTING_POLICY_CRP2`) | Both versions ship. `crp1` is the Pass 6/7 rule, preserved verbatim and still evaluable; `crp2` supersedes it PROSPECTIVELY and may route identity-admitted routes under nine conditions. |
+| Fleet observations | `engine/observation-store.ts` (`readObservationStore`, `exportObservations`, `importObservations`) | Append-only, content-addressed, one file per record. No current-truth file. Transport-neutral: a bundle is one sealed JSON value and nothing here knows how it travels. |
+| Zero-cost authorization | `engine/zero-cost-authorization.ts` (`AUTHORIZATION_IS_NOT_EVIDENCE`, `confirmationStaledByDelta`) | The permission to benchmark free routes, recorded verbatim — and explicitly not evidence that any route is free. |
 | Discovery evidence and staleness | `engine/discovery-store.ts` (`readDiscoveryStore`, `isEvidenceExpired`, `selectableFromStore`, `acceptedRequestEvidenceFor`) | Per machine: the store lives under the campaign root on the machine that ran discovery. |
 | Authorised cohort | `engine/reconciliation.ts` (`AUTHORIZED_COHORT`) | Each authorisation is its own list: Pass 5C, V2, OpenAI API identity, free OpenCode pool. |
-| Identity exception | `engine/provider.ts` (`IDENTITY_ADMISSIBLE_PROVIDERS`, `IDENTITY_UNNAMEABLE_BECAUSE`), `engine/identity-admission.ts` | One rule: Codex and OpenCode. Workspace matrix admissions (`workspace-matrix-admission.ts`) seal a per-provider limitation (`MATRIX_IDENTITY_LIMITATIONS`): Codex's sentence unchanged, OpenCode's own, never mixed. Admitted routes are never routable. |
+| Identity exception | `engine/provider.ts` (`IDENTITY_ADMISSIBLE_PROVIDERS`, `IDENTITY_UNNAMEABLE_BECAUSE`), `engine/identity-admission.ts` | One rule: Codex and OpenCode. Workspace matrix admissions (`workspace-matrix-admission.ts`) seal a per-provider limitation (`MATRIX_IDENTITY_LIMITATIONS`): Codex's sentence unchanged, OpenCode's own, never mixed. Under routing policy `crp2` an admitted route MAY be routed; its identity stays unverifiable and is reported as such. `isRoutable` is unchanged and remains the `crp1` rule sealed records cite. |
 | Cost classification | `engine/cost-eligibility.ts` (`costEligibilityFor`) | `free_confirmed | subscription_included | local | metered | unknown_cost`. Enforced in `RoutingHost` for prose campaigns and in the development planner. |
 | Published prices | `engine/opencode-pricing.ts` | A list price, never a measured charge. Read by the cost estimate and by the OpenCode workspace binding (as its estimate input); never makes a route free — only a signed `free_confirmed` observation does. |
 | Measured spend | `engine/spending.ts`, `engine/frontier-metrics.ts` | Tokens, cost, allowance, retry waste, unproductive tokens. Workspace aggregation reuses `aggregateCandidateMetrics`. |
@@ -63,11 +66,11 @@ are sealed into its evidence format, so merging them would change digests of evi
 
 | Stage | What exists | What does not exist yet |
 |---|---|---|
-| DISCOVER | CLI discovery for Claude, Codex, OpenCode; Ollama local discovery; OpenAI API listing; ladder rows with the command and date they were read from; a deterministic refresh with a per-route delta (`discovery-refresh.ts`) | a scheduler that calls the refresh; a store for snapshots and availability observations shared between machines |
+| DISCOVER | CLI discovery for Claude, Codex, OpenCode; Ollama local discovery; OpenAI API listing; ladder rows with the command and date they were read from; a deterministic refresh with a per-route delta (`discovery-refresh.ts`), persisted and diffed against the previous snapshot taken on this machine (`cernum discovery-refresh`) | a scheduler that calls the refresh |
 | DESCRIBE | billing basis; cost eligibility; OpenCode published prices; the structured `ModelDescription` (context, output limit, tool use, effort levels, digest, runtime, free status — each with a source, or `unknown`) | a surface that renders it; coding/agentic intent from a structured source |
 | BENCHMARK | prose campaigns; development runner; workspace tiers 1–3 and discriminator-one through Claude, Codex, OpenCode and Ollama drivers, with continuation and exact cell selection | live OpenCode or Ollama qualification (not run in this pass) |
-| QUALIFY | identity proof and expiry; identity admission; effort-qualified workspace cells; ranking with adequacy; the unified per-route, per-capability read model (`route-qualification.ts`) with staleness | a persisted qualification index |
-| ROUTE | ranking and recommendation outputs; the Ordra-facing candidate query (`routing-contract.ts`) | an automatic routing policy (by design none yet: the contract returns candidates, never a winner) |
+| QUALIFY | identity proof and expiry; identity admission; effort-qualified workspace cells; ranking with adequacy; the unified per-route, per-capability read model (`route-qualification.ts`) with staleness; persisted staleness consequences | a persisted qualification index (the store references qualification identities; it is not a second evidence ledger) |
+| ROUTE | ranking and recommendation outputs; the Ordra-facing candidate query (`routing-contract.ts`, `crc2`) answered per machine from persisted observations; a versioned routing policy (`routing-policy.ts`) | an automatic route CHOICE (by design none: the contract returns candidates, never a winner) |
 | OBSERVE | attempt telemetry, OTLP observer, applied-effort evidence, throttle status, disposition coverage | continuous post-qualification observation |
 | REQUALIFY | discovery evidence expiry; `notListed`; material-change deltas (`qualificationNowStale`) and `qualificationStaleness` reasons | a requalification trigger or schedule |
 
@@ -84,9 +87,55 @@ Nothing in routing or configuration names a host or a path. What is machine-awar
 - machine identity is a fingerprint key (`machine-availability.ts`), and route availability is an
   observation per machine; a local route's qualification binds to the machine and the weights digest.
 
-What Ordra will still need: somewhere to PERSIST availability observations and snapshots so another
-machine can read them. The representation and the join (`route-qualification.ts`,
-`routing-contract.ts`) exist; the shared store does not.
+- fleet observations persist in an append-only, content-addressed store under the campaign root
+  (`observation-store.ts`), and travel between machines as a sealed bundle.
+
+### The fleet: what one machine may learn from another
+
+Every observation record carries the `cmk1:` key of the machine that **observed** it, and that key
+survives every export and import unchanged. The store separately records, outside the record and
+outside its digest, whether **this** store observed it (`observedHere`) or received it
+(`imported`) — a fact about this copy, not about the observation, which is why the same observation
+has the same identity on both machines and why importing it twice writes one file.
+
+The rule this buys is the one the whole layer exists for: **an imported observation never becomes a
+local one.** A machine can know that *another* machine reported a route available at a time; it
+cannot, on that basis, report the route available *here*. Availability is always answered from
+observations taken on the machine being asked about (`availabilityOnMachine` filters on the
+observer), and `RouteCandidate.availability` names the machine the observation was taken on.
+
+A **local** model's qualification does not transfer between machines, by design and conservatively:
+it binds to the machine key **and** the weights digest, because the same tag on another machine may
+be different weights on hardware that cannot hold them. A **remote** provider route's qualification
+is a fact about the route and may be reused across machines where the provider, model and access
+conditions are equivalent — but its **availability** must still be observed on each machine.
+
+Persistence is **transport-neutral**. An export is one sealed JSON value; nothing in the store knows
+how it travels, and no protocol, service or host path appears in its source. A shared directory is a
+path the operator supplies. A networking daemon can be added later without the format changing.
+
+### Routing identity-admitted routes (policy `crp2`)
+
+Routing policy is a **versioned value**, and both versions ship:
+
+- **`crp1`** — the Pass 6/7 rule: a candidate admitted under the accepted-request identity exception
+  is measured in full and is never a routing target. Preserved verbatim, still evaluable, and still
+  enforced by `isRoutable`, which sealed records cite by name.
+- **`crp2`** — supersedes `crp1` **prospectively**. A route whose served-model identity cannot be
+  independently verified **may** be a routing candidate, and only when all nine conditions hold: it
+  is currently discovered, available on the requested machine, its discovery is fresh, its
+  qualification evidence is fresh, it has sufficient capability-specific evidence, its identity
+  admission is current, the billing posture allows execution, no provider or session state blocks
+  execution, and the task does not require verified identity.
+
+Supersession is not erasure. A record decided under `crp1` keeps `crp1`'s verdict and `crp1`'s
+wording; nothing rewrites a historical approval or a sealed manifest, and a query may ask for `crp1`
+to read a historical decision under the policy that made it.
+
+**Identity is never upgraded by being routed.** Such a route continues to report
+`identityConfidence: unverifiable…` and is never represented as verified. A task that genuinely
+needs the model named sets **`requireVerifiedIdentity`** on its query, which excludes these routes
+and states the exclusion — per query, without changing anything known about the route.
 
 ## Execution of model-modified code (V1 policy)
 

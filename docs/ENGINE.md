@@ -937,6 +937,12 @@ installed and on `PATH`.
 | `lock <name>` | who holds this campaign, and whether they are still alive |
 | `unlock <name>` | release a crashed owner's lock; `--force` for a live one |
 | `endpoints` | which benchmark endpoints are leased, and by which campaign |
+| `discovery-refresh [<provider>…]` | observe what is available on this machine now, persist the snapshot, and report what MOVED against the previous one. Invokes no model |
+| `observations` | what this machine has observed and what it has imported, by machine and by kind |
+| `observations-export --out <file>` | write this machine's observations as one sealed, transport-neutral bundle |
+| `observations-import <bundle>` | import another machine's bundle — digest-checked whole, idempotent, and never promoted to a local observation |
+| `availability [--machine <key>] [--route <key>]` | which routes are observed available, on which machine, and from whose observation |
+| `candidates <capability>` | the routes whose evidence QUALIFIES them, with every exclusion and its reasons. A set, never a winner. `--require-verified-identity` excludes routes whose served identity cannot be verified; `--policy crp1` re-answers under the superseded Pass 6/7 rule |
 | `unlock --endpoint <url>` | release a crashed campaign's hold on an endpoint |
 | `where` | where campaigns live, and whether this command is installed |
 | `install-command` / `uninstall-command` | put the command on your account, or take it off |
