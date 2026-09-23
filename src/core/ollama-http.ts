@@ -131,7 +131,17 @@ export function loopbackHTTPFetch(): FetchLike {
       return;
     }
 
-    let settled = false;
+    // TWO SETTLEMENTS, TRACKED SEPARATELY, because this hands the response over at HEADERS and the
+    // body is drained afterwards. Before the headers arrive a failure REJECTS the call; after them
+    // it fails whoever is reading the body, and the call has already succeeded. Collapsing the two
+    // is what makes a streaming transport report a mid-stream error as a connection failure.
+    let headersSettled = false;
+    let bodyFinished = false;
+    let bodyFailure: Error | undefined;
+    const queue: Buffer[] = [];
+    const waiting: (() => void)[] = [];
+    const wake = (): void => { for (const resume of waiting.splice(0)) resume(); };
+
     let headersTimer: ReturnType<typeof setTimeout> | undefined;
     let bodyTimer: ReturnType<typeof setTimeout> | undefined;
     const clearTimers = (): void => { if (headersTimer) clearTimeout(headersTimer); if (bodyTimer) clearTimeout(bodyTimer); };
@@ -141,33 +151,39 @@ export function loopbackHTTPFetch(): FetchLike {
       method: init.method, headers: init.headers,
     });
 
-    const fail = (error: Error): void => {
-      if (settled) return;
-      settled = true;
+    /** End the body exactly once, however it ended, and never leave a socket or a timer behind. */
+    const finish = (error?: Error): void => {
+      if (bodyFinished) return;
+      bodyFinished = true;
+      bodyFailure = error;
       clearTimers();
       init.signal.removeEventListener('abort', onAbort);
-      request.destroy();
-      reject(error);
+      if (error !== undefined) request.destroy();
+      if (!headersSettled) {
+        headersSettled = true;
+        reject(error ?? new Error('the response ended before any headers arrived'));
+      }
+      wake();
     };
     function onAbort(): void {
       // The caller's own deadline or cancellation. Named the way `fetch` names it so the callers'
       // existing `signal.aborted` branches keep reading the same.
       const error = new Error('The operation was aborted.');
       error.name = 'AbortError';
-      fail(error);
+      finish(error);
     }
 
     // ATTACHED BEFORE ANY EARLY RETURN. `destroy()` makes the request emit `error`, and a request
     // with no `error` listener turns that into an uncaught exception that no caller can catch —
     // so the listener has to exist before anything can possibly destroy it, including the
-    // already-aborted path immediately below. Once settled, `fail` swallows it.
-    request.on('error', (error: Error) => fail(error));
+    // already-aborted path immediately below. Once finished, `finish` swallows it.
+    request.on('error', (error: Error) => finish(error));
 
     if (init.signal.aborted) { onAbort(); return; }
     init.signal.addEventListener('abort', onAbort, { once: true });
 
     if (init.headersTimeoutMilliseconds !== undefined) {
-      headersTimer = setTimeout(() => fail(new Error(`no response headers within ${init.headersTimeoutMilliseconds} ms`)),
+      headersTimer = setTimeout(() => finish(new Error(`no response headers within ${init.headersTimeoutMilliseconds} ms`)),
         init.headersTimeoutMilliseconds);
       headersTimer.unref?.();
     }
@@ -175,20 +191,50 @@ export function loopbackHTTPFetch(): FetchLike {
     request.on('response', (response) => {
       if (headersTimer) { clearTimeout(headersTimer); headersTimer = undefined; }
       if (init.bodyTimeoutMilliseconds !== undefined) {
-        bodyTimer = setTimeout(() => fail(new Error(`response body did not complete within ${init.bodyTimeoutMilliseconds} ms`)),
+        bodyTimer = setTimeout(() => finish(new Error(`response body did not complete within ${init.bodyTimeoutMilliseconds} ms`)),
           init.bodyTimeoutMilliseconds);
         bodyTimer.unref?.();
       }
-      const chunks: Buffer[] = [];
-      response.on('data', (chunk: Buffer) => chunks.push(chunk));
-      response.on('error', (error: Error) => fail(error));
-      response.on('end', () => {
-        if (settled) return;
-        settled = true;
-        clearTimers();
-        init.signal.removeEventListener('abort', onAbort);
-        const text = Buffer.concat(chunks).toString('utf8');
-        resolve({ status: response.statusCode ?? 0, text: async () => text, body: null });
+      response.on('data', (chunk: Buffer) => { queue.push(chunk); wake(); });
+      response.on('error', (error: Error) => finish(error));
+      response.on('end', () => finish());
+
+      // ONE READER OR ONE `text()`, NEVER BOTH: they consume the same queue. Every caller in this
+      // project picks one, and `text()` is memoised so a second call returns the same answer rather
+      // than an empty remainder.
+      let collected: Promise<string> | undefined;
+      const readAll = async (): Promise<string> => {
+        const parts: Buffer[] = [];
+        for (;;) {
+          if (queue.length > 0) { parts.push(...queue.splice(0)); continue; }
+          if (bodyFinished) break;
+          await new Promise<void>((resume) => waiting.push(resume));
+        }
+        if (bodyFailure !== undefined) throw bodyFailure;
+        return Buffer.concat(parts).toString('utf8');
+      };
+
+      const reader: ByteStreamReader = {
+        read: async () => {
+          for (;;) {
+            const chunk = queue.shift();
+            if (chunk !== undefined) return { done: false, value: chunk };
+            if (bodyFinished) {
+              if (bodyFailure !== undefined) throw bodyFailure;
+              return { done: true };
+            }
+            await new Promise<void>((resume) => waiting.push(resume));
+          }
+        },
+        // Cancelling a reader that already finished is harmless; leaving the socket open is not.
+        cancel: async () => { finish(); request.destroy(); },
+      };
+
+      headersSettled = true;
+      resolve({
+        status: response.statusCode ?? 0,
+        text: () => (collected ??= readAll()),
+        body: { getReader: () => reader },
       });
     });
 

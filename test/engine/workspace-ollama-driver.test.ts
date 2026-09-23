@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { FetchLike } from '../../src/core/ollama-http';
+import { streamedChatResponse } from './ollama-stream-fake';
 import { BROKEN_SUM_MEAN } from '../../src/engine/workspace-catalog';
 import { runWorkspaceCase } from '../../src/engine/workspace-execution';
 import { scoreWorkspaceRun } from '../../src/engine/workspace-scoring';
@@ -72,6 +73,22 @@ const reply = (toolCalls: unknown[], content = '', counts = { prompt: 900, evalu
   total_duration: 2_000_000_000, load_duration: 100_000_000,
 });
 
+/** One scripted reply, as the stream that carries it. The terminal event holds the counts, as Ollama's does. */
+function streamedFrom(reply: ChatReply) {
+  const message = (reply.message ?? {}) as Record<string, unknown>;
+  return {
+    model: String(reply.model ?? MODEL),
+    content: typeof message.content === 'string' ? message.content : '',
+    thinking: typeof message.thinking === 'string' ? message.thinking : '',
+    toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls : [],
+    promptEvalCount: reply.prompt_eval_count as number | undefined,
+    evalCount: reply.eval_count as number | undefined,
+    totalDuration: reply.total_duration as number | undefined,
+    loadDuration: reply.load_duration as number | undefined,
+    doneReason: reply.done_reason as string | undefined,
+  };
+}
+
 /** A fake runtime: listing, show, and a scripted sequence of chat replies. Records every request. */
 function fakeRuntime(options: {
   chats: ChatReply[]; digest?: string; digestAfter?: string; capabilities?: string[] | null; contextLength?: number;
@@ -100,7 +117,10 @@ function fakeRuntime(options: {
     if (route === '/api/chat') {
       const next = options.chats[Math.min(chatIndex, options.chats.length - 1)];
       chatIndex += 1;
-      return respond(200, next);
+      // STREAMED, because that is what the driver now asks for and what it must parse. The reply
+      // shapes above are unchanged; `streamedChatResponse` puts them on the wire as NDJSON, in
+      // chunks that do not line up with the events.
+      return streamedChatResponse(streamedFrom(next));
     }
     return respond(404, { error: 'not found' });
   };

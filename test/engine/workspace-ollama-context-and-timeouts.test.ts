@@ -30,6 +30,7 @@ import * as path from 'node:path';
 import {
   FetchLike, HTTP_BACKSTOP_GRACE_MILLISECONDS, httpBackstopTimeoutsFor, loopbackHTTPFetch,
 } from '../../src/core/ollama-http';
+import { streamedChatResponse } from './ollama-stream-fake';
 import { BROKEN_SUM_MEAN } from '../../src/engine/workspace-catalog';
 import { runWorkspaceCase } from '../../src/engine/workspace-execution';
 import {
@@ -88,7 +89,14 @@ function recordingRuntime(options: { contextLength?: number | null; chats?: Chat
       backstops.push({ headers: init.headersTimeoutMilliseconds, body: init.bodyTimeoutMilliseconds });
       const next = chats[Math.min(chatIndex, chats.length - 1)];
       chatIndex += 1;
-      return respond(200, next);
+      const message = (next.message ?? {}) as Record<string, unknown>;
+      return streamedChatResponse({
+        model: MODEL,
+        content: typeof message.content === 'string' ? message.content : '',
+        toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls : [],
+        promptEvalCount: next.prompt_eval_count as number, evalCount: next.eval_count as number,
+        totalDuration: next.total_duration as number, loadDuration: next.load_duration as number,
+      });
     }
     return respond(404, { error: 'not found' });
   };
@@ -268,10 +276,15 @@ describe('the client honours the backstop it is GIVEN, over a real loopback sock
 
   it('the case deadline still refuses a runtime that answers beyond it', async () => {
     // The driver's own AbortController, set from the sealed case deadline, is what ends this — the
-    // backstop is fifteen seconds further out and never gets the chance to fire.
+    // backstop is fifteen seconds further out and never gets the chance to fire. Under streaming the
+    // deadline is an OUTCOME rather than an exception, and it names which kind of silence this was:
+    // the stream never opened, so no token could have arrived.
     const endpoint = await delayedHeaderServer(5_000);
     const client = new LocalRuntimeClient(endpoint, loopbackHTTPFetch());
-    await expect(client.chat({ model: MODEL, messages: [] }, 200)).rejects.toThrow(/did not answer .*before the deadline or a cancellation/);
+    const outcome = await client.chatStream({ model: MODEL, messages: [] }, 200);
+    expect(outcome.outcome).toBe('noFirstTokenBeforeDeadline');
+    expect(outcome.firstTokenMilliseconds).toBeUndefined();
+    expect(outcome.firstTokenUnavailableReason).toMatch(/no token/i);
   });
 });
 
