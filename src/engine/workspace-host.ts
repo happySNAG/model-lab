@@ -144,6 +144,13 @@ export interface WorkspaceAgentUsage extends Record<string, CanonicalValue | und
   localRuntimeVersion?: string;
   localRuntimeEndpoint?: string;
   localModelContextLengthTokens?: number;
+  /**
+   * The window the harness ASKED the runtime to open, which is the model's measured context bounded
+   * by the harness ceiling. Absent where the runtime published no context length and none was asked
+   * for. Recorded beside the measured number rather than replacing it: one is what the model can do,
+   * the other is what this run actually ran in, and a comparison across runs needs both.
+   */
+  localModelContextWindowRequestedTokens?: number;
   localModelSizeBytes?: number;
   /** The `cmk1:` machine key (see `machine-availability.ts`), and the hostname as a label beside it. */
   executionMachine?: string;

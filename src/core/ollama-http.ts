@@ -10,6 +10,7 @@
 //
 // Every request carries its own timeout; cancellation aborts the transfer mid-flight.
 
+import * as http from 'node:http';
 import { CancellationToken } from './adapter';
 import { OllamaChatReport, OllamaChatRequest, OllamaInstalledModel, OllamaModelReport, OllamaRunningModelReport, OllamaStreamChunk,
          OllamaStreamingTransport, OllamaTransport, OllamaTransportFailure, OllamaVersionReport, chatReportFrom, chatReportFromStream,
@@ -59,12 +60,141 @@ export interface ByteStream {
 }
 
 export interface FetchLike {
-  (input: string, init: { method: string; headers?: Record<string, string>; body?: string; signal: AbortSignal }): Promise<{
+  (input: string, init: {
+    method: string; headers?: Record<string, string>; body?: string; signal: AbortSignal;
+    /**
+     * The HTTP-client backstops, in milliseconds, DERIVED FROM the caller's own deadline.
+     *
+     * These are not the authoritative timeout and must never be: the caller's `signal` is. They
+     * exist because the platform `fetch` applies its OWN undefeatable header deadline (Node's
+     * undici defaults to 300_000 ms), which silently kills a legitimate local generation long
+     * before a sealed case deadline is reached. A caller that states its deadline here gets an
+     * HTTP client whose patience is at least that long — and still finite.
+     *
+     * An implementation that cannot honour them ignores them; a fake in a test may assert on them.
+     */
+    headersTimeoutMilliseconds?: number;
+    bodyTimeoutMilliseconds?: number;
+  }): Promise<{
     status: number;
     text(): Promise<string>;
     /** Present on a real `fetch` response. Only the streaming path reads it. */
     body?: ByteStream | null;
   }>;
+}
+
+/**
+ * How much longer than the caller's own deadline the HTTP client is willing to wait.
+ *
+ * The grace is what keeps the CALLER authoritative. If the two deadlines were equal, whichever
+ * timer fired first would decide, and a transport failure would sometimes be reported where a
+ * case timeout is the truth. A small, fixed grace means the caller's abort always lands first,
+ * and the backstop only ever catches a client that is wedged rather than slow.
+ */
+export const HTTP_BACKSTOP_GRACE_MILLISECONDS = 15_000;
+
+/** The header/body backstops for a caller whose own deadline is `deadlineMilliseconds`. Always finite. */
+export function httpBackstopTimeoutsFor(deadlineMilliseconds: number): {
+  headersTimeoutMilliseconds: number; bodyTimeoutMilliseconds: number;
+} {
+  const bounded = Number.isFinite(deadlineMilliseconds) && deadlineMilliseconds > 0 ? Math.floor(deadlineMilliseconds) : 0;
+  const backstop = bounded + HTTP_BACKSTOP_GRACE_MILLISECONDS;
+  return { headersTimeoutMilliseconds: backstop, bodyTimeoutMilliseconds: backstop };
+}
+
+/**
+ * A `FetchLike` over `node:http` that HONOURS the two backstops above.
+ *
+ * WHY NOT `fetch` WITH A DISPATCHER. Node's global `fetch` reads `init.dispatcher`, but it is served
+ * by Node's own internal copy of undici; a dispatcher built from the `undici` package is a different
+ * instance and is rejected with `UND_ERR_INVALID_ARG`. `undici` is also not a dependency of this
+ * project — it is present only under `electron-builder` and `electron` — so importing it in `src/`
+ * would make the engine depend on a package nobody declared. `node:http` is a Node builtin, needs no
+ * dependency, and gives the two timeouts directly, so that is what this uses.
+ *
+ * Loopback is re-checked here as defence in depth: the callers validate their endpoint at
+ * construction, and this refuses anything that is not loopback even if one day one of them does not.
+ */
+export function loopbackHTTPFetch(): FetchLike {
+  return (input, init) => new Promise((resolve, reject) => {
+    let url: URL;
+    try {
+      url = new URL(input);
+    } catch {
+      reject(new Error(`'${input}' is not a URL`));
+      return;
+    }
+    try {
+      validateLoopbackEndpoint(url.origin);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    let settled = false;
+    let headersTimer: ReturnType<typeof setTimeout> | undefined;
+    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimers = (): void => { if (headersTimer) clearTimeout(headersTimer); if (bodyTimer) clearTimeout(bodyTimer); };
+
+    const request = http.request({
+      protocol: url.protocol, hostname: url.hostname, port: url.port, path: `${url.pathname}${url.search}`,
+      method: init.method, headers: init.headers,
+    });
+
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      init.signal.removeEventListener('abort', onAbort);
+      request.destroy();
+      reject(error);
+    };
+    function onAbort(): void {
+      // The caller's own deadline or cancellation. Named the way `fetch` names it so the callers'
+      // existing `signal.aborted` branches keep reading the same.
+      const error = new Error('The operation was aborted.');
+      error.name = 'AbortError';
+      fail(error);
+    }
+
+    // ATTACHED BEFORE ANY EARLY RETURN. `destroy()` makes the request emit `error`, and a request
+    // with no `error` listener turns that into an uncaught exception that no caller can catch —
+    // so the listener has to exist before anything can possibly destroy it, including the
+    // already-aborted path immediately below. Once settled, `fail` swallows it.
+    request.on('error', (error: Error) => fail(error));
+
+    if (init.signal.aborted) { onAbort(); return; }
+    init.signal.addEventListener('abort', onAbort, { once: true });
+
+    if (init.headersTimeoutMilliseconds !== undefined) {
+      headersTimer = setTimeout(() => fail(new Error(`no response headers within ${init.headersTimeoutMilliseconds} ms`)),
+        init.headersTimeoutMilliseconds);
+      headersTimer.unref?.();
+    }
+
+    request.on('response', (response) => {
+      if (headersTimer) { clearTimeout(headersTimer); headersTimer = undefined; }
+      if (init.bodyTimeoutMilliseconds !== undefined) {
+        bodyTimer = setTimeout(() => fail(new Error(`response body did not complete within ${init.bodyTimeoutMilliseconds} ms`)),
+          init.bodyTimeoutMilliseconds);
+        bodyTimer.unref?.();
+      }
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      response.on('error', (error: Error) => fail(error));
+      response.on('end', () => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        init.signal.removeEventListener('abort', onAbort);
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: response.statusCode ?? 0, text: async () => text, body: null });
+      });
+    });
+
+    if (init.body !== undefined) request.write(init.body);
+    request.end();
+  });
 }
 
 export class OllamaHTTPTransport implements OllamaStreamingTransport {

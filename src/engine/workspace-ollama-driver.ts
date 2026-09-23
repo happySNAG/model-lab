@@ -33,7 +33,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { FetchLike, validateLoopbackEndpoint } from '../core/ollama-http';
+import { FetchLike, httpBackstopTimeoutsFor, loopbackHTTPFetch, validateLoopbackEndpoint } from '../core/ollama-http';
 import { CanonicalValue, sha256Text } from './canonical';
 import { machineKey, readMachineFingerprint } from './machine-availability';
 import { resolveInside } from './isolation';
@@ -57,8 +57,37 @@ export const OLLAMA_WORKSPACE_DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
 /** Bounds on the loop. A local model costs no money, and still costs the operator's machine and time. */
 export const OLLAMA_WORKSPACE_MAXIMUM_TURNS = 48;
 export const OLLAMA_WORKSPACE_OUTPUT_TOKENS_PER_TURN = 8_192;
+
+/**
+ * The largest context window this harness will ASK a local runtime to open, in tokens.
+ *
+ * The runtime does not size the window to the conversation: it opens the whole window up front and
+ * holds the KV cache for it in memory. A model that reports 262_144 tokens would therefore have the
+ * harness demand tens of gigabytes before the first turn, on a machine that may not have them — so
+ * asking for a model's full reported context is not the safe reading of "use what was measured".
+ *
+ * What is measured stays measured: `localModelContextLengthTokens` on every record is still the
+ * runtime's own number, untouched. This ceiling bounds the REQUEST, is recorded beside it as
+ * `localModelContextWindowRequestedTokens`, and is raised by an operator who has the memory for it.
+ */
+export const OLLAMA_WORKSPACE_CONTEXT_CEILING_TOKENS = 32_768;
+
 export const OLLAMA_WORKSPACE_MAXIMUM_READ_BYTES = 200_000;
 export const OLLAMA_WORKSPACE_MAXIMUM_LISTED_FILES = 500;
+
+/**
+ * The window to ask for, given what the runtime said the model can do.
+ *
+ * UNKNOWN STAYS UNKNOWN. A runtime that published no context length gets no `num_ctx` at all: the
+ * runtime then applies its own default, which is a fact about the runtime rather than a number this
+ * harness made up. Inventing one here would put a fabricated window on the record beside genuinely
+ * measured ones.
+ */
+export function ollamaWorkspaceContextWindow(contextLengthTokens: number | undefined,
+                                             ceilingTokens: number = OLLAMA_WORKSPACE_CONTEXT_CEILING_TOKENS): number | undefined {
+  if (contextLengthTokens === undefined || !Number.isFinite(contextLengthTokens) || contextLengthTokens <= 0) return undefined;
+  return Math.min(Math.floor(contextLengthTokens), Math.floor(ceilingTokens));
+}
 
 export const OLLAMA_WORKSPACE_SYSTEM_PROMPT = [
   'You are working in a software repository through tools. The repository is your whole world: every path is relative',
@@ -128,7 +157,7 @@ const asNumber = (value: unknown): number | undefined => (typeof value === 'numb
 export class LocalRuntimeClient {
   readonly base: URL;
 
-  constructor(endpoint: string, private readonly fetchImpl: FetchLike = fetch as unknown as FetchLike) {
+  constructor(endpoint: string, private readonly fetchImpl: FetchLike = loopbackHTTPFetch()) {
     this.base = validateLoopbackEndpoint(endpoint);
   }
 
@@ -144,6 +173,11 @@ export class LocalRuntimeClient {
       response = await this.fetchImpl(new URL(route, this.base).toString(), {
         method, headers: { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
+        // DERIVED FROM the deadline above, never a replacement for it: the controller aborts at
+        // `timeoutMilliseconds`, these land a fixed grace later. Without them the platform client
+        // applies its own 300_000 ms header deadline and kills a slow-but-legitimate local
+        // generation while the sealed case deadline still has time left on it.
+        ...httpBackstopTimeoutsFor(timeoutMilliseconds),
       });
     } catch (error) {
       const aborted = controller.signal.aborted;
@@ -268,6 +302,8 @@ export interface OllamaWorkspaceDriverOptions {
   fetch?: FetchLike;
   maximumTurns?: number;
   outputTokensPerTurn?: number;
+  /** The ceiling on the window this harness asks the runtime to open. Defaults to the constant above. */
+  contextCeilingTokens?: number;
   /** The machine, as a fingerprint key and a label. Injected by the tests; read from the OS in life. */
   machine?: { machineKey: string; label: string; platform: string };
 }
@@ -384,6 +420,7 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
       { role: 'user', content: request.instruction },
     ];
     const maximumTurns = this.options.maximumTurns ?? OLLAMA_WORKSPACE_MAXIMUM_TURNS;
+    const contextWindowTokens = ollamaWorkspaceContextWindow(model.contextLengthTokens, this.options.contextCeilingTokens);
     const deadline = startedAt + request.timeoutMilliseconds;
     const reported: string[] = [];
     const counts = { prompt: [] as number[], evaluated: [] as number[], total: [] as number[], load: [] as number[] };
@@ -411,6 +448,7 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
         localRuntimeVersion: runtimeVersion,
         localRuntimeEndpoint: this.endpoint,
         localModelContextLengthTokens: model.contextLengthTokens,
+        localModelContextWindowRequestedTokens: contextWindowTokens,
         localModelSizeBytes: model.sizeBytes,
         executionMachine: machine.machineKey,
         executionMachineLabel: machine.label,
@@ -437,6 +475,12 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
           model: this.options.requestedModelID, messages, tools, stream: false,
           options: {
             num_predict: this.options.outputTokensPerTurn ?? OLLAMA_WORKSPACE_OUTPUT_TOKENS_PER_TURN,
+            // THE WINDOW CERNUM ALREADY MEASURED. Without this the runtime opens its own default
+            // window — 4_096 on current Ollama — whatever the model can actually do, and a workspace
+            // conversation that outgrows it is TRUNCATED: the user turn falls off the front and the
+            // request is rejected for having no user query in it. Absent when the runtime published
+            // no context length, so an unknown stays unknown rather than becoming a number.
+            ...(contextWindowTokens === undefined ? {} : { num_ctx: contextWindowTokens }),
             ...(request.temperatureMilli === undefined ? {} : { temperature: request.temperatureMilli / 1000 }),
             ...(request.seed === undefined ? {} : { seed: request.seed }),
           },
