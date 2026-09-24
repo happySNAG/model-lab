@@ -368,7 +368,24 @@ function installerDirectories(environment: NodeJS.ProcessEnv): string[] {
     path.join(home, '.bun', 'bin'),        // anything installed through Bun
     path.join(home, '.npm-global', 'bin'), // npm with a user-owned prefix
   ];
-  return [...perUser, '/opt/homebrew/bin', '/usr/local/bin'];
+  return [...perUser, ...systemDirectories];
+}
+
+/** Where Homebrew (Apple Silicon, then Intel) and most system-wide installers put a binary. */
+export const DEFAULT_SYSTEM_EXECUTABLE_DIRECTORIES: readonly string[] = ['/opt/homebrew/bin', '/usr/local/bin'];
+
+let systemDirectories: readonly string[] = DEFAULT_SYSTEM_EXECUTABLE_DIRECTORIES;
+
+/**
+ * Replace the machine-wide directories searched after PATH and HOME; `undefined` restores them.
+ *
+ * TEST SEAM ONLY. The per-user directories follow `HOME`, which a test controls through the
+ * environment it passes; these two are absolute, so without this a test asserting "nothing is
+ * installed" asserts it about whichever machine it happens to run on — and fails on any Mac that
+ * has installed the CLI through Homebrew. No product code calls this.
+ */
+export function overrideSystemExecutableDirectories(directories?: readonly string[]): void {
+  systemDirectories = directories ?? DEFAULT_SYSTEM_EXECUTABLE_DIRECTORIES;
 }
 
 /**
