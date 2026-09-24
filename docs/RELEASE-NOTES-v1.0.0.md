@@ -307,11 +307,11 @@ commit, verifying both before it mounts anything:
 ```
 cd ~/Downloads
 # Apple Silicon
-curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/SCRIPTS_COMMIT/scripts/releases/install-cernum-v1.0.0-macos-arm64.sh
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/4378192a491f0846e1ef6a6716be14e712f29e0e/scripts/releases/install-cernum-v1.0.0-macos-arm64.sh
 shasum -a 256 install-cernum-v1.0.0-macos-arm64.sh
 #  07c825cbb00b23ee88f8c16123481a7a3662f27267784c601b4cf98c2ed2e7c1
 # Intel
-curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/SCRIPTS_COMMIT/scripts/releases/install-cernum-v1.0.0-macos-x64.sh
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/4378192a491f0846e1ef6a6716be14e712f29e0e/scripts/releases/install-cernum-v1.0.0-macos-x64.sh
 shasum -a 256 install-cernum-v1.0.0-macos-x64.sh
 #  4ded781ea612f4afc6a368b16b9b28e3ebc9b325bf827638a98c94352dfbadbc
 less install-cernum-v1.0.0-macos-*.sh

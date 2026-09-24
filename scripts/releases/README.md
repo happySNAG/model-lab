@@ -19,7 +19,7 @@ do has changed.
 
 ```bash
 cd ~/Downloads
-curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/SCRIPTS_COMMIT/scripts/releases/install-cernum-v1.0.0-macos-arm64.sh   # or -x64.sh
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/4378192a491f0846e1ef6a6716be14e712f29e0e/scripts/releases/install-cernum-v1.0.0-macos-arm64.sh   # or -x64.sh
 shasum -a 256 install-cernum-v1.0.0-macos-arm64.sh   # compare against the digest in the release notes
 less install-cernum-v1.0.0-macos-arm64.sh            # read it before running it
 bash install-cernum-v1.0.0-macos-arm64.sh
