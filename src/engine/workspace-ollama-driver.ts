@@ -33,7 +33,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { FetchLike, validateLoopbackEndpoint } from '../core/ollama-http';
+import { FetchLike, httpBackstopTimeoutsFor, loopbackHTTPFetch, validateLoopbackEndpoint } from '../core/ollama-http';
 import { CanonicalValue, sha256Text } from './canonical';
 import { machineKey, readMachineFingerprint } from './machine-availability';
 import { resolveInside } from './isolation';
@@ -57,8 +57,45 @@ export const OLLAMA_WORKSPACE_DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
 /** Bounds on the loop. A local model costs no money, and still costs the operator's machine and time. */
 export const OLLAMA_WORKSPACE_MAXIMUM_TURNS = 48;
 export const OLLAMA_WORKSPACE_OUTPUT_TOKENS_PER_TURN = 8_192;
+
+/**
+ * The largest context window this harness will ASK a local runtime to open, in tokens.
+ *
+ * The runtime does not size the window to the conversation: it opens the whole window up front and
+ * holds the KV cache for it in memory. A model that reports 262_144 tokens would therefore have the
+ * harness demand tens of gigabytes before the first turn, on a machine that may not have them — so
+ * asking for a model's full reported context is not the safe reading of "use what was measured".
+ *
+ * What is measured stays measured: `localModelContextLengthTokens` on every record is still the
+ * runtime's own number, untouched. This ceiling bounds the REQUEST, is recorded beside it as
+ * `localModelContextWindowRequestedTokens`, and is raised by an operator who has the memory for it.
+ */
+export const OLLAMA_WORKSPACE_CONTEXT_CEILING_TOKENS = 32_768;
+
 export const OLLAMA_WORKSPACE_MAXIMUM_READ_BYTES = 200_000;
 export const OLLAMA_WORKSPACE_MAXIMUM_LISTED_FILES = 500;
+
+/**
+ * How long the pre-case runtime probe may take. Short on purpose: it is a READ of the runtime's
+ * state, not a wait for it to become free, and a probe that could consume a meaningful slice of a
+ * case deadline would be charging the model for the harness's curiosity. Bounded again by whatever
+ * is left of the case deadline at the moment it runs.
+ */
+export const OLLAMA_WORKSPACE_PROBE_TIMEOUT_MILLISECONDS = 5_000;
+
+/**
+ * The window to ask for, given what the runtime said the model can do.
+ *
+ * UNKNOWN STAYS UNKNOWN. A runtime that published no context length gets no `num_ctx` at all: the
+ * runtime then applies its own default, which is a fact about the runtime rather than a number this
+ * harness made up. Inventing one here would put a fabricated window on the record beside genuinely
+ * measured ones.
+ */
+export function ollamaWorkspaceContextWindow(contextLengthTokens: number | undefined,
+                                             ceilingTokens: number = OLLAMA_WORKSPACE_CONTEXT_CEILING_TOKENS): number | undefined {
+  if (contextLengthTokens === undefined || !Number.isFinite(contextLengthTokens) || contextLengthTokens <= 0) return undefined;
+  return Math.min(Math.floor(contextLengthTokens), Math.floor(ceilingTokens));
+}
 
 export const OLLAMA_WORKSPACE_SYSTEM_PROMPT = [
   'You are working in a software repository through tools. The repository is your whole world: every path is relative',
@@ -75,6 +112,12 @@ export const OLLAMA_IDENTITY_IS_THE_DIGEST =
   'identity on this route is the local runtime\'s weights digest, read before the first turn and again after the last, '
   + 'and compared with the digest frozen when the run was planned. The runtime also names the model tag in every reply. '
   + 'A digest that differs at any of the three readings refuses the attempt: different weights are a different model.';
+
+export const OLLAMA_CHAT_IS_STREAMED =
+  '/api/chat is requested with stream: true and consumed incrementally, so the first token, the arrival of every '
+  + 'event and a mid-generation failure are observed as they happen rather than inferred from one final write. '
+  + 'Cernum\'s deadline and cancellation therefore interrupt an ACTIVE generation. Time to first token is measured '
+  + 'on this process\'s clock and is ABSENT, with a stated reason, when no token ever arrived.';
 
 export const OLLAMA_STAYS_ON_THIS_MACHINE =
   'the endpoint is loopback-only (127.0.0.1, localhost, ::1). The instruction, file contents and tool results are sent '
@@ -124,11 +167,124 @@ interface JSONObject { [key: string]: unknown }
 const isObject = (value: unknown): value is JSONObject => typeof value === 'object' && value !== null && !Array.isArray(value);
 const asNumber = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
 
+/**
+ * HOW ONE STREAMED TURN ENDED, in a vocabulary that keeps apart the things a single `deadlineExceeded`
+ * used to hide.
+ *
+ * The qualification run that motivated this could not tell a model generating slowly from a runtime
+ * that never started, because a NON-streaming `/api/chat` says nothing at all until it says
+ * everything: one write at the end, and until then silence that is identical whether the model is
+ * working, the runtime is wedged, or the socket is already dead. These names are what the driver can
+ * now DISTINGUISH BY OBSERVATION, and each one states what was actually seen:
+ *
+ *   completed                  the runtime sent its terminal `done` event.
+ *   runtimeUnavailable         nothing answered: the request never got response headers.
+ *   requestNeverReachedModel   the runtime answered and streamed NO model event — an HTTP error, or
+ *                              a 200 whose stream closed empty. Nothing observed shows a model ran.
+ *   noFirstTokenBeforeDeadline the stream was open and no token had arrived when the deadline passed.
+ *   generationExceededDeadline tokens WERE arriving; the deadline passed before the model finished.
+ *   streamTransportFailure     the stream broke, or the runtime sent an error event, mid-generation.
+ *   streamPayloadMalformed     a line on the stream was not the JSON object the protocol promises.
+ *   cancelledByCernum          the run was paused or aborted; the stream was closed on purpose.
+ *
+ * These are the DRIVER'S finer reading, recorded beside — never instead of — the closed
+ * `WorkspaceAgentFailureKind` every route shares. `OLLAMA_FAILURE_FOR_STREAM_OUTCOME` is the map, and
+ * it is the only place the two vocabularies meet.
+ */
+export const OLLAMA_STREAM_OUTCOMES = ['completed', 'runtimeUnavailable', 'requestNeverReachedModel',
+  'noFirstTokenBeforeDeadline', 'generationExceededDeadline', 'streamTransportFailure',
+  'streamPayloadMalformed', 'cancelledByCernum'] as const;
+export type OllamaStreamOutcome = (typeof OLLAMA_STREAM_OUTCOMES)[number];
+
+/** The one place the driver's reading is translated into the vocabulary every route shares. */
+export const OLLAMA_FAILURE_FOR_STREAM_OUTCOME: Record<OllamaStreamOutcome, WorkspaceAgentFailureKind | undefined> = {
+  completed: undefined,
+  runtimeUnavailable: 'transport',
+  requestNeverReachedModel: 'transport',
+  noFirstTokenBeforeDeadline: 'timeout',
+  generationExceededDeadline: 'timeout',
+  streamTransportFailure: 'transport',
+  streamPayloadMalformed: 'malformedOutput',
+  cancelledByCernum: 'cancelled',
+};
+
+/**
+ * WHAT `/api/ps` CAN AND CANNOT SAY. It lists the models RESIDENT in the runtime — loaded, holding
+ * memory, with an expiry — and it does not say whether one of them is generating. So these names
+ * report residency, which is what was read, and nothing is inferred about activity from it.
+ *
+ * `noModelResident` IS NOT AN ERROR. Loading a model on the first request is how Ollama normally
+ * works, and the first turn of an attempt paying a load cost is a fact about this machine, recorded
+ * as one. What the probe is for is the other cases: another model already holding the memory this
+ * attempt needs, or a runtime that will not answer a ten-millisecond read at all.
+ */
+export const OLLAMA_RUNTIME_RESIDENCIES = ['noModelResident', 'thisModelResident', 'otherModelsResident',
+  'thisAndOtherModelsResident', 'probeUnsupported', 'probeUnavailable'] as const;
+export type OllamaRuntimeResidency = (typeof OLLAMA_RUNTIME_RESIDENCIES)[number];
+
+export interface OllamaRuntimeProbe {
+  residency: OllamaRuntimeResidency;
+  /** Every model the runtime says is resident, sorted. Empty is a real answer, not a missing one. */
+  residentModels: string[];
+  /** How long the probe itself took. Bounded; there is no loop and nothing waits for a slot. */
+  elapsedMilliseconds: number;
+  /** Why the probe could not answer, when it could not. Absent when it did. */
+  detail?: string;
+}
+
+/**
+ * ONE STREAMED TURN, as observed rather than as reported.
+ *
+ * `firstTokenMilliseconds` IS NEVER INVENTED. It is the arrival of the first event carrying model
+ * output — content, thinking, or a tool call — measured on this process's clock from the instant the
+ * request was written. When no such event ever arrived the field is ABSENT and
+ * `firstTokenUnavailableReason` says what happened instead; a zero, or the time the stream opened,
+ * would each be a number the run did not measure.
+ *
+ * The counts and durations are taken from the TERMINAL event only. Ollama repeats nothing across a
+ * stream, but taking them from wherever they appear would risk summing a figure twice, and a token
+ * count that is sometimes double is worse than one that is sometimes absent.
+ */
+export interface OllamaChatStreamOutcome {
+  outcome: OllamaStreamOutcome;
+  detail?: string;
+  httpStatus?: number;
+  /** The model the runtime named on the stream, when it named one. */
+  model?: string;
+  content: string;
+  thinking: string;
+  toolCalls: JSONObject[];
+  firstEventMilliseconds?: number;
+  firstTokenMilliseconds?: number;
+  firstTokenUnavailableReason?: string;
+  /** Epoch milliseconds, so a caller can place this turn inside the attempt's own wall clock. */
+  streamStartedAt: number;
+  streamEndedAt: number;
+  eventCount: number;
+  malformedEventCount: number;
+  /** The runtime sent its terminal event. False with `completed` is impossible by construction. */
+  done: boolean;
+  doneReason?: string;
+  promptEvalCount?: number;
+  /**
+   * `prompt_eval_cached_count`, which current Ollama reports beside `prompt_eval_count`. RECORDED
+   * AND NOT RECONCILED: this build does not claim to know whether the runtime's evaluated count
+   * includes or excludes it, and a sum built on a guess would put a fabricated input total on the
+   * record. It is kept in the raw per-turn telemetry, where a later reading can settle it.
+   */
+  promptEvalCachedCount?: number;
+  evalCount?: number;
+  totalDurationNanoseconds?: number;
+  loadDurationNanoseconds?: number;
+  promptEvalDurationNanoseconds?: number;
+  evalDurationNanoseconds?: number;
+}
+
 /** A minimal client for the three calls this driver makes. Loopback is checked at construction. */
 export class LocalRuntimeClient {
   readonly base: URL;
 
-  constructor(endpoint: string, private readonly fetchImpl: FetchLike = fetch as unknown as FetchLike) {
+  constructor(endpoint: string, private readonly fetchImpl: FetchLike = loopbackHTTPFetch()) {
     this.base = validateLoopbackEndpoint(endpoint);
   }
 
@@ -139,32 +295,50 @@ export class LocalRuntimeClient {
     const poll = shouldCancel === undefined ? undefined : setInterval(() => { if (shouldCancel()) controller.abort(); }, 200);
     timer.unref?.();
     poll?.unref?.();
-    let response: Awaited<ReturnType<FetchLike>>;
+    // THE DEADLINE COVERS THE WHOLE CALL, HEADERS AND BODY. The transport hands a response over as
+    // soon as its headers land, so a timer cleared at that point would leave the body read bounded
+    // by nothing but the backstop — which is the caller's deadline plus a grace, not the deadline.
     try {
-      response = await this.fetchImpl(new URL(route, this.base).toString(), {
-        method, headers: { 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
-      });
-    } catch (error) {
-      const aborted = controller.signal.aborted;
-      throw new OllamaRuntimeUnavailable('unreachable', aborted
-        ? `the local runtime did not answer ${route} before the deadline or a cancellation`
-        : `the local runtime at ${this.base.origin} did not answer: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      let response: Awaited<ReturnType<FetchLike>>;
+      try {
+        response = await this.fetchImpl(new URL(route, this.base).toString(), {
+          method, headers: { 'content-type': 'application/json' },
+          body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
+          // DERIVED FROM the deadline above, never a replacement for it: the controller aborts at
+          // `timeoutMilliseconds`, these land a fixed grace later. Without them the platform client
+          // applies its own 300_000 ms header deadline and kills a slow-but-legitimate local
+          // generation while the sealed case deadline still has time left on it.
+          ...httpBackstopTimeoutsFor(timeoutMilliseconds),
+        });
+      } catch (error) {
+        const aborted = controller.signal.aborted;
+        throw new OllamaRuntimeUnavailable('unreachable', aborted
+          ? `the local runtime did not answer ${route} before the deadline or a cancellation`
+          : `the local runtime at ${this.base.origin} did not answer: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      }
+      let text: string;
+      try {
+        text = await response.text();
+      } catch (error) {
+        const aborted = controller.signal.aborted;
+        throw new OllamaRuntimeUnavailable('unreachable', aborted
+          ? `the local runtime did not answer ${route} before the deadline or a cancellation`
+          : `the local runtime at ${this.base.origin} did not finish answering ${route}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      }
+      if (response.status === 404) throw new OllamaRuntimeUnavailable('modelNotFound', `${route} answered 404: ${redactSecrets(text).slice(0, 200)}`);
+      if (response.status < 200 || response.status >= 300) {
+        throw new OllamaRuntimeUnavailable('httpFailure', `${route} answered HTTP ${response.status}: ${redactSecrets(text).slice(0, 300)}`);
+      }
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        if (!isObject(parsed)) throw new Error('not an object');
+        return parsed;
+      } catch {
+        throw new OllamaRuntimeUnavailable('malformed', `${route} answered something that is not a JSON object`);
+      }
     } finally {
       clearTimeout(timer);
       if (poll) clearInterval(poll);
-    }
-    const text = await response.text();
-    if (response.status === 404) throw new OllamaRuntimeUnavailable('modelNotFound', `${route} answered 404: ${redactSecrets(text).slice(0, 200)}`);
-    if (response.status < 200 || response.status >= 300) {
-      throw new OllamaRuntimeUnavailable('httpFailure', `${route} answered HTTP ${response.status}: ${redactSecrets(text).slice(0, 300)}`);
-    }
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      if (!isObject(parsed)) throw new Error('not an object');
-      return parsed;
-    } catch {
-      throw new OllamaRuntimeUnavailable('malformed', `${route} answered something that is not a JSON object`);
     }
   }
 
@@ -202,8 +376,243 @@ export class LocalRuntimeClient {
     return model;
   }
 
-  async chat(body: JSONObject, timeoutMilliseconds: number, shouldCancel?: () => boolean): Promise<JSONObject> {
-    return this.call('POST', 'api/chat', body, timeoutMilliseconds, shouldCancel);
+  /**
+   * The RUNTIME'S OWN STATE, read once and briefly, before a case is asked to run in it.
+   *
+   * BOUNDED AND NEVER A WAIT. A probe that polled until a slot freed would turn a measurement into a
+   * queue, and the time spent queueing would land on the model's record as latency. So this asks
+   * once, inside `timeoutMilliseconds`, and reports what it got — including "I could not ask".
+   */
+  async probe(modelName: string, timeoutMilliseconds: number): Promise<OllamaRuntimeProbe> {
+    const startedAt = Date.now();
+    try {
+      const reply = await this.call('GET', 'api/ps', undefined, Math.max(1, Math.floor(timeoutMilliseconds)));
+      const rows = Array.isArray(reply.models) ? reply.models.filter(isObject) : [];
+      const names = [...new Set(rows
+        .map((row) => (typeof row.name === 'string' ? row.name : typeof row.model === 'string' ? row.model : ''))
+        .filter((name) => name.length > 0))].sort();
+      const mine = names.some((name) => name === modelName || name === `${modelName}:latest`);
+      const others = names.some((name) => name !== modelName && name !== `${modelName}:latest`);
+      const residency: OllamaRuntimeResidency = mine && others ? 'thisAndOtherModelsResident'
+        : mine ? 'thisModelResident' : others ? 'otherModelsResident' : 'noModelResident';
+      return { residency, residentModels: names, elapsedMilliseconds: Date.now() - startedAt };
+    } catch (error) {
+      const unavailable = error instanceof OllamaRuntimeUnavailable ? error : undefined;
+      // A runtime too old for `/api/ps` is not a broken runtime, and saying so would be a false
+      // adverse finding about the machine. The two are kept apart.
+      const residency: OllamaRuntimeResidency = unavailable?.kind === 'modelNotFound' ? 'probeUnsupported' : 'probeUnavailable';
+      return {
+        residency, residentModels: [], elapsedMilliseconds: Date.now() - startedAt,
+        detail: redactSecrets(error instanceof Error ? error.message : String(error)),
+      };
+    }
+  }
+
+  /**
+   * One chat turn, STREAMED, so that what happened can be seen while it happens.
+   *
+   * WHY THIS REPLACED A NON-STREAMING CALL. `/api/chat` with `stream: false` writes nothing until the
+   * generation is complete. Until that write, "the model is thinking", "the runtime never started",
+   * "another model holds the slot" and "the socket died ten minutes ago" are the same observation:
+   * silence. On a machine where a turn takes minutes, that is most of the run. Streaming makes the
+   * first token an OBSERVABLE, lets Cernum's deadline and cancellation interrupt an ACTIVE
+   * generation rather than a completed one, and surfaces a runtime failure when it happens instead
+   * of at the end.
+   *
+   * WHAT THIS DOES NOT CLAIM. It is not evidence about any upstream defect. It is a better
+   * instrument, and a Cernum-side mitigation for the failure mode qualification ran into.
+   *
+   * THIS METHOD DOES NOT THROW FOR ANYTHING THE STREAM DID. Every ending is an `outcome`, because
+   * collapsing them into one exception is exactly the loss of distinction this exists to undo.
+   */
+  async chatStream(body: JSONObject, timeoutMilliseconds: number, shouldCancel?: () => boolean): Promise<OllamaChatStreamOutcome> {
+    const streamStartedAt = Date.now();
+    const state = {
+      content: '', thinking: '', toolCalls: [] as JSONObject[], eventCount: 0, malformedEventCount: 0,
+      done: false, model: undefined as string | undefined, doneReason: undefined as string | undefined,
+      firstEventMilliseconds: undefined as number | undefined, firstTokenMilliseconds: undefined as number | undefined,
+      promptEvalCount: undefined as number | undefined, promptEvalCachedCount: undefined as number | undefined,
+      evalCount: undefined as number | undefined,
+      totalDurationNanoseconds: undefined as number | undefined, loadDurationNanoseconds: undefined as number | undefined,
+      promptEvalDurationNanoseconds: undefined as number | undefined, evalDurationNanoseconds: undefined as number | undefined,
+    };
+    const settle = (outcome: OllamaStreamOutcome, detail?: string, httpStatus?: number): OllamaChatStreamOutcome => ({
+      outcome, detail, httpStatus, model: state.model, content: state.content, thinking: state.thinking,
+      toolCalls: state.toolCalls, firstEventMilliseconds: state.firstEventMilliseconds,
+      firstTokenMilliseconds: state.firstTokenMilliseconds,
+      // ABSENT WITH A REASON, never a fabricated zero. Whoever reads the record is told which.
+      ...(state.firstTokenMilliseconds === undefined
+        ? { firstTokenUnavailableReason: firstTokenUnavailableReasonFor(outcome, state.eventCount) } : {}),
+      streamStartedAt, streamEndedAt: Date.now(), eventCount: state.eventCount,
+      malformedEventCount: state.malformedEventCount, done: state.done, doneReason: state.doneReason,
+      promptEvalCount: state.promptEvalCount, promptEvalCachedCount: state.promptEvalCachedCount, evalCount: state.evalCount,
+      totalDurationNanoseconds: state.totalDurationNanoseconds, loadDurationNanoseconds: state.loadDurationNanoseconds,
+      promptEvalDurationNanoseconds: state.promptEvalDurationNanoseconds, evalDurationNanoseconds: state.evalDurationNanoseconds,
+    });
+
+    const controller = new AbortController();
+    let deadlinePassed = false;
+    let cancelled = false;
+    const timer = setTimeout(() => { deadlinePassed = true; controller.abort(); }, Math.max(0, timeoutMilliseconds));
+    const poll = shouldCancel === undefined ? undefined : setInterval(() => {
+      if (shouldCancel()) { cancelled = true; controller.abort(); }
+    }, 200);
+    timer.unref?.();
+    poll?.unref?.();
+
+    /** How an interruption is read, given whether anything had been generated when it landed. */
+    const interrupted = (): OllamaChatStreamOutcome | undefined => {
+      if (cancelled || shouldCancel?.() === true) return settle('cancelledByCernum', 'Cernum paused or aborted the run and the stream was closed');
+      if (deadlinePassed) {
+        return state.firstTokenMilliseconds === undefined
+          ? settle('noFirstTokenBeforeDeadline', `the stream was open for ${Date.now() - streamStartedAt} ms and no token had arrived when the deadline passed`)
+          : settle('generationExceededDeadline', `the model was generating — first token at ${state.firstTokenMilliseconds} ms — and the deadline passed before it finished`);
+      }
+      return undefined;
+    };
+
+    try {
+      let response: Awaited<ReturnType<FetchLike>>;
+      try {
+        response = await this.fetchImpl(new URL('api/chat', this.base).toString(), {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...body, stream: true }), signal: controller.signal,
+          ...httpBackstopTimeoutsFor(timeoutMilliseconds),
+        });
+      } catch (error) {
+        return interrupted() ?? settle('runtimeUnavailable',
+          `the local runtime at ${this.base.origin} never answered api/chat with response headers: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      }
+      if (response.status < 200 || response.status >= 300) {
+        let text = '';
+        try { text = await response.text(); } catch { /* the status is the fact; the body is the courtesy */ }
+        return settle('requestNeverReachedModel',
+          `api/chat answered HTTP ${response.status} and streamed no model event: ${redactSecrets(text).slice(0, 300)}`, response.status);
+      }
+      if (!response.body) {
+        return settle('streamTransportFailure',
+          'the runtime accepted a streaming request and returned no readable stream, so nothing could be observed as it arrived');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffered = '';
+      let stopped: OllamaChatStreamOutcome | undefined;
+
+      /** One NDJSON line. Returns a settled outcome when this line ENDS the stream, else undefined. */
+      const absorb = (line: string): OllamaChatStreamOutcome | undefined => {
+        let event: unknown;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          state.malformedEventCount += 1;
+          return settle('streamPayloadMalformed',
+            `a line on the api/chat stream was not JSON, after ${state.eventCount} well-formed event(s): ${redactSecrets(line).slice(0, 200)}`);
+        }
+        if (!isObject(event)) {
+          state.malformedEventCount += 1;
+          return settle('streamPayloadMalformed', `a line on the api/chat stream decoded to something that is not a JSON object`);
+        }
+        if (typeof event.error === 'string' && event.error.length > 0) {
+          // The runtime's own failure, told on the stream. Whether a model ran at all is what
+          // separates the two readings, and the event count is what says.
+          return settle(state.eventCount === 0 ? 'requestNeverReachedModel' : 'streamTransportFailure',
+            `the runtime sent an error event: ${redactSecrets(event.error).slice(0, 300)}`);
+        }
+        const at = Date.now() - streamStartedAt;
+        state.eventCount += 1;
+        if (state.firstEventMilliseconds === undefined) state.firstEventMilliseconds = at;
+        if (typeof event.model === 'string' && event.model.length > 0) state.model = event.model;
+
+        const message = isObject(event.message) ? event.message : undefined;
+        const content = typeof message?.content === 'string' ? message.content : '';
+        const thinking = typeof message?.thinking === 'string' ? message.thinking : '';
+        const calls = Array.isArray(message?.tool_calls) ? message.tool_calls.filter(isObject) : [];
+        // A TOKEN, not an event. Ollama opens a stream before the model has produced anything, and
+        // counting that as the first token would report a time to first token the model never earned.
+        if (state.firstTokenMilliseconds === undefined && (content.length > 0 || thinking.length > 0 || calls.length > 0)) {
+          state.firstTokenMilliseconds = at;
+        }
+        state.content += content;
+        state.thinking += thinking;
+        state.toolCalls.push(...calls);
+
+        if (event.done === true) {
+          // THE TERMINAL EVENT IS THE ONLY SOURCE OF THE COUNTS. Reading them wherever they appeared
+          // would risk adding one twice, and a token count that is sometimes doubled is worse than
+          // one that is sometimes absent.
+          state.done = true;
+          if (typeof event.done_reason === 'string') state.doneReason = event.done_reason;
+          state.promptEvalCount = asNumber(event.prompt_eval_count);
+          state.promptEvalCachedCount = asNumber(event.prompt_eval_cached_count);
+          state.evalCount = asNumber(event.eval_count);
+          state.totalDurationNanoseconds = asNumber(event.total_duration);
+          state.loadDurationNanoseconds = asNumber(event.load_duration);
+          state.promptEvalDurationNanoseconds = asNumber(event.prompt_eval_duration);
+          state.evalDurationNanoseconds = asNumber(event.eval_duration);
+          return settle('completed');
+        }
+        return undefined;
+      };
+
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          // A NETWORK CHUNK IS NOT A JSON EVENT. One read can carry half an object, three whole
+          // ones, or a boundary in the middle of a multi-byte character — so the decoder is told
+          // the input is a stream and the remainder is carried forward rather than parsed.
+          if (value !== undefined) buffered += decoder.decode(value, { stream: true });
+          let newline = buffered.indexOf('\n');
+          while (newline >= 0) {
+            const line = buffered.slice(0, newline).trim();
+            buffered = buffered.slice(newline + 1);
+            if (line.length > 0) {
+              stopped = absorb(line);
+              if (stopped !== undefined) break;
+            }
+            newline = buffered.indexOf('\n');
+          }
+          if (stopped !== undefined) break;
+        }
+        if (stopped === undefined) {
+          buffered += decoder.decode();
+          const trailing = buffered.trim();
+          // A LAST LINE WITH NO NEWLINE IS STILL A LINE. Ollama ends its stream with one often enough.
+          if (trailing.length > 0) stopped = absorb(trailing);
+        }
+      } catch (error) {
+        return interrupted() ?? settle(state.eventCount === 0 ? 'requestNeverReachedModel' : 'streamTransportFailure',
+          `the api/chat stream broke after ${state.eventCount} event(s): ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      } finally {
+        // Cancelling a reader that already finished is harmless; leaving one open leaks the socket.
+        await reader.cancel().catch(() => undefined);
+      }
+
+      if (stopped !== undefined) return stopped;
+      return interrupted() ?? settle(state.eventCount === 0 ? 'requestNeverReachedModel' : 'streamTransportFailure',
+        state.eventCount === 0
+          ? 'the runtime answered api/chat with HTTP 200 and closed the stream without a single event'
+          : `the api/chat stream ended after ${state.eventCount} event(s) without the runtime's terminal done event`);
+    } finally {
+      clearTimeout(timer);
+      if (poll) clearInterval(poll);
+    }
+  }
+}
+
+/** Why no time to first token is being recorded. Never a number; always a stated reason. */
+function firstTokenUnavailableReasonFor(outcome: OllamaStreamOutcome, eventCount: number): string {
+  switch (outcome) {
+    case 'runtimeUnavailable': return 'the runtime never answered with response headers, so no stream was ever open';
+    case 'requestNeverReachedModel': return 'the runtime answered and streamed no model event, so nothing this driver saw shows a model running';
+    case 'noFirstTokenBeforeDeadline': return 'the stream was open and no token had arrived when the deadline passed';
+    case 'streamTransportFailure': return `the stream broke or the runtime failed after ${eventCount} event(s) and before any token`;
+    case 'streamPayloadMalformed': return 'the stream carried a payload that is not the protocol\'s, and no token was read from it';
+    case 'cancelledByCernum': return 'Cernum paused or aborted the run before any token arrived';
+    case 'generationExceededDeadline': return 'the deadline passed mid-generation (unreachable: a token had already been timed)';
+    case 'completed': return 'the turn completed without the runtime ever emitting content, thinking or a tool call';
+    default: return 'no token was observed on this turn';
   }
 }
 
@@ -268,6 +677,8 @@ export interface OllamaWorkspaceDriverOptions {
   fetch?: FetchLike;
   maximumTurns?: number;
   outputTokensPerTurn?: number;
+  /** The ceiling on the window this harness asks the runtime to open. Defaults to the constant above. */
+  contextCeilingTokens?: number;
   /** The machine, as a fingerprint key and a label. Injected by the tests; read from the OS in life. */
   machine?: { machineKey: string; label: string; platform: string };
 }
@@ -331,11 +742,14 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
       return { machineKey: machineKey(fingerprint), label: fingerprint.hostname, platform: `${fingerprint.platform}-${fingerprint.architecture}` };
     })();
     const notEnforceable = [OLLAMA_COMMANDS_ARE_SEALED_CHECKS_ONLY, OLLAMA_IDENTITY_IS_THE_DIGEST,
-      'the runtime\'s token counts are recorded as reported; a figure a reply omits is absent, never zero or estimated'];
+      'the runtime\'s token counts are recorded as reported; a figure a reply omits is absent, never zero or estimated',
+      'the pre-case runtime probe reads /api/ps, which reports which models are RESIDENT and not whether one is '
+      + 'generating. No model resident is the ordinary case — Ollama loads on request — and is never recorded as a fault.'];
     const baseIsolation = [
       `harness ${OLLAMA_WORKSPACE_HARNESS_VERSION}: Cernum's own loop, at most ${this.options.maximumTurns ?? OLLAMA_WORKSPACE_MAXIMUM_TURNS} `
         + `turns of at most ${this.options.outputTokensPerTurn ?? OLLAMA_WORKSPACE_OUTPUT_TOKENS_PER_TURN} output tokens each`,
       'every file read and write performed by Cernum through resolveInside, confined to the workspace',
+      OLLAMA_CHAT_IS_STREAMED,
       OLLAMA_STAYS_ON_THIS_MACHINE,
       `endpoint ${this.endpoint} on ${machine.label} (${machine.machineKey}, ${machine.platform})`,
     ];
@@ -384,33 +798,64 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
       { role: 'user', content: request.instruction },
     ];
     const maximumTurns = this.options.maximumTurns ?? OLLAMA_WORKSPACE_MAXIMUM_TURNS;
+    const contextWindowTokens = ollamaWorkspaceContextWindow(model.contextLengthTokens, this.options.contextCeilingTokens);
     const deadline = startedAt + request.timeoutMilliseconds;
+
+    // THE RUNTIME'S STATE, BEFORE THIS CASE IS ASKED TO RUN IN IT. One bounded read, never a wait:
+    // see `LocalRuntimeClient.probe`. What it finds is recorded and disclosed, and it decides
+    // nothing — a runtime with no model resident is the ordinary case, because Ollama loads on
+    // request, and a first turn that pays a load cost is a fact about this machine.
+    const probe = await client.probe(this.options.requestedModelID,
+      Math.max(1, Math.min(OLLAMA_WORKSPACE_PROBE_TIMEOUT_MILLISECONDS, deadline - Date.now())));
+
     const reported: string[] = [];
     const counts = { prompt: [] as number[], evaluated: [] as number[], total: [] as number[], load: [] as number[] };
+    const streams: OllamaChatStreamOutcome[] = [];
     let thinkingSeen = false;
     let finalMessage: string | undefined;
     let failure: { kind: WorkspaceAgentFailureKind; detail: string } | undefined;
-    let firstReplyMilliseconds: number | undefined;
+    /** The first token of the attempt, on this process's clock, from the attempt's own start. */
+    let firstTokenMilliseconds: number | undefined;
     let turns = 0;
 
     const usage = (): WorkspaceAgentUsage => {
       const sum = (values: number[]): number | undefined => (values.length === 0 ? undefined : values.reduce((a, b) => a + b, 0));
       const reportedModelID = reported[reported.length - 1] ?? '';
+      const last = streams[streams.length - 1];
+      const tokenless = streams.find((stream) => stream.firstTokenMilliseconds === undefined);
       return {
         inputTokens: sum(counts.prompt),
         freshInputTokens: sum(counts.prompt),
         visibleOutputTokens: sum(counts.evaluated),
         ...(thinkingSeen ? { outputTokenSemantics: 'evalCountIncludesThinking' } : {}),
-        observedFirstOutputMilliseconds: firstReplyMilliseconds,
+        // THE FIRST TOKEN, not the first completed reply. Under the non-streaming driver this field
+        // could only ever hold the moment a whole turn came back, which on a machine where a turn
+        // takes minutes was a time-to-first-token wrong by minutes. Absent when no token ever
+        // arrived, with `localFirstTokenUnavailableReason` saying why.
+        observedFirstOutputMilliseconds: firstTokenMilliseconds,
+        ...(firstTokenMilliseconds === undefined && tokenless !== undefined
+          ? { localFirstTokenUnavailableReason: tokenless.firstTokenUnavailableReason } : {}),
         providerReportedDurationMilliseconds: counts.total.length === 0 ? undefined : Math.round(sum(counts.total)! / 1e6),
         numTurns: turns,
         identityState: reportedModelID.length === 0 ? 'unverifiable' : verifyProviderIdentity(this.options.requestedModelID, reportedModelID).state,
         participantIDs: [...new Set(reported)].sort(),
         terminalReason: failure?.kind ?? (finalMessage === undefined ? undefined : 'stop'),
+        // THE DRIVER'S FINER READING, beside the shared vocabulary above rather than in place of it.
+        // `terminalReason` stays the closed kind every route uses; this says which of the several
+        // things that kind can mean actually happened. See `OLLAMA_STREAM_OUTCOMES`.
+        localStreamOutcome: last?.outcome,
+        localStreamOutcomes: streams.map((stream) => stream.outcome),
+        localStreamEventCount: streams.length === 0 ? undefined : streams.reduce((total, stream) => total + stream.eventCount, 0),
+        localStreamMalformedEventCount: streams.length === 0 ? undefined : streams.reduce((total, stream) => total + stream.malformedEventCount, 0),
+        localRuntimeResidencyBefore: probe.residency,
+        localRuntimeResidentModelsBefore: probe.residentModels,
+        localRuntimeProbeMilliseconds: probe.elapsedMilliseconds,
+        ...(probe.detail === undefined ? {} : { localRuntimeProbeDetail: probe.detail }),
         localModelDigest: model.digest,
         localRuntimeVersion: runtimeVersion,
         localRuntimeEndpoint: this.endpoint,
         localModelContextLengthTokens: model.contextLengthTokens,
+        localModelContextWindowRequestedTokens: contextWindowTokens,
         localModelSizeBytes: model.sizeBytes,
         executionMachine: machine.machineKey,
         executionMachineLabel: machine.label,
@@ -418,6 +863,34 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
         rawUsage: {
           promptEvalCounts: counts.prompt, evalCounts: counts.evaluated,
           loadDurationNanoseconds: counts.load, totalDurationNanoseconds: counts.total,
+          // ONE ROW PER STREAMED TURN. This is what makes a wall clock decomposable after the fact:
+          // when the stream opened, when the first token landed, how many events carried it, how
+          // long the runtime says it spent, and how the turn ended.
+          streamedTurns: streams.map((stream, index) => ({
+            turn: index + 1,
+            outcome: stream.outcome,
+            detail: stream.detail ?? null,
+            streamOpenedAtMillisecondsIntoAttempt: stream.streamStartedAt - startedAt,
+            streamClosedAtMillisecondsIntoAttempt: stream.streamEndedAt - startedAt,
+            firstEventMilliseconds: stream.firstEventMilliseconds ?? null,
+            firstTokenMilliseconds: stream.firstTokenMilliseconds ?? null,
+            firstTokenUnavailableReason: stream.firstTokenUnavailableReason ?? null,
+            eventCount: stream.eventCount,
+            malformedEventCount: stream.malformedEventCount,
+            done: stream.done,
+            doneReason: stream.doneReason ?? null,
+            promptEvalCount: stream.promptEvalCount ?? null,
+            promptEvalCachedCount: stream.promptEvalCachedCount ?? null,
+            evalCount: stream.evalCount ?? null,
+            totalDurationNanoseconds: stream.totalDurationNanoseconds ?? null,
+            loadDurationNanoseconds: stream.loadDurationNanoseconds ?? null,
+            promptEvalDurationNanoseconds: stream.promptEvalDurationNanoseconds ?? null,
+            evalDurationNanoseconds: stream.evalDurationNanoseconds ?? null,
+          })),
+          runtimeProbe: {
+            residency: probe.residency, residentModels: probe.residentModels,
+            elapsedMilliseconds: probe.elapsedMilliseconds, detail: probe.detail ?? null,
+          },
         } as unknown as CanonicalValue,
       };
     };
@@ -431,37 +904,59 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
         break;
       }
       turns += 1;
-      let reply: JSONObject;
-      try {
-        reply = await client.chat({
-          model: this.options.requestedModelID, messages, tools, stream: false,
-          options: {
-            num_predict: this.options.outputTokensPerTurn ?? OLLAMA_WORKSPACE_OUTPUT_TOKENS_PER_TURN,
-            ...(request.temperatureMilli === undefined ? {} : { temperature: request.temperatureMilli / 1000 }),
-            ...(request.seed === undefined ? {} : { seed: request.seed }),
-          },
-        }, remaining, request.shouldCancel);
-      } catch (error) {
-        const unavailable = error instanceof OllamaRuntimeUnavailable ? error : undefined;
-        const cancelled = request.shouldCancel?.() === true;
-        failure = cancelled ? { kind: 'cancelled', detail: 'the run was paused or aborted mid-turn' }
-          : Date.now() >= deadline ? { kind: 'timeout', detail: `the attempt's ${request.timeoutMilliseconds} ms deadline passed mid-turn` }
-            : unavailable?.kind === 'modelNotFound' ? { kind: 'notInstalled', detail: `LOCAL RUNTIME: ${unavailable.message}` }
-              : unavailable?.kind === 'malformed' ? { kind: 'malformedOutput', detail: unavailable.message }
-                : { kind: 'transport', detail: `LOCAL RUNTIME UNAVAILABLE mid-attempt: ${redactSecrets(error instanceof Error ? error.message : String(error))}` };
+      const stream = await client.chatStream({
+        model: this.options.requestedModelID, messages, tools,
+        options: {
+          num_predict: this.options.outputTokensPerTurn ?? OLLAMA_WORKSPACE_OUTPUT_TOKENS_PER_TURN,
+          // THE WINDOW CERNUM ALREADY MEASURED. Without this the runtime opens its own default
+          // window — 4_096 on current Ollama — whatever the model can actually do, and a workspace
+          // conversation that outgrows it is TRUNCATED: the user turn falls off the front and the
+          // request is rejected for having no user query in it. Absent when the runtime published
+          // no context length, so an unknown stays unknown rather than becoming a number.
+          ...(contextWindowTokens === undefined ? {} : { num_ctx: contextWindowTokens }),
+          ...(request.temperatureMilli === undefined ? {} : { temperature: request.temperatureMilli / 1000 }),
+          ...(request.seed === undefined ? {} : { seed: request.seed }),
+        },
+      }, remaining, request.shouldCancel);
+      streams.push(stream);
+      if (stream.model !== undefined && stream.model.length > 0) reported.push(stream.model);
+      // THE ATTEMPT'S FIRST TOKEN, placed on the attempt's clock: where in the attempt the turn's
+      // stream opened, plus how far into that stream the token landed.
+      if (firstTokenMilliseconds === undefined && stream.firstTokenMilliseconds !== undefined) {
+        firstTokenMilliseconds = (stream.streamStartedAt - startedAt) + stream.firstTokenMilliseconds;
+      }
+      // THE COUNTS COME FROM THE TERMINAL EVENT AND NOWHERE ELSE, so a turn that ended without one
+      // contributes nothing rather than a partial figure dressed as a total.
+      if (stream.promptEvalCount !== undefined) counts.prompt.push(stream.promptEvalCount);
+      if (stream.evalCount !== undefined) counts.evaluated.push(stream.evalCount);
+      if (stream.totalDurationNanoseconds !== undefined) counts.total.push(stream.totalDurationNanoseconds);
+      if (stream.loadDurationNanoseconds !== undefined) counts.load.push(stream.loadDurationNanoseconds);
+
+      if (stream.outcome !== 'completed') {
+        // WHAT HAD ARRIVED IS KEPT. Under the non-streaming driver a turn that did not finish left
+        // NOTHING on the record — the whole reply was still in the runtime. What the model had
+        // actually produced before the stream ended is evidence, and it is recorded as the partial
+        // thing it is rather than as a complete turn.
+        if (stream.thinking.length > 0) {
+          thinkingSeen = true;
+          request.transcript.emit('message', 'agentReported', request.attemptIndex, stream.thinking,
+            { channel: 'thinking', reason: `partialBefore:${stream.outcome}`, textDigest: sha256Text(stream.thinking),
+              textByteCount: Buffer.byteLength(stream.thinking, 'utf8') });
+        }
+        if (stream.content.length > 0) {
+          request.transcript.emit('message', 'agentReported', request.attemptIndex, stream.content,
+            { channel: 'visible', reason: `partialBefore:${stream.outcome}`, textDigest: sha256Text(stream.content),
+              textByteCount: Buffer.byteLength(stream.content, 'utf8') });
+        }
+        // ONE TRANSLATION, IN ONE PLACE. The shared kind is what every route's records compare on;
+        // the outcome is what this route observed, and it is carried onto the record intact.
+        const kind = stream.httpStatus === 404 ? 'notInstalled' : OLLAMA_FAILURE_FOR_STREAM_OUTCOME[stream.outcome] ?? 'transport';
+        failure = { kind, detail: `${stream.outcome}: ${stream.detail ?? 'the streamed turn did not complete'}` };
         break;
       }
-      if (firstReplyMilliseconds === undefined) firstReplyMilliseconds = Date.now() - startedAt;
-      if (typeof reply.model === 'string' && reply.model.length > 0) reported.push(reply.model);
-      const prompt = asNumber(reply.prompt_eval_count); if (prompt !== undefined) counts.prompt.push(prompt);
-      const evaluated = asNumber(reply.eval_count); if (evaluated !== undefined) counts.evaluated.push(evaluated);
-      const total = asNumber(reply.total_duration); if (total !== undefined) counts.total.push(total);
-      const load = asNumber(reply.load_duration); if (load !== undefined) counts.load.push(load);
 
-      const message = isObject(reply.message) ? reply.message : undefined;
-      if (message === undefined) { failure = { kind: 'malformedOutput', detail: 'the runtime replied with no message object' }; break; }
-      const content = typeof message.content === 'string' ? message.content : '';
-      const thinking = typeof message.thinking === 'string' ? message.thinking : '';
+      const content = stream.content;
+      const thinking = stream.thinking;
       if (thinking.length > 0) {
         thinkingSeen = true;
         request.transcript.emit('message', 'agentReported', request.attemptIndex, thinking,
@@ -471,7 +966,7 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
         request.transcript.emit('message', 'agentReported', request.attemptIndex, content,
           { channel: 'visible', textDigest: sha256Text(content), textByteCount: Buffer.byteLength(content, 'utf8') });
       }
-      const calls = Array.isArray(message.tool_calls) ? message.tool_calls.filter(isObject) : [];
+      const calls = stream.toolCalls;
       messages.push({ role: 'assistant', content, ...(calls.length > 0 ? { tool_calls: calls } : {}) } as ChatMessage);
       if (calls.length === 0) { finalMessage = content.trim().length > 0 ? content.trim() : undefined; break; }
 
@@ -512,7 +1007,11 @@ export class OllamaWorkspaceDriver implements WorkspaceAgentDriver {
       reportedModelID,
       unexpressed, notEnforceable,
       activeIsolation: [...baseIsolation, `runtime ${runtimeVersion ?? '(version unreported)'} · weights digest ${model.digest} `
-        + `verified before the first turn${digestAfter === undefined ? '' : ' and after the last'}`, WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX],
+        + `verified before the first turn${digestAfter === undefined ? '' : ' and after the last'}`,
+      `runtime state before this case: ${probe.residency}`
+        + `${probe.residentModels.length === 0 ? '' : ` (resident: ${probe.residentModels.join(', ')})`}`
+        + `${probe.detail === undefined ? '' : ` — ${probe.detail}`}, read in ${probe.elapsedMilliseconds} ms`,
+      WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX],
       elapsedMilliseconds: Date.now() - startedAt,
       usage: usage(),
       events: events(),

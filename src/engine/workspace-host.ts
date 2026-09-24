@@ -144,7 +144,35 @@ export interface WorkspaceAgentUsage extends Record<string, CanonicalValue | und
   localRuntimeVersion?: string;
   localRuntimeEndpoint?: string;
   localModelContextLengthTokens?: number;
+  /**
+   * The window the harness ASKED the runtime to open, which is the model's measured context bounded
+   * by the harness ceiling. Absent where the runtime published no context length and none was asked
+   * for. Recorded beside the measured number rather than replacing it: one is what the model can do,
+   * the other is what this run actually ran in, and a comparison across runs needs both.
+   */
+  localModelContextWindowRequestedTokens?: number;
   localModelSizeBytes?: number;
+  /**
+   * HOW THE LAST STREAMED TURN ENDED, and how each one did, in the Ollama driver's own finer
+   * vocabulary — `OLLAMA_STREAM_OUTCOMES`. Recorded BESIDE `terminalReason`, which stays the closed
+   * kind every route shares, because a single `timeout` cannot say whether the model was generating
+   * or the runtime never started. Absent on every route that does not stream a local runtime.
+   */
+  localStreamOutcome?: string;
+  localStreamOutcomes?: string[];
+  localStreamEventCount?: number;
+  localStreamMalformedEventCount?: number;
+  /** Why no time to first token is on this record. Present only when there is no TTFT to record. */
+  localFirstTokenUnavailableReason?: string;
+  /**
+   * What the runtime had RESIDENT before this case ran, from one bounded `/api/ps` read. Residency,
+   * never activity: `/api/ps` does not say whether a model is generating. `noModelResident` is the
+   * ordinary case and not a fault — Ollama loads a model on request.
+   */
+  localRuntimeResidencyBefore?: string;
+  localRuntimeResidentModelsBefore?: string[];
+  localRuntimeProbeMilliseconds?: number;
+  localRuntimeProbeDetail?: string;
   /** The `cmk1:` machine key (see `machine-availability.ts`), and the hostname as a label beside it. */
   executionMachine?: string;
   executionMachineLabel?: string;
