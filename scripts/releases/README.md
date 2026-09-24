@@ -8,9 +8,45 @@ GitHub release, and refuses to install anything that does not match.
 
 ---
 
+## `install-cernum-v1.0.0-macos-arm64.sh` and `install-cernum-v1.0.0-macos-x64.sh`
+
+**The current ones.** Install or upgrade to **Cernum v1.0.0** (build commit `e57a1f7`): one script
+for **Apple Silicon** and, for the first time, one for **Intel**. They are the v0.2.4 script with
+the version, commit, architecture and published DMG checksum repinned; nothing else about what they
+do has changed.
+
+### Use it
+
+```bash
+cd ~/Downloads
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/SCRIPTS_COMMIT/scripts/releases/install-cernum-v1.0.0-macos-arm64.sh   # or -x64.sh
+shasum -a 256 install-cernum-v1.0.0-macos-arm64.sh   # compare against the digest in the release notes
+less install-cernum-v1.0.0-macos-arm64.sh            # read it before running it
+bash install-cernum-v1.0.0-macos-arm64.sh
+```
+
+| Script | SHA-256 |
+| --- | --- |
+| `install-cernum-v1.0.0-macos-arm64.sh` | `07c825cbb00b23ee88f8c16123481a7a3662f27267784c601b4cf98c2ed2e7c1` |
+| `install-cernum-v1.0.0-macos-x64.sh` | `4ded781ea612f4afc6a368b16b9b28e3ebc9b325bf827638a98c94352dfbadbc` |
+
+Each refuses to run on the other architecture and names the right script. Step 16's checks are the
+zero-spend guarantees v0.2.4 introduced, re-run unchanged against the 1.0.0 bundle.
+
+### How they were validated
+
+Pinned only after the release was published and its assets were downloaded back and verified. On an
+Apple Silicon Mac and on the Intel Mac mini, each script's own steps 1, 3 and 4 (download from the
+public release, three-way checksum), step 7's version, architecture and commit assertions, and step 16
+were run against the bundle inside the downloaded DMG, mounted read-only. Both passed. Steps that
+install or write (5, 6, 8–15) are the v0.2.4 script's, unchanged, and were not executed by that
+validation.
+
+---
+
 ## `install-cernum-v0.2.4-macos-arm64.sh`
 
-**The current one.** Upgrades an **Apple Silicon** Mac to **Cernum v0.2.4** (build commit
+**Superseded by v1.0.0.** Upgrades an **Apple Silicon** Mac to **Cernum v0.2.4** (build commit
 `79992bb`), verifies the v0.2.4 corrections without sending a single provider request, and still
 carries the v0.2.1 migration repair because it is idempotent and this machine may never have run it.
 

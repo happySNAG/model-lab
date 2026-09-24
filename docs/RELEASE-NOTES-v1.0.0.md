@@ -242,6 +242,9 @@ observed on ANOTHER machine and imported here" unconditionally — including aft
   qualification was staled by the absence.
 - **Six sealed-evidence gate suites could not execute** for the same reason, their pinned evidence
   living on that volume. They fail closed, by design, rather than passing quietly.
+  **Update at release (2026-09-23):** with the volume mounted on the Mac mini they were run against
+  the real evidence at the release commit and passed — see *Release verification* below. They still
+  fail closed anywhere that volume is absent, including hosted CI.
 - **`gpt-6-luna` and `gpt-6-sol` are discovered and unqualified** — metered-only, and no spend was
   authorized.
 - **Recovery capability families have no qualified routes** on current evidence.
@@ -251,6 +254,104 @@ observed on ANOTHER machine and imported here" unconditionally — including aft
   known before a matrix starts. The live circuit breaker bounds the waste instead.
 - Identity on `codexCLI` and `opencodeCLI` remains unverifiable by construction; on OpenCode a
   substitution would be undetectable.
+- **Hosted CI is red at the release commit, and this release was published over it deliberately.**
+  Every failure is understood, and none of them invalidates the macOS artifacts published here. They
+  are listed in full under *Known CI failures* below rather than left for someone to find.
+
+---
+
+## Release verification
+
+Released commit: **`e57a1f7`**. `main` and the `v1.0.0` tag both point at it, and all four artifacts
+were built from it (the commit is embedded in each bundle).
+
+- **arm64 packaged smoke — passed.** `scripts/macos-smoke.sh` against the arm64 bundle on Apple
+  Silicon: bundle structure, Info.plist, `arm64` architecture, `codesign --verify` OK, the bundled
+  terminal launcher, provider discovery under the PATH a Finder launch gets, and the Playwright
+  Finder-equivalent launch (1/1).
+- **Native Intel x64 packaged smoke — passed.** The x64 zip was copied to the Intel Mac mini
+  (i7-8700B, macOS 15.7.7), its SHA-256 re-verified there, extracted with `ditto`, and the same
+  script run from a clean `e57a1f7` tree with x64 Node: `x86_64` architecture, `codesign --verify`
+  OK, launcher and discovery answering, Playwright launch 1/1.
+- **The six sealed-evidence gate suites — 6 files, 231 tests, all passing** on the Mac mini against
+  the LaCie evidence root: `req03-phase0-evaluator-soundness`, `pass10-adoption-gate`,
+  `req03-phase4-adoption-gate`, `req03-phase5-adoption-gate`, `req03-phase6-generation-routing`,
+  `pass10-gate-b-calibration`. Phase 6 reproduced all 350 adjudicated rows from the evidence, so the
+  suites read it rather than skipping.
+- Gatekeeper rejects both bundles, as expected: they are ad-hoc signed and not notarized.
+
+---
+
+## Checksums
+
+```
+e0e4c1ab477f862f66cc1646a53053eea43d4b4146a3f045dbdeb8d53ca1f35e  Cernum-1.0.0-macos-arm64.dmg
+4e3eb04762ff9494ecec1c5bb8fae679a8ef9c44307e01286bd98540ed120b6f  Cernum-1.0.0-macos-arm64.zip
+4b24706fc7df27befbe943784a8ebd50009514d2017c8410d5892127967edf23  Cernum-1.0.0-macos-x64.dmg
+cfb38af94ca6f99a253d462d657fc813d30899f1f15e341b8a3c40a1a8c829e7  Cernum-1.0.0-macos-x64.zip
+```
+
+Verify before installing:
+
+```
+shasum -a 256 -c Cernum-1.0.0-SHA256SUMS.txt --ignore-missing
+```
+
+Built from commit `e57a1f7`, which each bundle carries and each install script asserts.
+
+## Installing on another Mac without trusting the one that built this
+
+One install script per architecture, each pinned to its DMG's published checksum and to the build
+commit, verifying both before it mounts anything:
+
+```
+cd ~/Downloads
+# Apple Silicon
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/SCRIPTS_COMMIT/scripts/releases/install-cernum-v1.0.0-macos-arm64.sh
+shasum -a 256 install-cernum-v1.0.0-macos-arm64.sh
+#  07c825cbb00b23ee88f8c16123481a7a3662f27267784c601b4cf98c2ed2e7c1
+# Intel
+curl -fLO https://raw.githubusercontent.com/happySNAG/model-lab/SCRIPTS_COMMIT/scripts/releases/install-cernum-v1.0.0-macos-x64.sh
+shasum -a 256 install-cernum-v1.0.0-macos-x64.sh
+#  4ded781ea612f4afc6a368b16b9b28e3ebc9b325bf827638a98c94352dfbadbc
+less install-cernum-v1.0.0-macos-*.sh
+bash install-cernum-v1.0.0-macos-<arm64|x64>.sh
+```
+
+They send no provider request and could not: the only verbs they issue are `where`, `providers`,
+`discover`, `models`, `install-command`, `help` and `smoke --dry-run`, and a metered provider would
+refuse a live smoke without an authorization the scripts never supply. Their download, checksum,
+version, architecture, commit and zero-spend checks were run against this published release on
+both architectures before they were committed.
+
+## Opening an unsigned build
+
+Not signed with a Developer ID and not notarized:
+
+```
+xattr -dr com.apple.quarantine /Applications/Cernum.app
+```
+
+---
+
+## Known CI failures
+
+Hosted CI (`Check` and `End-to-end` on macOS, Ubuntu and Windows) failed on every job at `e57a1f7`.
+`main` has failed CI on every push since 17 September, including the commit v0.2.4 was released
+from. These are recorded as known, non-blocking limitations of V1:
+
+| Job | Result at `e57a1f7` | Cause | New in V1? |
+| --- | --- | --- | --- |
+| Check (macOS) | 2,783 tests passed, 0 failed; 6 files failed | The six sealed-evidence suites hard-stop because `/Volumes/LaCie` does not exist on a hosted runner. They passed 231/231 against the real volume. | No — identical on `main` |
+| Check (Ubuntu) | 28 files / 288 tests failed | The same six suites, plus the V1 `workspace-*` suites and 7 tests in `route-qualification-and-routing`, which expect a workspace case to execute. Cernum correctly refuses, because the macOS Seatbelt sandbox it requires is not available on Linux. | Yes — test portability, not a product defect |
+| Check (Windows) | 52 files / 470 tests failed | The same sandbox refusal, the same six suites, and Windows failures already present on `main` (24 files / 128 tests there): `npx` spawning, `notPackaged`, exit-code assertions. | Partly — the new part is the sandbox refusal |
+| End-to-end (macOS) | 1 test failed | `critical-flows.spec.ts:96`, "a benchmark can be cancelled and the partial evidence is kept honestly" | No — the same test fails on `main` |
+| End-to-end (Windows) | failed | `spawn npx ENOENT` | No — identical on `main` |
+| Package (tag-triggered `package.yml`) | both jobs failed | Both built and ad-hoc signed the applications, then electron-builder's publish-on-tag step exited because no `GH_TOKEN` is configured. It published nothing; the release assets are the verified local builds above. | No — every tag from v0.2.1 to v0.2.4 failed identically |
+
+No CI-fix commits were made before V1. Making these tests hermetic — skipping workspace execution
+where no sandbox is available, and keeping the sealed-evidence suites out of hosted CI — is work
+for after this release.
 
 ---
 
