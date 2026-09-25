@@ -9,10 +9,10 @@ import * as path from 'node:path';
 const root = path.resolve(__dirname, '../..');
 let userData: string;
 
-const launch = () => electron.launch({ args: [path.join(root, 'out/main/index.js')], env: { ...process.env, MODEL_LAB_USER_DATA: userData } });
+const launch = () => electron.launch({ args: [path.join(root, 'out/main/index.js')], env: { ...process.env, CERNUM_USER_DATA: userData } });
 
 test.beforeAll(() => {
-  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-settings-'));
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-settings-'));
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ ollamaEndpoint: 'http://127.0.0.1:1', thinkingMode: 'disabled', evidenceRootOverride: '' }));
 });
 

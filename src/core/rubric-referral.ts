@@ -1,4 +1,4 @@
-// Model Lab core · Gate A — the RUBRIC-REFERRED governance path (Cernum Pass 10).
+// Cernum core · Gate A — the RUBRIC-REFERRED governance path (Cernum Pass 10).
 //
 // WHAT THIS IS. The other half of the hybrid policy. Thirteen governed rules are carried by the
 // mechanical candidate matcher (`candidate-governance.ts`); one — `gov.memory.no-resurrect-deleted` —

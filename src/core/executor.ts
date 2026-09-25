@@ -1,4 +1,4 @@
-// Model Lab core · run executor (port of `ModelLabRunExecutor`).
+// Cernum core · run executor (port of `ModelLabRunExecutor`).
 // Fail-closed at every step; every attempt is RECORDED, never thrown; evidence is never rolled back.
 
 import { AttemptRequest, CancellationToken, EvaluationAdapter, requestDigest } from './adapter';

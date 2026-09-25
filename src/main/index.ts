@@ -1,4 +1,4 @@
-// Model Lab · Electron main process. Owns the window, the application menu, the lab service,
+// Cernum · Electron main process. Owns the window, the application menu, the lab service,
 // settings, and the IPC surface. macOS is the reference platform: a hidden-inset title bar with the
 // sidebar carrying the traffic lights, a full menu bar, the app staying alive with no windows, and
 // the About panel; Windows keeps a normal frame with the same menu behind Alt.
@@ -115,7 +115,7 @@ async function diagnostics(): Promise<Diagnostics> {
 async function exportEvidence(): Promise<{ path?: string; digest?: string; cancelled: boolean }> {
   const window = await focusedOrNewWindow();
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const result = await dialog.showSaveDialog(window, { title: 'Export evidence bundle', defaultPath: path.join(app.getPath('documents'), `model-lab-evidence-${stamp}.json`), filters: [{ name: 'JSON', extensions: ['json'] }] });
+  const result = await dialog.showSaveDialog(window, { title: 'Export evidence bundle', defaultPath: path.join(app.getPath('documents'), `${PRODUCT.slug}-evidence-${stamp}.json`), filters: [{ name: 'JSON', extensions: ['json'] }] });
   if (result.canceled || !result.filePath) return { cancelled: true };
   if (fs.existsSync(result.filePath)) throw new Error('that file already exists — evidence exports are never overwritten; choose a new name');
   const bundle = await service.resultStore.exportAll();

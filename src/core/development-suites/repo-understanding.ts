@@ -1,4 +1,4 @@
-// Model Lab core · the repository-understanding suite.
+// Cernum core · the repository-understanding suite.
 //
 // WHAT THIS DIMENSION IS. Not "can the model read a file" — every model can read a file. It is
 // whether a model dropped into an unfamiliar repository forms a CORRECT MODEL OF THE RELATIONSHIPS

@@ -1,4 +1,4 @@
-// Model Lab core · find where a normalized phrase actually sits in the raw text.
+// Cernum core · find where a normalized phrase actually sits in the raw text.
 //
 // WHY THIS EXISTS, AND WHY IT IS NOT PART OF THE MATCHER. `containsPhrase` answers yes or no, which
 // is all a scorer needs and nothing like enough for an adjudicator. A person asked to confirm or

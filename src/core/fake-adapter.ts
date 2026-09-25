@@ -1,4 +1,4 @@
-// Model Lab core · deterministic fake adapter (port of `ModelLabDeterministicFakeAdapter`).
+// Cernum core · deterministic fake adapter (port of `ModelLabDeterministicFakeAdapter`).
 // Pure function of the request; scripted behaviours exercise every failure class without a network.
 
 import { AttemptRequest, CancellationToken, EvaluationAdapter, requestDigest } from './adapter';

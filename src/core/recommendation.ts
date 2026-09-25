@@ -1,4 +1,4 @@
-// Model Lab core · the explicit recommendation workflow (port of `ModelLabRecommendation`).
+// Cernum core · the explicit recommendation workflow (port of `ModelLabRecommendation`).
 // Four outcomes, no approval case anywhere; every record carries its evidence and the boundary statement.
 
 import { seal, isoSeconds, compareCodePoints } from './digest';

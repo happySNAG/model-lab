@@ -1,4 +1,4 @@
-// Model Lab core · the development benchmark's task and suite specification.
+// Cernum core · the development benchmark's task and suite specification.
 //
 // THIS IS A SECOND, PARALLEL SPECIFICATION, AND THE SEPARATION IS DELIBERATE.
 //

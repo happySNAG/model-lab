@@ -1,7 +1,7 @@
-// Model Lab · preload bridge. Exposes a typed, narrow API to the renderer; nothing else crosses.
+// Cernum · preload bridge. Exposes a typed, narrow API to the renderer; nothing else crosses.
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, ModelLabAPI, SessionProgress, PullProgress, OllamaStatus, ScreenID, CampaignProgressEvent } from '../shared/ipc';
+import { IPC, CernumAPI, SessionProgress, PullProgress, OllamaStatus, ScreenID, CampaignProgressEvent } from '../shared/ipc';
 
 function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
   const handler = (_event: unknown, payload: T) => listener(payload);
@@ -9,7 +9,7 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
   return () => ipcRenderer.removeListener(channel, handler);
 }
 
-const api: ModelLabAPI = {
+const api: CernumAPI = {
   getBuildInfo: () => ipcRenderer.invoke(IPC.buildInfo),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   saveSettings: (settings) => ipcRenderer.invoke(IPC.saveSettings, settings),
@@ -64,4 +64,4 @@ const api: ModelLabAPI = {
   platform: process.platform,
 };
 
-contextBridge.exposeInMainWorld('modelLab', api);
+contextBridge.exposeInMainWorld('cernum', api);

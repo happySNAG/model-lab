@@ -20,6 +20,9 @@ import {
   MIGRATED_ENTRIES, MIGRATION_MARKER, LEGACY_PRODUCT_NAME,
   migrateUserData, legacyUserDataDirectory, entriesMatch,
 } from '../../src/main/user-data-migration';
+import { SettingsStore, evidenceRootFor } from '../../src/main/settings';
+import { FileResultStore } from '../../src/core/file-store';
+import { bundleDigest } from '../../src/core/store';
 
 let root: string;
 let legacy: string;
@@ -300,5 +303,35 @@ describe('the legacy location is named, not guessed', () => {
     expect(LEGACY_PRODUCT_NAME).toBe('Model Lab');
     expect(legacyUserDataDirectory('/Users/x/Library/Application Support'))
       .toBe('/Users/x/Library/Application Support/Model Lab');
+  });
+});
+
+describe('an install from the Model Lab era still LOADS after the rename, not merely copies', () => {
+  // Copying bytes is necessary but not sufficient: the point is that Cernum then reads them. The
+  // evidence here is the sealed parity store, which was written under the old identity (its manifest
+  // still says "Skippy Model Lab"), so it is a real pre-rename store rather than one made up for this.
+  const sealedStore = path.resolve(__dirname, '../../fixtures/parity/store');
+
+  it('reads the migrated settings and opens the migrated evidence store with every run intact', async () => {
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.cpSync(sealedStore, path.join(legacy, 'evidence'), { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'settings.json'), '{"ollamaEndpoint":"http://127.0.0.1:11435","thinkingMode":"enabled"}');
+    fs.writeFileSync(path.join(legacy, 'model-lab.log'), 'started\n');
+
+    const result = migrateUserData(legacy, current);
+    expect(result.copied.sort()).toEqual(['evidence', 'model-lab.log', 'settings.json']);
+
+    const settings = new SettingsStore(path.join(current, 'settings.json')).get();
+    expect(settings.ollamaEndpoint).toBe('http://127.0.0.1:11435');
+    expect(settings.thinkingMode).toBe('enabled');
+
+    const migrated = await FileResultStore.open(evidenceRootFor(current, settings));
+    expect((await migrated.runIDs()).sort()).toEqual(fs.readdirSync(path.join(sealedStore, 'runs')).sort());
+
+    // The same records, byte for byte in digest terms, as a store opened straight from the sealed copy.
+    const reference = path.join(root, 'reference');
+    fs.cpSync(sealedStore, reference, { recursive: true });
+    expect(bundleDigest(await migrated.exportAll()))
+      .toBe(bundleDigest(await (await FileResultStore.open(reference)).exportAll()));
   });
 });

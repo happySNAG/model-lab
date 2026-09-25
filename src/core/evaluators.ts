@@ -1,4 +1,4 @@
-// Model Lab core · deterministic evaluators (port of `ModelLabEvaluators`).
+// Cernum core · deterministic evaluators (port of `ModelLabEvaluators`).
 // Pure functions of the observation and the sealed policy. No language-model judge, no network,
 // no hidden semantic service. Governance is assessed uniformly and kept orthogonal to quality.
 

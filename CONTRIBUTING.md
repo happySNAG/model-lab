@@ -10,8 +10,9 @@ You need **Node 20 or later** and npm. Nothing else is required to build, run or
 only needed if you want to benchmark real models rather than the built-in reference model.
 
 ```bash
-git clone https://github.com/happySNAG/model-lab.git
-cd model-lab
+# The GitHub repository still carries the product's pre-rename slug; see docs/NAMING.md.
+git clone https://github.com/happySNAG/model-lab.git cernum
+cd cernum
 npm install
 npm run dev          # hot-reloading development window
 ```
@@ -60,6 +61,9 @@ Please read these before proposing a change that touches them — each one is lo
 - **Only loopback network access.** Endpoints that are not `127.0.0.1`, `localhost` or `::1` are
   refused, so the hardware facts recorded with a result always describe the machine that ran it.
   There is no telemetry, no update check and no account, and there should never be one.
+- **The product is Cernum; "Model Lab" is its old name.** The old name survives only in sealed IDs,
+  the migration, compatibility aliases and history, and a test fails if it turns up anywhere else.
+  See [docs/NAMING.md](docs/NAMING.md).
 - **Missing data is shown as missing.** A value the system did not report is `n/a` with a reason, not
   a zero and never an estimate.
 

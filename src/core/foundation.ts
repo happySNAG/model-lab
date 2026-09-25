@@ -1,10 +1,12 @@
-// Model Lab core · the foundation suites (port of `ModelLabFoundationSuite` and `ModelLabFoundationSuiteV2`).
+// Cernum core · the foundation suites (port of `ModelLabFoundationSuite` and `ModelLabFoundationSuiteV2`).
 // Byte-identical fixture content: every digest is proven against `fixtures/parity/catalog.json`.
 
 import { BenchmarkCase, BenchmarkSuite, generationSettings, makeCase, makeSuite } from './benchmark';
 
 const SUITE_ID = 'suite.model-lab.foundation';
 const VERSION = '1';
+// SEALED, NOT STALE BRANDING. The `model-lab` IDs and the "Model Lab" wording below are part of every
+// recorded prompt digest and result; renaming them would orphan evidence already on disk. See docs/NAMING.md.
 const ORIGIN = 'synthetic:model-lab-c1-foundation';
 const SCORING_POLICY_ID = 'policy.scoring.model-lab-foundation';
 const SCORING_POLICY_VERSION = '1';

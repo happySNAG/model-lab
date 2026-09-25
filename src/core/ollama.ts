@@ -1,4 +1,4 @@
-// Model Lab core · the Ollama runtime contract, prober, wire codec, and live adapter
+// Cernum core · the Ollama runtime contract, prober, wire codec, and live adapter
 // (port of `ModelLabOllamaRuntime`, `ModelLabOllamaLiveAdapter`, and the pure parts of
 // `ModelLabOllamaHTTPTransport`). No networking here: the transport is an injected seam, and the
 // only transport this module ships REFUSES every call. The HTTP transport lives in `ollama-http.ts`.

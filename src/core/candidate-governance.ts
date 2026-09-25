@@ -1,4 +1,4 @@
-// Model Lab core · CANDIDATE governance matcher (Cernum Pass 10).
+// Cernum core · CANDIDATE governance matcher (Cernum Pass 10).
 //
 // WHAT THIS IS, AND WHAT IT IS NOT. This is a *candidate* repair for the two defects the Pass 9
 // adjudication proved from ground truth: the canonical matcher cannot read negation, and it cannot

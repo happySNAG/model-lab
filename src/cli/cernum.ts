@@ -100,6 +100,7 @@ import {
   writeObservationBundle,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
+import { displaySuiteTitle } from '../shared/ipc';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
 import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
@@ -1055,7 +1056,7 @@ async function commandSuites(): Promise<void> {
   const catalogue = buildEngineCatalogue(allRankableSuiteIDs(), 1);
   say(`${catalogue.suites.length} suite(s), ${catalogue.plannable.caseCount} case(s):`);
   for (const suite of catalogue.suites) {
-    say(`  ${suite.id.raw.padEnd(42)} ${String(suite.cases.length).padStart(2)} case(s)  ${suite.title}`);
+    say(`  ${suite.id.raw.padEnd(42)} ${String(suite.cases.length).padStart(2)} case(s)  ${displaySuiteTitle(suite.title)}`);
   }
 }
 

@@ -1,4 +1,4 @@
-// Model Lab core · qualification vocabulary (port of `ModelLabQualification`).
+// Cernum core · qualification vocabulary (port of `ModelLabQualification`).
 // "Approved for production" is STRUCTURALLY unreachable: the assessor's return type has no such value.
 
 import { CandidateDescriptor, claimFor, permitsPlanning } from './candidate';

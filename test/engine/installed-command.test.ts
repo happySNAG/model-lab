@@ -66,9 +66,11 @@ describe('what the packager puts in the bundle', () => {
   });
 
   it('points the macOS launcher at the bundled binary and the bundled script', () => {
-    const script = afterPack.posixLauncher('../MacOS/Model Lab');
+    const script = afterPack.posixLauncher('../MacOS/Cernum');
     expect(script).toContain('ELECTRON_RUN_AS_NODE=1');
-    expect(script).toContain('"$here/../MacOS/Model Lab"');
+    expect(script).toContain('"$here/../MacOS/Cernum"');
+    // The pre-rename binary was `Model Lab`: a name with a space must still arrive quoted.
+    expect(afterPack.posixLauncher('../MacOS/Cernum Preview')).toContain('"$here/../MacOS/Cernum Preview"');
     expect(script).toContain('app.asar/out/main/cernum.js');
     // The bundle can be moved or renamed: nothing absolute is baked in.
     expect(script).not.toMatch(/\/Applications\//);
@@ -76,9 +78,9 @@ describe('what the packager puts in the bundle', () => {
   });
 
   it('points the Windows launcher at the bundled binary and waits for it', () => {
-    const script = afterPack.windowsLauncher('..\\Model Lab.exe');
+    const script = afterPack.windowsLauncher('..\\Cernum.exe');
     expect(script).toContain('set "ELECTRON_RUN_AS_NODE=1"');
-    expect(script).toContain('%HERE%..\\Model Lab.exe');
+    expect(script).toContain('%HERE%..\\Cernum.exe');
     expect(script).toContain('app.asar\\out\\main\\cernum.js');
     // A GUI-subsystem binary would otherwise return the prompt before printing anything.
     expect(script).toContain('start "" /b /wait');
@@ -202,6 +204,7 @@ describe('removing the command', () => {
 
 describe('the command and the application share one campaign store', () => {
   it('computes the directory the desktop application reads', () => {
+    delete process.env.CERNUM_CAMPAIGN_ROOT;
     delete process.env.MODEL_LAB_CAMPAIGN_ROOT;
     const expected = process.platform === 'darwin'
       ? path.join(os.homedir(), 'Library', 'Application Support', PRODUCT.name, CAMPAIGN_DIRECTORY_NAME)
@@ -215,8 +218,15 @@ describe('the command and the application share one campaign store', () => {
   });
 
   it('honours the same override the service honours', () => {
-    process.env.MODEL_LAB_CAMPAIGN_ROOT = path.join(sandbox, 'elsewhere');
+    process.env.CERNUM_CAMPAIGN_ROOT = path.join(sandbox, 'elsewhere');
     expect(defaultCampaignRoot()).toBe(path.join(sandbox, 'elsewhere'));
+    delete process.env.CERNUM_CAMPAIGN_ROOT;
+  });
+
+  it('still honours the pre-rename override, so an old script keeps working', () => {
+    delete process.env.CERNUM_CAMPAIGN_ROOT;
+    process.env.MODEL_LAB_CAMPAIGN_ROOT = path.join(sandbox, 'legacy');
+    expect(defaultCampaignRoot()).toBe(path.join(sandbox, 'legacy'));
     delete process.env.MODEL_LAB_CAMPAIGN_ROOT;
   });
 
@@ -226,7 +236,7 @@ describe('the command and the application share one campaign store', () => {
   });
 
   it('writes a launcher script that carries the marker an uninstall looks for', () => {
-    expect(launcherScript('/somewhere/Model Lab.app/Contents/Resources/cernum')).toContain(LAUNCHER_MARKER);
+    expect(launcherScript('/Volumes/My Apps/Cernum.app/Contents/Resources/cernum')).toContain(LAUNCHER_MARKER);
     expect(launcherScript("/quote'd/path/cernum")).toContain(`'/quote'\\''d/path/cernum'`);
   });
 });

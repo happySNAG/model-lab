@@ -26,7 +26,6 @@ coverage/
 
 # Logs and local runtime data
 *.log
-model-lab.log
 evidence/
 
 # OS and editor noise

@@ -1,4 +1,4 @@
-// Model Lab core · the evaluation catalog (port of `ModelLabSkippyEvaluationCatalog`).
+// Cernum core · the evaluation catalog (port of `ModelLabSkippyEvaluationCatalog`).
 //
 // Original, synthetic fixtures. Nothing here describes a real person, memory, calendar, or event;
 // every input carries a `synthetic:` origin and the validator refuses anything else. The cases and
@@ -17,6 +17,8 @@ import { generation2Twins } from './capability-generation';
 
 export const SUITE_VERSION = '1';
 export const SCORING_POLICY_VERSION = '1';
+// SEALED, NOT STALE BRANDING. The `model-lab` IDs and the "Model Lab" wording below are part of every
+// recorded prompt digest and result; renaming them would orphan evidence already on disk. See docs/NAMING.md.
 const RESOURCE_BUDGET_ID = 'budget.resource.model-lab-c2-unmetered';
 const PROVENANCE = 'model-lab-campaign-2 (synthetic; original Skippy fixtures)';
 const SYSTEM_PROMPT =

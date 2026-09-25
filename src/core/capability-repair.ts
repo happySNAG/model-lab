@@ -1,4 +1,4 @@
-// Model Lab core · CANDIDATE capability evaluator, scoring policy version 2 (Cernum REQ-03 Phase 4).
+// Cernum core · CANDIDATE capability evaluator, scoring policy version 2 (Cernum REQ-03 Phase 4).
 //
 // WHAT THIS IS. The repair the validation plan §7 authorises: paraphrase families and assertion
 // scoping, applied to the capability criteria — the same two repairs the governance candidate made,

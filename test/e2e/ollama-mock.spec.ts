@@ -53,14 +53,14 @@ test.beforeAll(async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-mock-'));
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-mock-'));
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ ollamaEndpoint: endpoint, thinkingMode: 'disabled', evidenceRootOverride: '' }));
 });
 test.afterAll(async () => { server.closeAllConnections?.(); await new Promise<void>((r) => server.close(() => r())); });
 
 test('detects the runtime, lists its models, benchmarks two of them, and reports every failure kind honestly', async () => {
   test.setTimeout(240_000);
-  const app = await electron.launch({ args: [path.join(root, 'out/main/index.js')], env: { ...process.env, MODEL_LAB_USER_DATA: userData } });
+  const app = await electron.launch({ args: [path.join(root, 'out/main/index.js')], env: { ...process.env, CERNUM_USER_DATA: userData } });
   const page = await app.firstWindow();
   await page.waitForSelector('.shell');
 

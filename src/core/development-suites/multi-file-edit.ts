@@ -1,4 +1,4 @@
-// Model Lab core · the multi-file-editing suite.
+// Cernum core · the multi-file-editing suite.
 //
 // WHAT THIS DIMENSION IS. Not "can the model write a function" — a single-file benchmark measures
 // that, and the frontier has been saturating single-file benchmarks for years. It is whether a

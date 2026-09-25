@@ -1,4 +1,4 @@
-// Model Lab core · evaluation verdicts and permanent evaluation records (port of `ModelLabEvaluation`).
+// Cernum core · evaluation verdicts and permanent evaluation records (port of `ModelLabEvaluation`).
 // Governance is orthogonal to quality; missing evidence is not zero; indeterminate is not passed.
 
 import { Measurement } from './candidate';

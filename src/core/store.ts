@@ -1,4 +1,4 @@
-// Model Lab core · durable, append-only result store contract + in-memory implementation
+// Cernum core · durable, append-only result store contract + in-memory implementation
 // (port of `ModelLabResultStore`). PERMANENT EVALUATION HISTORY IS A PRIMARY PRODUCT REQUIREMENT:
 // nothing is ever overwritten; there is deliberately no delete method at all.
 
