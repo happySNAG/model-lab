@@ -1,4 +1,4 @@
-// Model Lab core · public surface of the portable engine.
+// Cernum core · public surface of the portable engine.
 export * from './digest';
 export * from './text';
 export * from './candidate';

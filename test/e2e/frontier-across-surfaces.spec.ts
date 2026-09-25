@@ -68,7 +68,7 @@ async function cernumExpectingFailure(...args: string[]): Promise<{ status: numb
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
   const app = await electron.launch({
     args: [path.join(root, 'out/main/index.js')],
-    env: { ...environment(), MODEL_LAB_USER_DATA: userData, MODEL_LAB_CAMPAIGN_ROOT: campaignRoot },
+    env: { ...environment(), CERNUM_USER_DATA: userData, CERNUM_CAMPAIGN_ROOT: campaignRoot },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.shell');
@@ -76,9 +76,9 @@ async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
 }
 
 test.beforeAll(async () => {
-  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-'));
-  campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-campaigns-'));
-  fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-frontier-bin-'));
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-frontier-'));
+  campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-frontier-campaigns-'));
+  fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-frontier-bin-'));
 
   // A fake `claude` shaped like the real one: it reports authentication as JSON, has NO `models`
   // subcommand, and names the answering model in `modelUsage` rather than in a `model` field. It

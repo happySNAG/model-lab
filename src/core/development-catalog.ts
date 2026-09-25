@@ -1,4 +1,4 @@
-// Model Lab core · the development benchmark's registry.
+// Cernum core · the development benchmark's registry.
 //
 // The counterpart of `catalog.ts`, and deliberately not part of it. `catalog.ts` registers the
 // fourteen text suites whose identity is sealed against the Swift parity corpus; this file registers

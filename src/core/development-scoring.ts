@@ -1,4 +1,4 @@
-// Model Lab core · the scoring contract for the development benchmark.
+// Cernum core · the scoring contract for the development benchmark.
 //
 // TWO TIERS, NAMED, AND THE DIFFERENCE IS NOT COSMETIC.
 //

@@ -1,4 +1,4 @@
-// Model Lab core · governed, append-only human-review intake (port of `ModelLabHumanReview`).
+// Cernum core · governed, append-only human-review intake (port of `ModelLabHumanReview`).
 
 import { seal } from './digest';
 import { trimWhitespaceAndNewlines } from './text';

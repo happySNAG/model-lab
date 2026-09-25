@@ -1,4 +1,4 @@
-// Model Lab · the application service over the portable engine. It owns the evidence store, runs
+// Cernum · the application service over the portable engine. It owns the evidence store, runs
 // benchmark sessions (one run per suite, every selected model in each run, evaluation appended
 // right after each attempt), reports live progress, and derives every results/history view from
 // the immutable records. It never deletes anything.
@@ -306,7 +306,7 @@ export class LabService extends EventEmitter {
     const live = transport ? new OllamaLiveAdapter(transport, runtimeVersion ? measured(runtimeVersion) : unavailable('the runtime version was not probed'), settings.thinkingMode) : new OllamaLiveAdapter();
     const fake = new DeterministicFakeAdapter('succeed');
     return {
-      adapterID: 'adapter:model-lab:composite',
+      adapterID: 'adapter:cernum:composite',
       supportedExecutionClasses: ['inProcess', 'localHostProcess'],
       invoke: (request, candidate, cancellation) => candidate.provider === 'model-lab-fake' ? fake.invoke(request, candidate, cancellation) : live.invoke(request, candidate, cancellation),
     };

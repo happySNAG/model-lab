@@ -36,6 +36,7 @@ import type {
   CampaignRow, CampaignDetail, CampaignCreateRequest, CampaignExecutionRow, CampaignStartDisclosure,
   CohortReconciliationRow, CostPreviewRow, FrontierMetricsRow, ProviderStatusRow, TerminalCommandRow,
 } from '../shared/ipc';
+import { displaySuiteTitle } from '../shared/ipc';
 import { installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
 // MARK: - Projections
@@ -690,7 +691,7 @@ export class CampaignService extends EventEmitter {
 
   async availableSuites(): Promise<{ id: string; title: string; caseCount: number }[]> {
     const catalogue = buildEngineCatalogue(allRankableSuiteIDs(), 1);
-    return catalogue.suites.map((suite) => ({ id: suite.id.raw, title: suite.title, caseCount: suite.cases.length }));
+    return catalogue.suites.map((suite) => ({ id: suite.id.raw, title: displaySuiteTitle(suite.title), caseCount: suite.cases.length }));
   }
 
   async create(request: CampaignCreateRequest): Promise<CampaignRow[]> {

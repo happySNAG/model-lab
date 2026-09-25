@@ -1,4 +1,4 @@
-// Model Lab core · explicit comparability policy (port of `ModelLabComparability`).
+// Cernum core · explicit comparability policy (port of `ModelLabComparability`).
 
 import { EvaluationRecord } from './evaluation';
 

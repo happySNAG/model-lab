@@ -1,4 +1,4 @@
-// Model Lab core · side-by-side comparison of two immutable attempts (port of `ModelLabSideBySide`).
+// Cernum core · side-by-side comparison of two immutable attempts (port of `ModelLabSideBySide`).
 
 import { compareCodePoints } from './digest';
 import { AttemptRecord } from './run';

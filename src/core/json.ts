@@ -1,4 +1,4 @@
-// Model Lab core · JSON parsing with Swift `JSONSerialization.jsonObject(with:)` semantics:
+// Cernum core · JSON parsing with Swift `JSONSerialization.jsonObject(with:)` semantics:
 // a top-level container (object or array) is required; scalars at the top level are NOT JSON documents.
 
 export function parseJSONContainer(text: string): Record<string, unknown> | unknown[] | undefined {

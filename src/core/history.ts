@@ -1,4 +1,4 @@
-// Model Lab core · history browsing and comparison over the permanent record (port of `ModelLabHistory`).
+// Cernum core · history browsing and comparison over the permanent record (port of `ModelLabHistory`).
 // Pure derived views: latest/best WITHIN one cohort only; governance failures surfaced everywhere;
 // trends as points, never averages; repetitions as counts, never blended.
 

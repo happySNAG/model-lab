@@ -1,4 +1,4 @@
-// Model Lab core · Cernum Pass 10, Gate D — the ONE scoring-policy version bump.
+// Cernum core · Cernum Pass 10, Gate D — the ONE scoring-policy version bump.
 //
 // Gate D freezes the complete hybrid governance policy as a single version. It is declared here, in a
 // module of its own with no imports, so that `evaluators.ts` can read it without importing the

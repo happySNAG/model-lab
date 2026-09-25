@@ -1,4 +1,4 @@
-// Model Lab · the contract between the renderer and the main process. Every value that crosses the
+// Cernum · the contract between the renderer and the main process. Every value that crosses the
 // bridge is plain JSON. Record types are the portable core's own record types.
 
 import type { AttemptRecord, RunPlan, RunSummary, EnvironmentRecord, DerivedScoreRecord } from '../core/run';
@@ -652,7 +652,7 @@ export interface CampaignProgressEvent {
   trace?: { slotKey: string; status: string; identity: string; suppliedContext: string; detail: string };
 }
 
-export interface ModelLabAPI {
+export interface CernumAPI {
   getBuildInfo(): Promise<BuildInfo>;
   getSettings(): Promise<Settings>;
   saveSettings(settings: Settings): Promise<Settings>;
@@ -790,7 +790,10 @@ export const IPC = {
  * that every result is judged against and can never be edited without invalidating the evidence
  * already on disk. A few of them still carry the prefix of the project this engine was first built
  * for. This one function is the single place that turns a stored title into a displayed one, so the
- * sealed record stays byte-exact while the interface reads as Model Lab's own.
+ * sealed record stays byte-exact while the interface reads as Cernum's own.
+ *
+ * The `Model Lab ` alternative is DELIBERATE: it is the product's pre-rename name, still sealed into
+ * the two foundation suite titles, and this is what keeps it off the screen. See docs/NAMING.md.
  */
 export function displaySuiteTitle(storedTitle: string): string {
   return storedTitle.replace(/^(Skippy|Model Lab) /, '');

@@ -53,7 +53,7 @@ export function OllamaStatusCard({ shell }: { shell: Shell }) {
               </div>
               <div className="row">
                 <button className="btn primary" onClick={() => api.openOllamaDownload()}>Open ollama.com/download</button>
-                <span className="small faint">Or benchmark the built-in reference model to try the lab on this {machineNoun} first.</span>
+                <span className="small faint">Or benchmark the built-in reference model to try Cernum on this {machineNoun} first.</span>
               </div>
             </div>
           )}

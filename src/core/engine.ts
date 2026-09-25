@@ -1,4 +1,4 @@
-// Model Lab core · evaluation engine (port of `ModelLabEvaluationEngine`).
+// Cernum core · evaluation engine (port of `ModelLabEvaluationEngine`).
 // Binds an immutable attempt to its sealed policy and named evaluator; appends the evaluation, then
 // its derived score projection — both append-only, both collision-refusing, so re-running is idempotent.
 

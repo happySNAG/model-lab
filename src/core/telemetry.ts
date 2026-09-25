@@ -1,4 +1,4 @@
-// Model Lab core · runtime-reported execution telemetry (port of `ModelLabRuntimeTelemetry`).
+// Cernum core · runtime-reported execution telemetry (port of `ModelLabRuntimeTelemetry`).
 
 import { Measurement } from './candidate';
 

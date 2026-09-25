@@ -15,7 +15,7 @@ let userData: string;
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
   const app = await electron.launch({
     args: [path.join(root, 'out/main/index.js')],
-    env: { ...process.env, MODEL_LAB_USER_DATA: userData, ELECTRON_ENABLE_LOGGING: '1' },
+    env: { ...process.env, CERNUM_USER_DATA: userData, ELECTRON_ENABLE_LOGGING: '1' },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.shell');
@@ -23,7 +23,7 @@ async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
 }
 
 test.beforeAll(() => {
-  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-'));
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-'));
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ ollamaEndpoint: 'http://127.0.0.1:1', thinkingMode: 'disabled', evidenceRootOverride: '' }));
 });
 

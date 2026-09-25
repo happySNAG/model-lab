@@ -1,4 +1,4 @@
-// Model Lab core · unified diffs, written and applied, for the development benchmark's edit evidence.
+// Cernum core · unified diffs, written and applied, for the development benchmark's edit evidence.
 //
 // A DIFF HERE IS EVIDENCE, NOT A CONVENIENCE, SO IT IS ALWAYS CHECKED BY APPLYING IT. The edit
 // evidence keeps the final text of every file an attempt changed AND a unified diff against the

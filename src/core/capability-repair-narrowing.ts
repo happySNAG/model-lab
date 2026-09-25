@@ -1,4 +1,4 @@
-// Model Lab core · REQ-03 Phase 5 — the NARROWED repair (ruling P4-BLOCK-OVERCORRECTION).
+// Cernum core · REQ-03 Phase 5 — the NARROWED repair (ruling P4-BLOCK-OVERCORRECTION).
 //
 // WHAT THIS IS. Phase 4 measured the repair in both directions and found it over-corrects on seven
 // rows: seven answers a person ruled short of `pass`, which version 1 also withheld, and which the

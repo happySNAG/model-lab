@@ -63,7 +63,7 @@ describe('Swift-written store read by the portable store', () => {
 
 describe('portable store written on disk', () => {
   it('writes the canonical layout, refuses collisions, survives reopen, and surfaces corruption honestly', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-lab-store-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cernum-store-'));
     const store = await FileResultStore.open(root);
     const clock = steppingClock();
     const plan = planRun('disk-run-1', foundationSuite, [deterministicFake]);

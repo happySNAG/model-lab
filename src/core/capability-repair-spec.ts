@@ -1,4 +1,4 @@
-// Model Lab core · CANDIDATE capability spec (Cernum REQ-03 Phase 4). Not canonical; nothing imports
+// Cernum core · CANDIDATE capability spec (Cernum REQ-03 Phase 4). Not canonical; nothing imports
 // it outside the repair module and its gate.
 //
 // One entry per CASE whose adjudication showed the version-1 evaluator withholding a pass a person

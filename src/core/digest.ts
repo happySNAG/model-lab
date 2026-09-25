@@ -1,4 +1,4 @@
-// Model Lab core · canonical serialization and digesting.
+// Cernum core · canonical serialization and digesting.
 //
 // Ported from the canonical Swift implementation (`ModelLabDigest`). One hashing story: FNV-1a-64
 // over UTF-8 bytes, over a CANONICAL JSON form that must be byte-identical to what Swift's

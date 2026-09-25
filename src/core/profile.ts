@@ -1,4 +1,4 @@
-// Model Lab core · capability profiles (port of `ModelLabCapabilityProfile`).
+// Cernum core · capability profiles (port of `ModelLabCapabilityProfile`).
 // A derived view over immutable records: per-dimension tallies, disqualifications listed OUTSIDE
 // every average, quality rate unavailable (never zero) when nothing applicable exists.
 
