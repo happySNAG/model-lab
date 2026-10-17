@@ -3135,9 +3135,11 @@ async function commandDiscoveryRefresh(positional: string[], options: Options): 
 
   say(`Discovery refresh on ${here.key} (${here.fingerprint.hostname}) at ${snapshot.takenAt}`);
   say('Nothing below invoked a model. These are the same read-only probes `providers` and `models` run.');
+  say(`Provider allowlist ${snapshot.providerAllowlist}: a provider not on it was not contacted.`);
   say('');
   for (const provider of snapshot.providers) {
-    say(`  ${provider.provider.padEnd(14)} ${provider.refreshed ? 'answered' : 'DID NOT ANSWER'} — ${provider.detail}`);
+    const state = provider.refreshed ? 'answered' : provider.refusedByAllowlist !== undefined ? 'REFUSED' : 'DID NOT ANSWER';
+    say(`  ${provider.provider.padEnd(14)} ${state} — ${provider.detail}`);
   }
   say('');
   say(`${snapshot.routes.length} route(s) in this snapshot; ${deltas.length} compared against the previous one`
@@ -3188,6 +3190,7 @@ async function commandDiscoveryRun(positional: string[], options: Options): Prom
     say(`Discovery run on ${here.key} (${here.fingerprint.hostname}) at ${summary.at}`);
     say(`  answered        ${(summary.providersAnswered ?? []).join(', ') || '(none)'}`);
     for (const entry of summary.providersNotAnswered ?? []) say(`  DID NOT ANSWER  ${entry.provider} — ${entry.detail}`);
+    for (const entry of summary.providersRefused ?? []) say(`  REFUSED         ${entry.provider} — ${entry.reason}`);
     say(`  routes          ${summary.routes}`);
     say(`  changed         ${summary.changed ? `yes, ${summary.changes?.length} route(s)` : 'no'}`);
     for (const change of summary.changes ?? []) say(`    ${change.routeKey}  [${change.kinds.join(', ')}]`);

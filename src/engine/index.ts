@@ -126,6 +126,7 @@ export {
 export * from './model-description';
 export * from './discovery-refresh';
 export * from './discovery-run';
+export * from './provider-allowlist';
 export * from './machine-availability';
 export * from './route-spend-posture';
 export * from './route-qualification';

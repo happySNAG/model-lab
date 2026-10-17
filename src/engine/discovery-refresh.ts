@@ -30,6 +30,9 @@ import { ModelAvailability, ProviderStatus } from './discovery';
 import { DISCOVERY_EVIDENCE_MAX_AGE_MILLISECONDS } from './discovery-store';
 import { PublishedCataloguePrice } from './opencode-pricing';
 import { ProviderID } from './provider';
+import {
+  DEFAULT_PROVIDER_ALLOWLIST, ProviderAllowlist, isProviderAllowed, providerAllowlistRefusal,
+} from './provider-allowlist';
 
 export const DISCOVERY_SNAPSHOT_SCHEMA = 'cds1';
 
@@ -59,6 +62,8 @@ export interface ProviderRefreshOutcome {
   provider: ProviderID;
   refreshed: boolean;
   detail: string;
+  /** Present when the provider allowlist refused it: the list's version. Its probe was never called. */
+  refusedByAllowlist?: string;
 }
 
 export interface DiscoverySnapshot {
@@ -66,6 +71,11 @@ export interface DiscoverySnapshot {
   /** The `cmk1:` key of the machine that took it. A local route in it is true of that machine only. */
   machineKey: string;
   takenAt: string;
+  /**
+   * The provider allowlist version this refresh consulted. `refreshDiscovery` always writes it; it is
+   * optional only because snapshots stored before cpa1 do not carry it.
+   */
+  providerAllowlist?: string;
   providers: ProviderRefreshOutcome[];
   routes: RouteObservation[];
 }
@@ -112,6 +122,8 @@ export function diffDiscoverySnapshots(previous: DiscoverySnapshot | undefined, 
   const before = new Map((previous?.routes ?? []).map((route) => [route.routeKey, route]));
   const after = new Map(next.routes.map((route) => [route.routeKey, route]));
   const unrefreshed = new Set(next.providers.filter((entry) => !entry.refreshed).map((entry) => entry.provider));
+  const refusedBy = new Map(next.providers.filter((entry) => entry.refusedByAllowlist !== undefined)
+    .map((entry) => [entry.provider, entry.refusedByAllowlist!]));
   const keys = [...new Set([...before.keys(), ...after.keys()])].sort();
 
   return keys.map((routeKey) => {
@@ -123,7 +135,10 @@ export function diffDiscoverySnapshots(previous: DiscoverySnapshot | undefined, 
 
     if (unrefreshed.has(provider)) {
       kinds.push('notRefreshed');
-      detail.push(`${provider} did not answer this refresh, so ${routeKey} was not re-observed; its last observation stands`);
+      detail.push(refusedBy.has(provider)
+        ? `${provider} is not on provider allowlist ${refusedBy.get(provider)} and was not contacted, so ${routeKey} was not `
+          + 're-observed; its last observation stands'
+        : `${provider} did not answer this refresh, so ${routeKey} was not re-observed; its last observation stands`);
       return { routeKey, kinds, before: was, after: now, detail, qualificationNowStale: false };
     }
 
@@ -336,13 +351,18 @@ export type DiscoveryProbe = () => Promise<{ refreshed: boolean; detail: string;
  *   and did not name now is carried forward as `listed: false`, its last `observedAt` kept.
  *   A provider whose probe failed or threw carries every one of its previous routes forward
  *   UNTOUCHED, and its deltas say `notRefreshed` — never `disappeared`.
+ *   A provider the allowlist (cpa1 unless overridden) does not name is NOT CONTACTED: its probe is
+ *   never called, it is recorded as refused with the list's version, and its previous routes are
+ *   carried forward untouched exactly as for a provider that did not answer — nothing was looked at.
  */
 export async function refreshDiscovery(options: {
   previous?: DiscoverySnapshot;
   probes: Partial<Record<ProviderID, DiscoveryProbe>>;
   machineKey: string;
   now: Date;
+  allowlist?: ProviderAllowlist;
 }): Promise<{ snapshot: DiscoverySnapshot; deltas: DiscoveryDelta[] }> {
+  const allowlist = options.allowlist ?? DEFAULT_PROVIDER_ALLOWLIST;
   const takenAt = options.now.toISOString().replace(/\.\d{3}Z$/, 'Z');
   if (options.previous !== undefined && options.previous.machineKey !== options.machineKey) {
     throw new Error(`the previous snapshot was taken on ${options.previous.machineKey}, not ${options.machineKey}. A local `
@@ -354,6 +374,13 @@ export async function refreshDiscovery(options: {
   const probed = Object.keys(options.probes).sort() as ProviderID[];
 
   for (const provider of probed) {
+    if (!isProviderAllowed(allowlist, provider)) {
+      providers.push({
+        provider, refreshed: false, detail: providerAllowlistRefusal(allowlist, provider), refusedByAllowlist: allowlist.version,
+      });
+      routes.push(...previousRoutes.filter((route) => route.provider === provider));
+      continue;
+    }
     let outcome: { refreshed: boolean; detail: string; routes: RouteObservation[] };
     try {
       outcome = await options.probes[provider]!();
@@ -375,6 +402,8 @@ export async function refreshDiscovery(options: {
   }
   routes.sort((a, b) => (a.routeKey < b.routeKey ? -1 : a.routeKey > b.routeKey ? 1 : 0));
   providers.sort((a, b) => (a.provider < b.provider ? -1 : 1));
-  const snapshot: DiscoverySnapshot = { schema: DISCOVERY_SNAPSHOT_SCHEMA, machineKey: options.machineKey, takenAt, providers, routes };
+  const snapshot: DiscoverySnapshot = {
+    schema: DISCOVERY_SNAPSHOT_SCHEMA, machineKey: options.machineKey, takenAt, providerAllowlist: allowlist.version, providers, routes,
+  };
   return { snapshot, deltas: diffDiscoverySnapshots(options.previous, snapshot) };
 }

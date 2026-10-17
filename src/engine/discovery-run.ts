@@ -30,6 +30,7 @@ import {
   machineObservation, providerAvailabilityObservation, readObservationStore, routeAvailabilityObservation,
 } from './observation-store';
 import { ProviderID } from './provider';
+import { ProviderAllowlist } from './provider-allowlist';
 
 export const DISCOVERY_RUN_SUMMARY_SCHEMA = 'cdr1' as const;
 
@@ -58,6 +59,9 @@ export function discoveryRefreshRecords(snapshot: DiscoverySnapshot, deltas: Dis
     discoverySnapshotObservation(snapshot, label, provenance),
   ];
   for (const provider of snapshot.providers) {
+    // A PROVIDER THE ALLOWLIST REFUSED WAS NOT ASKED, so there is no answer of its to record. The
+    // refusal itself is in the snapshot, with the list's version.
+    if (provider.refusedByAllowlist !== undefined) continue;
     records.push(providerAvailabilityObservation({
       provider: provider.provider, machineKey: machine.key, machineLabel: label,
       observedAt, answered: provider.refreshed, detail: provider.detail, provenance,
@@ -104,11 +108,15 @@ export interface DiscoveryRunSummary {
   status: 'completed' | 'refusedLockHeld';
   machineKey: string;
   at: string;
+  /** The provider allowlist version the refresh consulted. Present when it completed. */
+  providerAllowlist?: string;
   /** Why the run did nothing. Present only when it was refused. */
   reason?: string;
   providersAnswered?: ProviderID[];
   /** Each provider that did not answer, with what it said. Recorded, never thrown. */
   providersNotAnswered?: { provider: ProviderID; detail: string }[];
+  /** Each provider the allowlist refused, never contacted, with the reason naming the list's version. */
+  providersRefused?: { provider: ProviderID; reason: string }[];
   routes?: number;
   /** True when any route moved. False on a run that found the world as the last one left it. */
   changed?: boolean;
@@ -153,6 +161,8 @@ export async function runDiscoveryOnce(options: {
   /** The invocation, recorded on the lock so a refused run can name who holds it. */
   command: string;
   lockOptions?: LockOptions;
+  /** Which providers may be contacted. cpa1 when absent; an override is for tests and code only. */
+  allowlist?: ProviderAllowlist;
 }): Promise<DiscoveryRunOutcome> {
   const at = iso(options.now);
   const nonce = Math.random().toString(36).slice(2, 10);
@@ -172,7 +182,7 @@ export async function runDiscoveryOnce(options: {
   try {
     const previous = latestDiscoverySnapshot(readObservationStore(options.root), options.machine.key);
     const { snapshot, deltas } = await refreshDiscovery({
-      previous, probes: options.probes, machineKey: options.machine.key, now: options.now,
+      previous, probes: options.probes, machineKey: options.machine.key, now: options.now, allowlist: options.allowlist,
     });
     const appended = appendObservations(options.root,
       discoveryRefreshRecords(snapshot, deltas, options.machine, at, options.command),
@@ -181,9 +191,12 @@ export async function runDiscoveryOnce(options: {
     const summary: DiscoveryRunSummary = {
       ...base,
       status: 'completed',
+      ...(snapshot.providerAllowlist === undefined ? {} : { providerAllowlist: snapshot.providerAllowlist }),
       providersAnswered: snapshot.providers.filter((entry) => entry.refreshed).map((entry) => entry.provider),
-      providersNotAnswered: snapshot.providers.filter((entry) => !entry.refreshed)
+      providersNotAnswered: snapshot.providers.filter((entry) => !entry.refreshed && entry.refusedByAllowlist === undefined)
         .map((entry) => ({ provider: entry.provider, detail: entry.detail })),
+      providersRefused: snapshot.providers.filter((entry) => entry.refusedByAllowlist !== undefined)
+        .map((entry) => ({ provider: entry.provider, reason: entry.detail })),
       routes: snapshot.routes.length,
       changed: changes.length > 0,
       changes: changes.map((delta) => ({ routeKey: delta.routeKey, kinds: delta.kinds })),

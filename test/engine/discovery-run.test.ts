@@ -22,7 +22,8 @@ import {
 import { acquireCampaignLock, campaignLockPath } from '../../src/engine/lock';
 import { MachineFingerprint } from '../../src/engine/machine-availability';
 import { latestDiscoverySnapshot, readObservationStore } from '../../src/engine/observation-store';
-import { ProviderID } from '../../src/engine/provider';
+import { PROVIDER_IDS, ProviderID } from '../../src/engine/provider';
+import { overrideProviderAllowlist } from '../../src/engine/provider-allowlist';
 
 const temporaries: string[] = [];
 afterEach(() => { for (const directory of temporaries.splice(0)) fs.rmSync(directory, { recursive: true, force: true }); });
@@ -59,8 +60,13 @@ function answering(routes: RouteObservation[]): DiscoveryProbe & { calls: number
   return probe;
 }
 
+// These tests pin the run wrapper, not the allowlist, and use opencodeCLI as a stand-in hosted
+// provider; an override naming every declared provider keeps them about that. The default (cpa1) is
+// pinned in provider-allowlist.test.ts.
+const EVERY_PROVIDER = overrideProviderAllowlist(PROVIDER_IDS);
+
 function run(root: string, probes: Partial<Record<ProviderID, DiscoveryProbe>>, now = FIRST) {
-  return runDiscoveryOnce({ root, probes, machine: MACHINE, now, command: COMMAND, lockOptions: QUIET });
+  return runDiscoveryOnce({ root, probes, machine: MACHINE, now, command: COMMAND, lockOptions: QUIET, allowlist: EVERY_PROVIDER });
 }
 
 describe('(1) two runs cannot overlap: the campaign lock is taken first', () => {

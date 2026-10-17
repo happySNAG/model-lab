@@ -22,6 +22,12 @@ import {
 import { DISCOVERY_EVIDENCE_MAX_AGE_MILLISECONDS } from '../../src/engine/discovery-store';
 import { FREE_OPENCODE_DEVELOPMENT_POOL, ProviderStatus } from '../../src/engine/discovery';
 import { publishedPriceFor } from '../../src/engine/opencode-pricing';
+import { PROVIDER_IDS } from '../../src/engine/provider';
+import { overrideProviderAllowlist } from '../../src/engine/provider-allowlist';
+
+// The refresh tests below use opencodeCLI as a stand-in hosted provider, so they pass an override naming
+// every declared provider. The default allowlist (cpa1) is pinned in provider-allowlist.test.ts.
+const EVERY_PROVIDER = overrideProviderAllowlist(PROVIDER_IDS);
 
 const NOW = new Date('2026-09-22T12:00:00Z');
 const BIG_PICKLE: OpenCodeCatalogueEntry = {
@@ -164,7 +170,7 @@ describe('46–53 · the discovery delta names exactly what moved, and says so w
   it('a provider that did not answer is NOT read as every model disappearing', async () => {
     const previous = snapshot([obs('opencode/big-pickle')]);
     const { snapshot: next, deltas } = await refreshDiscovery({
-      previous, machineKey: 'cmk1:a', now: NOW,
+      previous, machineKey: 'cmk1:a', now: NOW, allowlist: EVERY_PROVIDER,
       probes: { opencodeCLI: async () => { throw new Error('opencode timed out'); } },
     });
     expect(next.routes).toEqual(previous.routes);
@@ -175,7 +181,7 @@ describe('46–53 · the discovery delta names exactly what moved, and says so w
   it('refresh carries an unnamed route forward as listed:false, so a return can be seen later', async () => {
     const previous = snapshot([obs('opencode/big-pickle'), obs('opencode/union-alpha')]);
     const { snapshot: next, deltas } = await refreshDiscovery({
-      previous, machineKey: 'cmk1:a', now: NOW,
+      previous, machineKey: 'cmk1:a', now: NOW, allowlist: EVERY_PROVIDER,
       probes: { opencodeCLI: async () => ({ refreshed: true, detail: 'ok', routes: [obs('opencode/big-pickle')] }) },
     });
     expect(next.routes.find((route) => route.modelID === 'opencode/union-alpha')?.listed).toBe(false);
