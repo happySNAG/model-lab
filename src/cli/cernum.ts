@@ -90,13 +90,13 @@ import {
   // The fleet: one append-only observation store, the routing policy that reads it, and the
   // machine-scoped availability that keeps one Mac's observations from becoming another's.
   ALL_WORKSPACE_DIFFICULTY_TIERS, CURRENT_ROUTING_POLICY_VERSION, DiscoveryProbe,
-  IMPORTED_OBSERVATION_IS_NOT_LOCAL, MachineFingerprint, ObservationRecord, RouteCandidateQuery,
+  IMPORTED_OBSERVATION_IS_NOT_LOCAL, MachineFingerprint, RouteCandidateQuery,
   WorkspaceDifficultyTier, appendObservations, deriveRouteQualification, describeObservationStore,
-  discoveryDeltaObservation, discoverySnapshotObservation, exportObservations, fleetAvailability,
-  importObservations, latestDiscoverySnapshot, machineKey, machineObservation, machinesInStore,
+  discoveryRefreshRecords, exportObservations, fleetAvailability,
+  importObservations, latestDiscoverySnapshot, machineKey, machinesInStore,
   observationStorePath, observationsForRouting, observationsFromLocalModels, observationsFromProviderStatus,
-  providerAvailabilityObservation, qualifiedRouteCandidatesFromStore, readMachineFingerprint, routeSpendPosture,
-  readObservationBundle, readObservationStore, refreshDiscovery, routeAvailabilityObservation,
+  qualifiedRouteCandidatesFromStore, readMachineFingerprint, routeSpendPosture,
+  readObservationBundle, readObservationStore, refreshDiscovery, runDiscoveryOnce,
   writeObservationBundle,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
@@ -3125,10 +3125,82 @@ async function commandDiscoveryRefresh(positional: string[], options: Options): 
   const here = thisMachine();
   const now = new Date();
   const observedAt = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const asked = positional.filter((entry) => entry.trim().length > 0);
 
   const contents = readObservationStore(root);
   const previous = latestDiscoverySnapshot(contents, here.key);
+  const probes = discoveryProbes('discovery-refresh', positional, options, observedAt);
+
+  const { snapshot, deltas } = await refreshDiscovery({ previous, probes, machineKey: here.key, now });
+  if (options.json === true) { say(JSON.stringify({ snapshot, deltas }, null, 2)); return; }
+
+  say(`Discovery refresh on ${here.key} (${here.fingerprint.hostname}) at ${snapshot.takenAt}`);
+  say('Nothing below invoked a model. These are the same read-only probes `providers` and `models` run.');
+  say('');
+  for (const provider of snapshot.providers) {
+    say(`  ${provider.provider.padEnd(14)} ${provider.refreshed ? 'answered' : 'DID NOT ANSWER'} — ${provider.detail}`);
+  }
+  say('');
+  say(`${snapshot.routes.length} route(s) in this snapshot; ${deltas.length} compared against the previous one`
+    + `${previous === undefined ? ' (there was none — this is the first refresh on this machine)' : ` taken ${previous.takenAt}`}.`);
+  for (const delta of deltas) {
+    if (delta.kinds.length === 1 && delta.kinds[0] === 'noMaterialChange') continue;
+    say('');
+    say(`  ${delta.routeKey}  [${delta.kinds.join(', ')}]${delta.qualificationNowStale ? '  — QUALIFICATION NOW STALE' : ''}`);
+    for (const line of delta.detail) for (const wrapped of wrap(line, 70)) say(`    ${wrapped}`);
+  }
+  const unchanged = deltas.filter((delta) => delta.kinds.length === 1 && delta.kinds[0] === 'noMaterialChange').length;
+  if (unchanged > 0) { say(''); say(`  ${unchanged} route(s): nothing that describes the route moved.`); }
+
+  if (options['dry-run'] === true) {
+    say('');
+    say('--dry-run: nothing was persisted.');
+    return;
+  }
+
+  // PERSISTED AS OBSERVATIONS, not as a current-truth file. The snapshot, each provider's answer, each
+  // route's availability and every material delta become records; the store keeps all of them.
+  const records = discoveryRefreshRecords(snapshot, deltas, here, observedAt, `${TERMINAL_COMMAND} discovery-refresh`);
+  const appended = appendObservations(root, records, { origin: 'observedHere', receivedAt: observedAt });
+  say('');
+  say(`Persisted ${appended.written.length} observation(s) to ${observationStorePath(root)}`
+    + `${appended.alreadyPresent.length > 0 ? ` (${appended.alreadyPresent.length} were already held, unchanged)` : ''}.`);
+}
+
+/**
+ * One headless refresh: lock, `refreshDiscovery` once, persist, summarise. The entry a scheduler calls.
+ *
+ * Exits 4 when another run holds the lock, so a scheduler can tell "skipped" from "ran".
+ */
+async function commandDiscoveryRun(positional: string[], options: Options): Promise<void> {
+  const root = String(options.root ?? defaultCampaignRoot());
+  const here = thisMachine();
+  const now = new Date();
+  const observedAt = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const probes = discoveryProbes('discovery-run', positional, options, observedAt);
+  const { summary, recordPath } = await runDiscoveryOnce({
+    root, probes, machine: here, now, command: `${TERMINAL_COMMAND} discovery-run`,
+  });
+  if (options.json === true) {
+    say(JSON.stringify(summary));
+  } else if (summary.status === 'refusedLockHeld') {
+    say(`Discovery run refused on ${here.key}: ${summary.reason}`);
+  } else {
+    say(`Discovery run on ${here.key} (${here.fingerprint.hostname}) at ${summary.at}`);
+    say(`  answered        ${(summary.providersAnswered ?? []).join(', ') || '(none)'}`);
+    for (const entry of summary.providersNotAnswered ?? []) say(`  DID NOT ANSWER  ${entry.provider} — ${entry.detail}`);
+    say(`  routes          ${summary.routes}`);
+    say(`  changed         ${summary.changed ? `yes, ${summary.changes?.length} route(s)` : 'no'}`);
+    for (const change of summary.changes ?? []) say(`    ${change.routeKey}  [${change.kinds.join(', ')}]`);
+    say(`  persisted       ${summary.observationsWritten} observation(s) to ${observationStorePath(root)}`);
+  }
+  if (options.json !== true) say(`  run recorded    ${recordPath}`);
+  if (summary.status === 'refusedLockHeld') process.exit(4);
+}
+
+/** The read-only probes `discovery-refresh` and `discovery-run` both run, one per provider asked for. */
+function discoveryProbes(command: string, positional: string[], options: Options,
+                         observedAt: string): Partial<Record<ProviderID, DiscoveryProbe>> {
+  const asked = positional.filter((entry) => entry.trim().length > 0);
 
   // THE LOCAL RUNTIME IS REFRESHED TOO, and it is not in `DISCOVERABLE_PROVIDERS`.
   //
@@ -3140,7 +3212,7 @@ async function commandDiscoveryRefresh(positional: string[], options: Options): 
   const REFRESHABLE: ProviderID[] = [...DISCOVERABLE_PROVIDERS, 'ollama' as ProviderID].sort();
   const unknown = asked.filter((entry) => !REFRESHABLE.includes(entry as ProviderID));
   if (unknown.length > 0) {
-    fail(`discovery-refresh: ${unknown.join(', ')} is not a provider this can refresh. `
+    fail(`${command}: ${unknown.join(', ')} is not a provider this can refresh. `
       + `Try ${REFRESHABLE.join(', ')}. Nothing was probed.`, 2);
   }
 
@@ -3175,79 +3247,7 @@ async function commandDiscoveryRefresh(positional: string[], options: Options): 
       };
     };
   }
-
-  const { snapshot, deltas } = await refreshDiscovery({ previous, probes, machineKey: here.key, now });
-  if (options.json === true) { say(JSON.stringify({ snapshot, deltas }, null, 2)); return; }
-
-  say(`Discovery refresh on ${here.key} (${here.fingerprint.hostname}) at ${snapshot.takenAt}`);
-  say('Nothing below invoked a model. These are the same read-only probes `providers` and `models` run.');
-  say('');
-  for (const provider of snapshot.providers) {
-    say(`  ${provider.provider.padEnd(14)} ${provider.refreshed ? 'answered' : 'DID NOT ANSWER'} — ${provider.detail}`);
-  }
-  say('');
-  say(`${snapshot.routes.length} route(s) in this snapshot; ${deltas.length} compared against the previous one`
-    + `${previous === undefined ? ' (there was none — this is the first refresh on this machine)' : ` taken ${previous.takenAt}`}.`);
-  for (const delta of deltas) {
-    if (delta.kinds.length === 1 && delta.kinds[0] === 'noMaterialChange') continue;
-    say('');
-    say(`  ${delta.routeKey}  [${delta.kinds.join(', ')}]${delta.qualificationNowStale ? '  — QUALIFICATION NOW STALE' : ''}`);
-    for (const line of delta.detail) for (const wrapped of wrap(line, 70)) say(`    ${wrapped}`);
-  }
-  const unchanged = deltas.filter((delta) => delta.kinds.length === 1 && delta.kinds[0] === 'noMaterialChange').length;
-  if (unchanged > 0) { say(''); say(`  ${unchanged} route(s): nothing that describes the route moved.`); }
-
-  if (options['dry-run'] === true) {
-    say('');
-    say('--dry-run: nothing was persisted.');
-    return;
-  }
-
-  // PERSISTED AS OBSERVATIONS, not as a current-truth file. The snapshot, each provider's answer, each
-  // route's availability and every material delta become records; the store keeps all of them.
-  const records: ObservationRecord[] = [
-    machineObservation(here.fingerprint, here.key, observedAt, `${TERMINAL_COMMAND} discovery-refresh`),
-    discoverySnapshotObservation(snapshot, here.fingerprint.hostname, `${TERMINAL_COMMAND} discovery-refresh`),
-  ];
-  for (const provider of snapshot.providers) {
-    records.push(providerAvailabilityObservation({
-      provider: provider.provider, machineKey: here.key, machineLabel: here.fingerprint.hostname,
-      observedAt, answered: provider.refreshed, detail: provider.detail,
-      provenance: `${TERMINAL_COMMAND} discovery-refresh`,
-    }));
-  }
-  for (const route of snapshot.routes) {
-    // A ROUTE A FAILED PROBE CARRIED FORWARD IS NOT RE-OBSERVED. Writing an availability record for it
-    // would date somebody else's observation to now, which is the one thing a durable store must not do.
-    if (snapshot.providers.find((entry) => entry.provider === route.provider)?.refreshed !== true) continue;
-    // WHEN THIS OBSERVATION WAS MADE IS NOW, NOT WHEN THE ROUTE WAS LAST SEEN.
-    //
-    // A route the provider ANSWERED about but did not name is carried into the snapshot as
-    // `listed: false` with its last-seen `observedAt` — correct for the snapshot, whose `observedAt`
-    // means "last actually seen". It is wrong for an availability observation, which means "when I
-    // looked". Dating the not-listed record to the last-seen time produced two records with the SAME
-    // instant and opposite verdicts, so which one `availabilityOnMachine` returned was decided by a
-    // digest tie-break — and, because the record then digested identically on every later refresh, the
-    // disappearance could never be re-observed and the route aged into `stale` rather than
-    // `unavailable`. A listed route keeps the provider's own timestamp; a vanished one is dated now.
-    const listed = route.listed && route.availability !== 'refused';
-    records.push(routeAvailabilityObservation({
-      routeKey: route.routeKey, machineKey: here.key, machineLabel: here.fingerprint.hostname,
-      observedAt: route.listed ? route.observedAt : observedAt, available: listed,
-      reason: route.listed ? `named by this refresh (${route.availability ?? 'listed'})`
-        : `${route.provider} answered this refresh and did not name it (last seen ${route.observedAt})`,
-      ...(route.runtimeDigest === undefined ? {} : { runtimeDigest: route.runtimeDigest }),
-    }, route.provider, `${TERMINAL_COMMAND} discovery-refresh`));
-  }
-  for (const delta of deltas) {
-    if (!delta.qualificationNowStale) continue;
-    records.push(discoveryDeltaObservation(delta, here.key, here.fingerprint.hostname, observedAt,
-      `${TERMINAL_COMMAND} discovery-refresh`));
-  }
-  const appended = appendObservations(root, records, { origin: 'observedHere', receivedAt: observedAt });
-  say('');
-  say(`Persisted ${appended.written.length} observation(s) to ${observationStorePath(root)}`
-    + `${appended.alreadyPresent.length > 0 ? ` (${appended.alreadyPresent.length} were already held, unchanged)` : ''}.`);
+  return probes;
 }
 
 /**
@@ -4272,6 +4272,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'observations-import': return commandObservationsImport(positional, options);
     case 'availability': return commandAvailability(options);
     case 'discovery-refresh': return commandDiscoveryRefresh(positional, options);
+    case 'discovery-run': return commandDiscoveryRun(positional, options);
     case 'candidates': return commandCandidates(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();

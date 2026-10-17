@@ -548,6 +548,20 @@ export const COMMAND_SPECS: CommandSpec[] = [
     ],
   },
   {
+    name: 'discovery-run', effect: 'invokesLocalTool', positional: '[<provider>…]',
+    summary: 'one headless, locked discovery refresh — the entry a scheduler calls',
+    options: [...ROOT,
+      { name: 'json', takesValue: false, summary: 'print a one-line JSON summary of the run' }],
+    detail: [
+      'Runs `discovery-refresh` once, unattended: the same read-only probes, the same snapshot and change',
+      'report, persisted to the same observation store. No model is invoked.',
+      '',
+      'Takes the discovery lock first. If another run holds it, this one does nothing, records why under',
+      '.discovery-run/runs, and exits 4. A provider that does not answer is recorded in the summary and',
+      'never stops the others. A second run over an unchanged world reports changed: false.',
+    ],
+  },
+  {
     name: 'candidates', effect: 'readOnly', positional: '<capability>',
     summary: 'the routes whose evidence qualifies them for a capability — a candidate SET, never a winner',
     options: [...ROOT,

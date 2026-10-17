@@ -125,6 +125,7 @@ export {
 // qualification read model, the spend posture, and the Ordra-facing candidate contract.
 export * from './model-description';
 export * from './discovery-refresh';
+export * from './discovery-run';
 export * from './machine-availability';
 export * from './route-spend-posture';
 export * from './route-qualification';

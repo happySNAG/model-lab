@@ -21,9 +21,10 @@
 //                  next snapshot, and diff. A provider whose probe FAILED contributes no disappearance:
 //                  "the tool did not answer" is never read as "the model is gone".
 //
-// NO SCHEDULER. Nothing here runs on a timer, because nothing in this engine does. A future scheduler
-// calls `refreshDiscovery` and acts on the deltas; the decision about what a change means is made here,
-// deterministically, so the scheduler has nothing to decide.
+// NO SCHEDULER. Nothing here runs on a timer, because nothing in this engine does. The one-shot entry a
+// scheduler calls is `discovery-run` (`runDiscoveryOnce` in `discovery-run.ts`): it takes the lock, calls
+// `refreshDiscovery` once, persists the result and prints a summary. The decision about what a change
+// means is made here, deterministically, so the scheduler has nothing to decide.
 
 import { ModelAvailability, ProviderStatus } from './discovery';
 import { DISCOVERY_EVIDENCE_MAX_AGE_MILLISECONDS } from './discovery-store';
