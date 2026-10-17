@@ -18,7 +18,7 @@
 // NOTHING HERE SENDS A PROVIDER REQUEST. The assertions are that zero requests happen, so a test
 // that accidentally sent one would be the failure it is looking for.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -58,13 +58,28 @@ function invocations(name: string): string[] {
 
 const NODE_DIRECTORY = path.dirname(process.execPath);
 
+// Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+// subprocess, and the every-command loop below runs long enough to trip vitest's own RPC timeout.
 function cernum(...args: string[]) {
-  const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
-    cwd: root, encoding: 'utf8',
-    // The fake CLIs come FIRST so a provider call would find them rather than a real tool.
-    env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+  return new Promise<{
+    pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+    stdout: string; stderr: string; error?: Error; output: string;
+  }>((resolve) => {
+    const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
+      cwd: root,
+      // The fake CLIs come FIRST so a provider call would find them rather than a real tool.
+      env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+    });
+    let stdout = '';
+    let stderr = '';
+    let error: Error | undefined;
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (err) => { error = err; });
+    child.on('close', (status, signal) => {
+      resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+    });
   });
-  return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 beforeEach(() => {
@@ -80,8 +95,8 @@ afterEach(() => {
 });
 
 describe('v0.2.3 · `smoke --help` prints help and sends nothing', () => {
-  it('answers --help without sending a single request', () => {
-    const result = cernum('smoke', '--help');
+  it('answers --help without sending a single request', async () => {
+    const result = await cernum('smoke', '--help');
 
     expect(result.status).toBe(0);
     expect(result.output).toContain('prove a model by asking it once');
@@ -89,21 +104,21 @@ describe('v0.2.3 · `smoke --help` prints help and sends nothing', () => {
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('answers -h the same way — a single dash is an option, not a positional', () => {
-    const result = cernum('smoke', '-h');
+  it('answers -h the same way — a single dash is an option, not a positional', async () => {
+    const result = await cernum('smoke', '-h');
 
     expect(result.status).toBe(0);
     expect(result.output).toContain('SENDS REAL REQUESTS');
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('says in its own help what the old default was, so the incident is documented where it happened', () => {
-    expect(cernum('smoke', '--help').output).toContain('sent six live requests');
+  it('says in its own help what the old default was, so the incident is documented where it happened', async () => {
+    expect((await cernum('smoke', '--help')).output).toContain('sent six live requests');
   }, 120_000);
 
-  it('prints help for every command without running any of them', () => {
+  it('prints help for every command without running any of them', async () => {
     for (const spec of COMMAND_SPECS) {
-      const result = cernum(spec.name, '--help');
+      const result = await cernum(spec.name, '--help');
       expect(result.status, `${spec.name} --help should exit 0`).toBe(0);
       if (spec.name === 'help') {
         // `help --help` is the one that prints the GENERAL help rather than a page about itself,
@@ -121,8 +136,8 @@ describe('v0.2.3 · `smoke --help` prints help and sends nothing', () => {
 });
 
 describe('v0.2.3 · a missing or wrong provider refuses instead of defaulting', () => {
-  it('refuses with no provider, and names no default', () => {
-    const result = cernum('smoke');
+  it('refuses with no provider, and names no default', async () => {
+    const result = await cernum('smoke');
 
     expect(result.status).toBe(2);
     expect(result.output).toContain('no provider named');
@@ -130,17 +145,17 @@ describe('v0.2.3 · a missing or wrong provider refuses instead of defaulting', 
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('refuses an unknown provider', () => {
-    const result = cernum('smoke', 'notAProvider', '--all-ladder');
+  it('refuses an unknown provider', async () => {
+    const result = await cernum('smoke', 'notAProvider', '--all-ladder');
 
     expect(result.status).toBe(2);
     expect(result.output).toContain('cannot be smoke tested');
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('refuses a provider with no candidate scope, even a real one', () => {
+  it('refuses a provider with no candidate scope, even a real one', async () => {
     // Naming claudeCLI is not consent to six requests. The scope is a second, separate decision.
-    const result = cernum('smoke', 'claudeCLI');
+    const result = await cernum('smoke', 'claudeCLI');
 
     expect(result.status).toBe(2);
     expect(result.output).toContain('no candidate scope given');
@@ -148,24 +163,24 @@ describe('v0.2.3 · a missing or wrong provider refuses instead of defaulting', 
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('refuses a model that is not on the ladder rather than inventing an identifier', () => {
-    const result = cernum('smoke', 'claudeCLI', '--models', 'claude-imaginary-9');
+  it('refuses a model that is not on the ladder rather than inventing an identifier', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--models', 'claude-imaginary-9');
 
     expect(result.status).toBe(2);
     expect(result.output).toContain('never invents an identifier');
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('refuses more than one provider at a time', () => {
-    const result = cernum('smoke', 'claudeCLI', 'codexCLI', '--all-ladder');
+  it('refuses more than one provider at a time', async () => {
+    const result = await cernum('smoke', 'claudeCLI', 'codexCLI', '--all-ladder');
     expect(result.status).toBe(2);
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 });
 
 describe('v0.2.3 · unknown options stop the program', () => {
-  it('refuses a misspelled option with a nonzero exit, and runs nothing', () => {
-    const result = cernum('smoke', 'claudeCLI', '--modles', 'claude-haiku-4-5');
+  it('refuses a misspelled option with a nonzero exit, and runs nothing', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--modles', 'claude-haiku-4-5');
 
     expect(result.status).toBe(2);
     expect(result.output).toContain('unknown option --modles');
@@ -173,28 +188,28 @@ describe('v0.2.3 · unknown options stop the program', () => {
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('lists what it WOULD have accepted, so the fix is in the error', () => {
-    const result = cernum('smoke', 'claudeCLI', '--nope');
+  it('lists what it WOULD have accepted, so the fix is in the error', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--nope');
     expect(result.output).toContain('--all-ladder');
     expect(result.output).toContain('--dry-run');
   }, 120_000);
 
-  it('refuses an unknown option on a read-only command too', () => {
-    const result = cernum('providers', '--verbose');
+  it('refuses an unknown option on a read-only command too', async () => {
+    const result = await cernum('providers', '--verbose');
     expect(result.status).toBe(2);
     expect(result.output).toContain('unknown option');
   }, 120_000);
 
-  it('refuses an unknown COMMAND', () => {
-    const result = cernum('smok', '--help');
+  it('refuses an unknown COMMAND', async () => {
+    const result = await cernum('smok', '--help');
     expect(result.status).toBe(1);
     expect(result.output).toContain("unknown command 'smok'");
   }, 120_000);
 });
 
 describe('v0.2.3 · --dry-run shows the requests and sends none', () => {
-  it('lists every request the whole Claude ladder would send, and sends zero', () => {
-    const result = cernum('smoke', 'claudeCLI', '--all-ladder', '--dry-run');
+  it('lists every request the whole Claude ladder would send, and sends zero', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--all-ladder', '--dry-run');
 
     expect(result.status).toBe(0);
     expect(result.output).toContain('DRY RUN');
@@ -211,22 +226,22 @@ describe('v0.2.3 · --dry-run shows the requests and sends none', () => {
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('states the authorization class before anything could be spent', () => {
-    const result = cernum('smoke', 'claudeCLI', '--models', 'claude-haiku-4-5', '--dry-run');
+  it('states the authorization class before anything could be spent', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--models', 'claude-haiku-4-5', '--dry-run');
     expect(result.output).toContain('subscriptionIncluded');
     expect(result.output).toContain('Not free');
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('narrows to exactly the models named, so a scope is a scope', () => {
-    const result = cernum('smoke', 'claudeCLI', '--models', 'claude-haiku-4-5', '--dry-run');
+  it('narrows to exactly the models named, so a scope is a scope', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--models', 'claude-haiku-4-5', '--dry-run');
     expect(result.output).toContain('requests to be sent   1');
     expect(result.output).not.toContain('claude-opus-5');
     expect(invocations('claude')).toEqual([]);
   }, 120_000);
 
-  it('dry-runs discovery without running the tool', () => {
-    const result = cernum('discover', 'opencodeCLI', '--dry-run');
+  it('dry-runs discovery without running the tool', async () => {
+    const result = await cernum('discover', 'opencodeCLI', '--dry-run');
     expect(result.status).toBe(0);
     expect(result.output).toContain('DRY RUN');
     expect(invocations('opencode')).toEqual([]);
