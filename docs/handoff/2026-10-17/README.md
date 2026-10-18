@@ -9,7 +9,10 @@ This directory hands Cernum development from the temporary Mac mini Ordra contro
 
 **Legend:** **[VERIFIED]** means Ordra ran the command itself on the Mac mini and recorded its exit code. **[PLANNED]** means recorded but never executed. **[PROPOSED]** means a suggestion never approved as a goal.
 
+> **Read [`addendum-2026-10-18.md`](addendum-2026-10-18.md) first.** It records the owner's migration decisions, the comparison with GitHub `main` and the integration plan, and it is the preferred source for adoption.
+
 Companion files:
+- [`addendum-2026-10-18.md`](addendum-2026-10-18.md): owner decisions of 2026-10-18 and the `main` comparison.
 - [`ordra-runtime-defects.md`](ordra-runtime-defects.md): two **Ordra** defects, not Cernum defects.
 - [`roadmap.md`](roadmap.md): Cernum capabilities and the proposed roadmap.
 
@@ -56,7 +59,7 @@ The branch is `ordra/cernum-lane` as it stood at the pause, plus one documentati
 
 ## 3. Goal and campaign
 
-### Goal G-0128@v1 (project `cernum-model-lab`), accepted 2026-10-16
+### Goal G-0128@v1 (Cernum's project on the Mac mini controller), accepted 2026-10-16
 
 - **Authority:** `git`, `npm run typecheck`, `npm test`.
 - **Writable paths:** `src`, `test`, `fixtures`, `scripts`, `docs`, `README.md`.
