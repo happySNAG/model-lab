@@ -98,10 +98,13 @@ import {
   qualifiedRouteCandidatesFromStore, readMachineFingerprint, routeSpendPosture,
   readObservationBundle, readObservationStore, refreshDiscovery, runDiscoveryOnce,
   writeObservationBundle,
+  // Recurring discovery, generated and never installed.
+  DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
+  writeDiscoverySchedule,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { COMMAND_SPECS, CommandSpec, acceptedOptions, commandSpec, effectSentence } from './command-spec';
-import { TerminalCommandError, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
+import { TerminalCommandError, installPath, installTerminalCommand, terminalCommandStatus, uninstallTerminalCommand } from '../shared/terminal-install';
 
 const DEFAULT_ENDPOINT = environmentOverride('OLLAMA_ENDPOINT') ?? 'http://127.0.0.1:11434';
 
@@ -3200,6 +3203,51 @@ async function commandDiscoveryRun(positional: string[], options: Options): Prom
   if (summary.status === 'refusedLockHeld') process.exit(4);
 }
 
+/**
+ * Generate, never install, a launchd plist and zsh guard that would run `discovery-run` once a day in
+ * quiet hours. Prints both, or writes both into --out. Starts no process and refuses launchd's directories.
+ */
+async function commandDiscoverySchedule(positional: string[], options: Options): Promise<void> {
+  const root = path.resolve(String(options.root ?? defaultCampaignRoot()));
+  const out = options.out === undefined ? undefined : path.resolve(String(options.out));
+  const floorAsked = options['floor-gib'] === undefined ? undefined : String(options['floor-gib']).trim();
+  if (floorAsked !== undefined && !/^\d+$/.test(floorAsked)) {
+    fail(`discovery-schedule: --floor-gib must be a whole number of GiB, not '${floorAsked}'. Nothing was generated.`, 2);
+  }
+  let schedule;
+  let written: { guardPath: string; plistPath: string } | undefined;
+  try {
+    schedule = generateDiscoverySchedule({
+      root,
+      cernum: path.resolve(String(options.cernum ?? installPath())),
+      directory: out ?? path.join(discoveryRunDirectory(root), 'schedule'),
+      ...(options.window === undefined ? {} : { window: String(options.window) }),
+      ...(floorAsked === undefined ? {} : { floorGiB: Number(floorAsked) }),
+      ...(options.label === undefined ? {} : { label: String(options.label) }),
+      providers: positional,
+    });
+    if (out !== undefined) written = writeDiscoverySchedule(schedule, os.homedir());
+  } catch (error) {
+    if (error instanceof DiscoveryScheduleError) fail(`discovery-schedule: ${error.message}. Nothing was written.`, 2);
+    throw error;
+  }
+
+  if (written === undefined) {
+    say(`# ---- ${schedule.plistFileName} ----`);
+    process.stdout.write(schedule.plist);
+    say(`# ---- ${schedule.guardPath} ----`);
+    process.stdout.write(schedule.script);
+    say('# ----');
+  } else {
+    say(`Wrote the guard script  ${written.guardPath}`);
+    say(`Wrote the launchd plist ${written.plistPath}`);
+  }
+  say(`Schedule ${schedule.label}: once a day at ${schedule.window.text.slice(0, 5)} local. The guard runs`);
+  say(`discovery-run only inside ${schedule.window.text}, with at least ${schedule.floorGiB} GiB free on /, memory`);
+  say(`pressure not critical, and no live run holding ${schedule.lockFile}.`);
+  say(DISCOVERY_SCHEDULE_NOT_INSTALLED);
+}
+
 /** The read-only probes `discovery-refresh` and `discovery-run` both run, one per provider asked for. */
 function discoveryProbes(command: string, positional: string[], options: Options,
                          observedAt: string): Partial<Record<ProviderID, DiscoveryProbe>> {
@@ -4276,6 +4324,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'availability': return commandAvailability(options);
     case 'discovery-refresh': return commandDiscoveryRefresh(positional, options);
     case 'discovery-run': return commandDiscoveryRun(positional, options);
+    case 'discovery-schedule': return commandDiscoverySchedule(positional, options);
     case 'candidates': return commandCandidates(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
