@@ -235,8 +235,11 @@ describe('the command behaves like a command', () => {
   it('exits quietly when its reader goes away, instead of raising a stack trace', () => {
     // `cernum suites | head -3` closes the pipe with output still queued. A terminal interface that
     // answers that with an unhandled 'error' event is broken in the most ordinary use there is.
+    // The checkout path can contain spaces (and in principle quotes), so it is single-quoted for the shell.
+    const cli = path.resolve(__dirname, '../../src/cli/cernum.ts');
+    const quotedCli = `'${cli.replace(/'/g, `'\\''`)}'`;
     const output = execFileSync('/bin/sh', ['-c',
-      `npx tsx ${path.resolve(__dirname, '../../src/cli/cernum.ts')} suites 2>&1 | head -3`],
+      `npx tsx ${quotedCli} suites 2>&1 | head -3`],
       { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', timeout: 180_000 });
     expect(output).not.toMatch(/EPIPE|Unhandled|node:events/);
     expect(output).toMatch(/suite\(s\), \d+ case\(s\)/);

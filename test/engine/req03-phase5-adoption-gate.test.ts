@@ -30,6 +30,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
+import { evidenceRoot } from './evidence-root';
 import { caseByID, policyCatalog } from '../../src/core/catalog';
 import { EvaluationEngine } from '../../src/core/engine';
 import { evaluateRepaired, OUT_OF_SCOPE_METHODS, CAPABILITY_SCORING_POLICY_VERSION_2 } from '../../src/core/capability-repair';
@@ -40,8 +41,7 @@ import {
 } from '../../src/core/capability-repair-narrowing';
 import { AttemptRecord, Observation } from '../../src/core/run';
 
-const EVIDENCE_ROOT = process.env.CERNUM_EVIDENCE_ROOT
-  ?? '/Volumes/LaCie/MacMini-NemoClaw-Workspace/model-lab-results';
+const EVIDENCE_ROOT = evidenceRoot();
 
 /** Every source this gate reads, pinned. A changed digest is a hard stop, never a silent re-baseline. */
 const SEALED_SOURCES = {

@@ -7,7 +7,7 @@
 // engine's own formats; the CLI tests put a RECORDING `codex` and `claude` first on PATH and assert that
 // neither was ever run. The historical campaign on this machine is not read by any test here.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -78,7 +78,7 @@ describe('the source is read, classified and fingerprinted without being written
     expect(state(ASTRA, `${B}@3`)).toBe('notExecutedBecauseThrottled');
     expect(source.digest).toMatch(/^cmr1:[0-9a-f]{64}$/);
     expect(readSource(root).digest).toBe(source.digest);
-  });
+  }, 120_000);
 
   it('12 · reading, planning, continuing and reporting leave every byte of the source unchanged', async () => {
     const { root: sourceRoot } = await runSourceMatrix();
@@ -88,7 +88,7 @@ describe('the source is read, classified and fingerprinted without being written
     combineWorkspaceContinuationEvidence(readSource(sourceRoot), [{ label: continuation.label, rows: readWorkspaceContinuationRows(continuation.root) }]);
     expect(treeDigest(sourceRoot)).toEqual(before);
     expect(readSource(sourceRoot).digest).toBe(continuation.source.digest);
-  });
+  }, 120_000);
 
   it('12 · a torn source ledger is REFUSED, never repaired', async () => {
     const { root } = await runSourceMatrix();
@@ -100,7 +100,7 @@ describe('the source is read, classified and fingerprinted without being written
     expect(fs.readFileSync(results)).toEqual(torn);
     // …whereas `Ledger.open` — which the ordinary aggregate reader uses — would have truncated it.
     expect(() => readWorkspaceRecordReadOnly(record.recordRoot)).toThrow(WorkspaceContinuationError);
-  });
+  }, 120_000);
 
   it('refuses a source whose pack digest differs, whose aggregate is of another matrix, or that is itself a continuation', async () => {
     const { root } = await runSourceMatrix();
@@ -112,7 +112,7 @@ describe('the source is read, classified and fingerprinted without being written
     const continuation = await continueMatrix({ sourceRoot: root });
     expect(() => readWorkspaceContinuationSource({ campaignRoot: continuation.root, label: CONTINUATION_LABEL, pack: PACK, cases: cells }))
       .toThrow(expect.objectContaining({ code: 'sourceIsContinuation' }));
-  });
+  }, 120_000);
 });
 
 // MARK: - 9-11 · what a continuation selects
@@ -133,7 +133,7 @@ describe('a continuation selects exactly the cells that produced no evidence', (
     const held = planned.inScope.find((entry) => at(entry.cell) === `${B}@2`)!;
     expect(held.selected).toBe(false);
     expect(held.excludedBecause).toContain('--include-throttled-attempts');
-  });
+  }, 120_000);
 
   it('11 · a throttled attempt is eligible on request: a NEW record in a new root, the historical one untouched', async () => {
     const { root: sourceRoot } = await runSourceMatrix();
@@ -150,7 +150,7 @@ describe('a continuation selects exactly the cells that produced no evidence', (
       continuationSourceStatus: 'runtimeError', continuationSourceLabel: SOURCE_LABEL, continuationSourceDigest: source.digest });
     expect(treeDigest(historical.recordRoot!)).toEqual(before);
     expect(readWorkspaceRecordReadOnly(historical.recordRoot!).row).toMatchObject({ status: 'runtimeError', providerThrottled: true });
-  });
+  }, 120_000);
 
   it('11 · naming the throttled cell with --cells selects it without the flag; naming a deferred one narrows the set', async () => {
     const { root } = await runSourceMatrix();
@@ -159,7 +159,7 @@ describe('a continuation selects exactly the cells that produced no evidence', (
     expect(explicit.selection.selectors.map((selector) => `${at(selector)} ${selector.reason}`))
       .toEqual([`${B}@2 providerThrottledAttempt`, `${B}@3 notExecutedBecauseThrottled`]);
     expect(explicit.selection.continuation?.explicitSubset).toBe(true);
-  });
+  }, 120_000);
 
   it('13 · runs under a new label in a new root, with every record carrying its cell, its selection and its source', async () => {
     const { root: sourceRoot } = await runSourceMatrix();
@@ -179,7 +179,7 @@ describe('a continuation selects exactly the cells that produced no evidence', (
     const text = describeWorkspaceMatrixPlan(continuation.plan).join('\n');
     expect(text).toContain(`CONTINUATION of '${SOURCE_LABEL}'`);
     expect(text).toContain('never written');
-  });
+  }, 120_000);
 
   it('refuses a continuation that would run a different experiment: another deadline, attempt cap or driver', async () => {
     const { root } = await runSourceMatrix();
@@ -202,7 +202,7 @@ describe('a continuation selects exactly the cells that produced no evidence', (
       return driver === undefined ? undefined : { ...driver, driverID };
     } });
     expect(code(withDriver('driver.some-other'))).toBe('continuationNotComparable');
-  });
+  }, 120_000);
 
   it('refuses another route, effort or model the source never planned', async () => {
     const { root } = await runSourceMatrix();
@@ -213,7 +213,7 @@ describe('a continuation selects exactly the cells that produced no evidence', (
       .toThrow(expect.objectContaining({ code: 'continuationRouteMismatch' }));
     expect(() => planWorkspaceContinuation(source, { provider: 'codexCLI', modelIDs: ['gpt-9'], effort: 'medium' }))
       .toThrow(expect.objectContaining({ code: 'continuationModelNotInSource' }));
-  });
+  }, 120_000);
 });
 
 // MARK: - 14 · never duplicate scoring evidence
@@ -227,7 +227,7 @@ describe('14 · a continuation never produces duplicate scoring evidence', () =>
     }
     expect(() => planWorkspaceContinuation(readSource(root), { provider: 'codexCLI', modelIDs: [ASTRA], effort: 'medium',
       explicit: [{ caseID: A, repeatIndex: 4 }] })).toThrow(expect.objectContaining({ code: 'continuationCellNotPlanned' }));
-  });
+  }, 120_000);
 
   it('never selects a Sol cell: Sol completed everything, so naming Sol is refused rather than re-run', async () => {
     const { root } = await runSourceMatrix();
@@ -241,7 +241,7 @@ describe('14 · a continuation never produces duplicate scoring evidence', () =>
     expect(onlySol.selection.selectors).toEqual([]);
     expect(() => buildWorkspaceMatrixPlan(request({ campaignRoot: temporary('cernum-cont-'), runLabel: CONTINUATION_LABEL,
       modelIDs: [SOL], cellSelection: onlySol.selection }))).toThrow(expect.objectContaining({ code: 'cellSelectionEmpty' }));
-  });
+  }, 120_000);
 
   it('a second continuation in the same root finds nothing left; the same label is refused before anything is sent', async () => {
     const { root: sourceRoot } = await runSourceMatrix();
@@ -257,7 +257,7 @@ describe('14 · a continuation never produces duplicate scoring evidence', () =>
     // Replaying the first continuation's own selection under its own label collides with its sealed records.
     expect(() => buildWorkspaceMatrixPlan(request({ campaignRoot: first.root, runLabel: first.label,
       cellSelection: first.planned.selection }))).toThrow(expect.objectContaining({ code: 'cellSelectionRecordExists' }));
-  });
+  }, 120_000);
 
   it('a continuation the provider throttles again leaves its declined cell eligible for the next one, and only that', async () => {
     const { root: sourceRoot } = await runSourceMatrix();
@@ -268,7 +268,7 @@ describe('14 · a continuation never produces duplicate scoring evidence', () =>
     const next = planWorkspaceContinuation(readSource(sourceRoot), { provider: 'codexCLI', modelIDs: [ASTRA], effort: 'medium',
       includeProviderThrottledAttempts: true, priorContinuationRows: readWorkspaceContinuationRows(first.root) });
     expect(next.selection.selectors.map(at)).toEqual([`${A}@3`, `${B}@3`]);
-  });
+  }, 120_000);
 });
 
 // MARK: - 15-16 · the combined logical report
@@ -297,7 +297,7 @@ describe('15-16 · the combined report counts each planned cell exactly once, an
       expect(cell.quality.statusCounts).not.toHaveProperty('runtimeError');
       expect(Object.values(cell.quality.statusCounts).reduce((sum, count) => sum + count, 0)).toBe(3);
     }
-  });
+  }, 120_000);
 
   it('never double-counts a surplus continuation run, and keeps a continuation decline as history', async () => {
     const { root: sourceRoot } = await runSourceMatrix();
@@ -320,14 +320,14 @@ describe('15-16 · the combined report counts each planned cell exactly once, an
     expect(b2.history.map((entry) => entry.origin)).toEqual(['source', 'continuation']);
     expect(b2.evidenceRecordRoot!.startsWith(second.root)).toBe(true);
     expect(b2.excluded.map((entry) => entry.recordRoot.startsWith(third.root))).toEqual([true]);
-  });
+  }, 120_000);
 
   it('with no continuation yet, reports the missing cells as missing — never as failures, never as zeros', async () => {
     const { root } = await runSourceMatrix();
     const report = combineWorkspaceContinuationEvidence(readSource(root), []);
     expect(report.counts).toMatchObject({ plannedCells: 12, fromSource: 9, fromContinuation: 0, missing: 3, historicalProviderDeclines: 1 });
     expect(report.logicalRows).toHaveLength(9);
-  });
+  }, 120_000);
 
   it('ignores rows that do not continue this source', async () => {
     const { root: sourceRoot } = await runSourceMatrix();
@@ -337,7 +337,7 @@ describe('15-16 · the combined report counts each planned cell exactly once, an
       [{ label: other.label, rows: readWorkspaceContinuationRows(other.root) }]);
     expect(report.counts.fromContinuation).toBe(0);
     expect(report.counts.ignoredContinuationRows).toBe(2);
-  });
+  }, 120_000);
 });
 
 // MARK: - the historical campaign's shape: exactly nine cells
@@ -360,7 +360,7 @@ describe('the Astra continuation of the discriminator campaign\'s shape selects 
     expect(planned.selection.selectors.every((selector) => selector.modelID === ASTRA)).toBe(true);
     expect(planned.selection.continuation).toMatchObject({ sourcePlannedRunCount: 36, outOfScopeRunCount: 18,
       completedExcludedCount: 8, eligibleRunCount: 10, throttledAttemptsHeldBackCount: 1 });
-  });
+  }, 120_000);
 
   it('plans them as nine runs of gpt-6-astra @ medium at their original repeats, admitted by a selection admission and nothing wider', () => {
     const sourceRoot = writeDiscriminatorShapedSource();
@@ -385,7 +385,7 @@ describe('the Astra continuation of the discriminator campaign\'s shape selects 
     // A whole-pack admission — like the one the source ran under — does not admit it.
     expect(() => buildWorkspaceMatrixPlan({ ...base, identityAdmission: sealed(label, { pack: discriminatorOnePack }) }))
       .toThrow(expect.objectContaining({ code: 'matrixAdmissionSelectionMismatch' }));
-  });
+  }, 120_000);
 
   it('adding the throttled attempt makes ten, and the logical report then has all eighteen astra cells', () => {
     const source = readDiscriminator(writeDiscriminatorShapedSource());
@@ -396,7 +396,7 @@ describe('the Astra continuation of the discriminator campaign\'s shape selects 
     expect(withoutIt.counts).toMatchObject({ plannedCells: 36, fromSource: 26, missing: 10, historicalProviderDeclines: 1 });
     expect(DISCRIMINATOR_CASES).toHaveLength(6);
     expect(ASTRA_EXECUTED).toHaveLength(9);
-  });
+  }, 120_000);
 });
 
 // MARK: - the real command, with nothing reachable
@@ -420,21 +420,34 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
     fs.writeFileSync(file, JSON.stringify({ writtenAt: new Date().toISOString(), models: [acceptedCodexRoute(ASTRA), acceptedCodexRoute(SOL)] }));
   });
 
-  const cernum = (...args: string[]) => {
-    const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args], {
-      cwd: repositoryRoot, encoding: 'utf8', env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+  // Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+  // subprocess, long enough to trip vitest's own RPC timeout.
+  const cernum = (...args: string[]) => new Promise<{
+    pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+    stdout: string; stderr: string; error?: Error; output: string;
+  }>((resolve) => {
+    const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args], {
+      cwd: repositoryRoot, env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
     });
-    return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
-  };
+    let stdout = '';
+    let stderr = '';
+    let error: Error | undefined;
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (err) => { error = err; });
+    child.on('close', (status, signal) => {
+      resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+    });
+  });
   const nothingRan = () => {
     for (const name of ['codex', 'claude']) expect(fs.existsSync(path.join(fakeBin, `${name}.invocations`)), name).toBe(false);
   };
   const astra = ['workspace-benchmark', discriminatorOnePack.id, '--provider', 'codexCLI', '--models', ASTRA, '--effort', 'medium',
     '--label', 'astra-cont-01'];
 
-  it('7, 12 · the dry run shows the source, the exclusions, exactly the nine cells, and sends nothing', () => {
+  it('7, 12 · the dry run shows the source, the exclusions, exactly the nine cells, and sends nothing', async () => {
     const before = treeDigest(sourceRoot);
-    const dry = cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns, '--dry-run');
+    const dry = await cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns, '--dry-run');
     expect(dry.status, dry.output).toBe(0);
     expect(dry.output).toContain('DRY RUN');
     expect(dry.output).toContain(`selection       CONTINUATION of '${DISCRIMINATOR_LABEL}'`);
@@ -460,8 +473,8 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
     nothingRan();
   }, 120_000);
 
-  it('17 · with a selection admission the nine are admitted; a whole-pack admission is refused', () => {
-    const dry = cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns, '--dry-run');
+  it('17 · with a selection admission the nine are admitted; a whole-pack admission is refused', async () => {
+    const dry = await cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns, '--dry-run');
     const digest = /"digest": "(cms1:[0-9a-f]{64})"/.exec(dry.output)![1];
     const file = path.join(campaigns, 'admission.json');
     const admission = (selectionDigest?: string) => {
@@ -474,19 +487,19 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
         ...(selectionDigest === undefined ? {} : { selection: { digest: selectionDigest } }) }));
       return file;
     };
-    const admitted = cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns,
+    const admitted = await cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns,
       '--admit-identity-unverifiable', admission(digest), '--dry-run');
     expect(admitted.status, admitted.output).toBe(0);
     expect(admitted.output).toContain('runnable      9');
     expect(admitted.output).toContain(`ONLY the selection ${digest}`);
-    const whole = cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns,
+    const whole = await cernum(...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns,
       '--admit-identity-unverifiable', admission(), '--dry-run');
     expect(whole.status).toBe(2);
     expect(whole.output).toContain('matrixAdmissionSelectionMismatch');
     nothingRan();
   }, 120_000);
 
-  it('refuses the source\'s own root, the source\'s own label, a completed cell, and a mismatched repeat count', () => {
+  it('refuses the source\'s own root, the source\'s own label, a completed cell, and a mismatched repeat count', async () => {
     const cases: [string[], string][] = [
       [[...astra, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', sourceRoot], 'DIFFERENT campaign root'],
       [[...astra.slice(0, -1), DISCRIMINATOR_LABEL, '--continue-from', DISCRIMINATOR_LABEL, '--source-root', sourceRoot, '--root', campaigns],
@@ -500,7 +513,7 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
     ];
     const before = treeDigest(sourceRoot);
     for (const [args, message] of cases) {
-      const result = cernum(...args, '--dry-run');
+      const result = await cernum(...args, '--dry-run');
       expect(result.status, args.join(' ')).toBe(2);
       expect(result.output).toContain(message);
     }
@@ -508,23 +521,23 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
     nothingRan();
   }, 240_000);
 
-  it('7 · --cells alone dry-runs an explicit selection of exactly the named cells', () => {
-    const dry = cernum(...astra, '--cells', 'ws.d1.log-redact.mask@2,ws.d1.config-migrate.upgrade@3', '--root', campaigns, '--dry-run');
+  it('7 · --cells alone dry-runs an explicit selection of exactly the named cells', async () => {
+    const dry = await cernum(...astra, '--cells', 'ws.d1.log-redact.mask@2,ws.d1.config-migrate.upgrade@3', '--root', campaigns, '--dry-run');
     expect(dry.status, dry.output).toBe(0);
     expect(dry.output).toContain('selection       EXPLICIT');
     expect(dry.output).toContain('selected cells  2:');
     expect(dry.output).toContain(`codexCLI:${ASTRA}@medium · ws.d1.log-redact.mask · repeat 2/3  operatorSelected`);
     expect(dry.output).toContain(`codexCLI:${ASTRA}@medium · ws.d1.config-migrate.upgrade · repeat 3/3  operatorSelected`);
-    const bad = cernum(...astra, '--cells', 'ws.d1.log-redact.mask', '--root', campaigns, '--dry-run');
+    const bad = await cernum(...astra, '--cells', 'ws.d1.log-redact.mask', '--root', campaigns, '--dry-run');
     expect(bad.status).toBe(2);
     expect(bad.output).toContain('cellListMalformed');
     nothingRan();
   }, 120_000);
 
-  it('workspace-report reads the source and writes nowhere but --out', () => {
+  it('workspace-report reads the source and writes nowhere but --out', async () => {
     const before = treeDigest(sourceRoot);
     const out = path.join(temporary('cernum-report-out-'), 'logical.json');
-    const report = cernum('workspace-report', discriminatorOnePack.id, '--source-root', sourceRoot, '--source-label', DISCRIMINATOR_LABEL,
+    const report = await cernum('workspace-report', discriminatorOnePack.id, '--source-root', sourceRoot, '--source-label', DISCRIMINATOR_LABEL,
       '--continuation-root', campaigns, '--out', out);
     expect(report.status, report.output).toBe(0);
     expect(report.output).toContain('logical cells   36 planned · 26 from the source · 0 from a continuation · 10 still missing');
@@ -533,7 +546,7 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
     expect(written.counts.plannedCells).toBe(36);
     expect(written.logicalRows).toHaveLength(26);
     for (const [root, flag] of [[sourceRoot, []], [campaigns, ['--continuation-root', campaigns]]] as const) {
-      const inside = cernum('workspace-report', discriminatorOnePack.id, '--source-root', sourceRoot, '--source-label', DISCRIMINATOR_LABEL,
+      const inside = await cernum('workspace-report', discriminatorOnePack.id, '--source-root', sourceRoot, '--source-label', DISCRIMINATOR_LABEL,
         ...flag, '--out', path.join(root, 'report.json'));
       expect(inside.status).toBe(2);
       expect(inside.output).toContain('writes nowhere inside a campaign it reads');

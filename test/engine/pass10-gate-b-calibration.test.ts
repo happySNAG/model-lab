@@ -18,13 +18,13 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { evidenceRoot } from './evidence-root';
 import {
   PERMITTED_REFERRAL_VERDICTS, ReferralPacketRow, ReferralRuling, ReferralSealInput,
   validateReferralSeal,
 } from '../../src/core/rubric-referral';
 
-const EVIDENCE_ROOT = process.env.CERNUM_EVIDENCE_ROOT
-  ?? '/Volumes/LaCie/MacMini-NemoClaw-Workspace/model-lab-results';
+const EVIDENCE_ROOT = evidenceRoot();
 const PACKET_DIR = join(EVIDENCE_ROOT, 'pass10-evidence/gate-b-calibration');
 const SEALED_DIR = join(EVIDENCE_ROOT, 'pass10-sealed');
 

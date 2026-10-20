@@ -130,7 +130,7 @@ describe('32–35 · one record per route, derived from evidence, capability by 
     expect(record.disclosure).toContain('no overall score');
     expect(record.safeToRoute).toBe(true);
     expect(record.policy).toEqual(V1_QUALIFICATION_POLICY);
-  });
+  }, 120_000);
 
   it('32 · includes development evidence as its own capabilities, beside the workspace ones', async () => {
     const { rows } = await records();

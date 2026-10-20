@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { evidenceRoot } from './evidence-root';
 import { caseByID, canonicalPolicies, generation2Policies, allPolicies, policyCatalog, registeredSuites, allGovernedSuites } from '../../src/core/catalog';
 import { EvaluationEngine } from '../../src/core/engine';
 import { policyDigest } from '../../src/core/scoring-policy';
@@ -32,8 +33,7 @@ import {
 } from '../../src/core/campaign-binding';
 import { AttemptRecord, Observation } from '../../src/core/run';
 
-const EVIDENCE_ROOT = process.env.CERNUM_EVIDENCE_ROOT
-  ?? '/Volumes/LaCie/MacMini-NemoClaw-Workspace/model-lab-results';
+const EVIDENCE_ROOT = evidenceRoot();
 
 const SEALED_SOURCES = {
   ledgerA2: { path: 'pass08-evidence/campaign-a2/results.jsonl', digest: 'adcb22f1ab7908b5c08d1568ee316e1001cad9ab6b101cb43b0dab3e711799f0' },

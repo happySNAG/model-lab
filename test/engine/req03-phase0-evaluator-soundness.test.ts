@@ -18,12 +18,12 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { evidenceRoot } from './evidence-root';
 import { caseByID, policyCatalog } from '../../src/core/catalog';
 import { EvaluationEngine } from '../../src/core/engine';
 import { AttemptRecord, Observation } from '../../src/core/run';
 
-const EVIDENCE_ROOT = process.env.CERNUM_EVIDENCE_ROOT
-  ?? '/Volumes/LaCie/MacMini-NemoClaw-Workspace/model-lab-results';
+const EVIDENCE_ROOT = evidenceRoot();
 
 /** The raw Pass 8 ledger, pinned to the digests recorded in `pass08-evidence/SHA256SUMS.txt`. */
 const LEDGERS = [

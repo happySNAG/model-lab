@@ -32,6 +32,7 @@ import { rankCandidates, RankableOutcome } from '../../src/engine/ranking';
 import { prepareManifest } from '../../src/engine/prepared-manifest';
 import { identityTerms } from '../../src/engine/blinded';
 import { subscriptionBinding } from './frontier-harness';
+import { evidenceRoot } from './evidence-root';
 import { ProviderBinding } from '../../src/engine/provider';
 
 /** The same Codex binding shape the Pass 5B tests use: unverifiable identity, no verified model. */
@@ -672,7 +673,7 @@ describe('a campaign written down before it is authorised', () => {
 // MARK: - End to end, on the real sealed evidence when it is present
 
 describe('the real Pass 8 evidence, when this machine has it', () => {
-  const evidence = path.join('/Volumes/LaCie/MacMini-NemoClaw-Workspace/model-lab-results/pass08-evidence');
+  const evidence = path.join(evidenceRoot(), 'pass08-evidence');
   const a2 = path.join(evidence, 'campaign-a2', 'results.jsonl');
   const b2 = path.join(evidence, 'campaign-b2', 'results.jsonl');
   const present = fs.existsSync(a2) && fs.existsSync(b2);

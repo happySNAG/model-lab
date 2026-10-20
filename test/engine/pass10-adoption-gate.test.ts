@@ -72,6 +72,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { evidenceRoot } from './evidence-root';
 import { registeredSuites, policyCatalog } from '../../src/core/catalog';
 import { CANDIDATE_SPEC_BY_RULE } from '../../src/core/candidate-governance-spec';
 import {
@@ -80,8 +81,7 @@ import {
 } from '../../src/core/rubric-referral';
 import { GovernanceRule } from '../../src/core/scoring-policy';
 
-const EVIDENCE_ROOT = process.env.CERNUM_EVIDENCE_ROOT
-  ?? '/Volumes/LaCie/MacMini-NemoClaw-Workspace/model-lab-results';
+const EVIDENCE_ROOT = evidenceRoot();
 
 /** Every source this gate reads, pinned. A changed digest is a hard stop, never a silent re-baseline. */
 const SEALED_SOURCES = {
