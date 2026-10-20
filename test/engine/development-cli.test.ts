@@ -9,7 +9,7 @@
 //
 // Nothing here is allowed to reach a model, and the assertions are that nothing did.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -60,17 +60,33 @@ function networkAttempts(): string[] {
   return fs.readFileSync(networkLog, 'utf8').split('\n').filter((line) => line.length > 0 && !/ ipc /.test(line));
 }
 
+// Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+// subprocess, and the longer campaigns below run long enough to trip vitest's own RPC timeout.
 function cernum(...args: string[]) {
-  const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
-    cwd: repository, encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin`,
-      NODE_OPTIONS: `--require ${PRELOAD}`,
-      CERNUM_NETWORK_LOG: networkLog,
-    },
+  return new Promise<{
+    pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+    stdout: string; stderr: string; error?: Error; output: string;
+  }>((resolve) => {
+    const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
+      cwd: repository,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin`,
+        // Quoted: the checkout path contains a space, and NODE_OPTIONS splits on whitespace.
+        NODE_OPTIONS: `--require ${JSON.stringify(PRELOAD)}`,
+        CERNUM_NETWORK_LOG: networkLog,
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    let error: Error | undefined;
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (err) => { error = err; });
+    child.on('close', (status, signal) => {
+      resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+    });
   });
-  return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 function nothingReachedAnything(): void {
@@ -132,8 +148,8 @@ beforeEach(() => {
 afterEach(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
 
 describe('develop --dry-run: the plan, and nothing else', () => {
-  it('prints candidates, tasks, repeats, attempts, commit, machine and eligibility, and writes and sends nothing', () => {
-    const result = cernum('develop', 'preview', '--synthetic', '--repeats', '2', '--dry-run');
+  it('prints candidates, tasks, repeats, attempts, commit, machine and eligibility, and writes and sends nothing', async () => {
+    const result = await cernum('develop', 'preview', '--synthetic', '--repeats', '2', '--dry-run');
     expect(result.status, result.output).toBe(0);
     for (const expected of ['DRY RUN', 'plan digest', 'synthetic:scripted', `attempts          ${TOTAL_TASKS * 2}`,
       'repeats           2', 'machine', `benchmark         ${PRODUCT.version} at`, 'cost      local', 'identity  verified',
@@ -146,8 +162,8 @@ describe('develop --dry-run: the plan, and nothing else', () => {
     nothingReachedAnything();
   }, 120_000);
 
-  it('names every refusal a real run would hit, and still writes and sends nothing', () => {
-    const result = cernum('develop', 'preview', '--candidates', 'claudeCLI:claude-opus-5:high,codexCLI:gpt-6-astra:max', '--dry-run');
+  it('names every refusal a real run would hit, and still writes and sends nothing', async () => {
+    const result = await cernum('develop', 'preview', '--candidates', 'claudeCLI:claude-opus-5:high,codexCLI:gpt-6-astra:max', '--dry-run');
     expect(result.status, result.output).toBe(0);
     expect(result.output).toContain('A RUN WOULD BE REFUSED');
     expect(result.output).toMatch(/codexCLI has no verified development\s+workspace/);
@@ -159,42 +175,42 @@ describe('develop --dry-run: the plan, and nothing else', () => {
 });
 
 describe('develop: refuses unsafe or unapproved execution before anything exists', () => {
-  it('refuses an unproven candidate, creating nothing', () => {
-    const result = cernum('develop', 'real', '--candidates', 'claudeCLI:claude-opus-5:high', '--yes');
+  it('refuses an unproven candidate, creating nothing', async () => {
+    const result = await cernum('develop', 'real', '--candidates', 'claudeCLI:claude-opus-5:high', '--yes');
     expect(result.status).toBe(2);
     expect(result.output).toContain('identity is unverifiable');
     expect(fs.existsSync(path.join(campaigns, 'real'))).toBe(false);
     nothingReachedAnything();
   }, 120_000);
 
-  it('refuses a provider with no verified workspace shape even when its model is proven', () => {
+  it('refuses a provider with no verified workspace shape even when its model is proven', async () => {
     proveInStore('codexCLI', 'gpt-6-astra');
-    const result = cernum('develop', 'real', '--candidates', 'codexCLI:gpt-6-astra:max', '--yes');
+    const result = await cernum('develop', 'real', '--candidates', 'codexCLI:gpt-6-astra:max', '--yes');
     expect(result.status).toBe(2);
     expect(result.output).toContain('codexCLI has no verified development workspace argument shape');
     expect(fs.existsSync(path.join(campaigns, 'real'))).toBe(false);
     nothingReachedAnything();
   }, 120_000);
 
-  it('refuses a metered candidate at plan time under the cost policy', () => {
-    const result = cernum('develop', 'real', '--candidates', 'anthropicAPI:claude-opus-5', '--yes');
+  it('refuses a metered candidate at plan time under the cost policy', async () => {
+    const result = await cernum('develop', 'real', '--candidates', 'anthropicAPI:claude-opus-5', '--yes');
     expect(result.status).toBe(2);
     expect(result.output).toMatch(/metered/);
     expect(fs.existsSync(path.join(campaigns, 'real'))).toBe(false);
     nothingReachedAnything();
   }, 120_000);
 
-  it('asks for --yes before a real run, even for a proven, eligible candidate', () => {
+  it('asks for --yes before a real run, even for a proven, eligible candidate', async () => {
     proveInStore('claudeCLI', 'claude-opus-5');
-    const result = cernum('develop', 'real', '--candidates', 'claudeCLI:claude-opus-5:high');
+    const result = await cernum('develop', 'real', '--candidates', 'claudeCLI:claude-opus-5:high');
     expect(result.status).toBe(3);
     expect(result.output).toContain('Re-run with --yes');
     expect(fs.existsSync(path.join(campaigns, 'real'))).toBe(false);
     nothingReachedAnything();
   }, 120_000);
 
-  it('refuses a synthetic script outside --synthetic', () => {
-    const result = cernum('develop', 'real', '--candidates', 'claudeCLI:claude-opus-5', '--synthetic-script', referenceScript());
+  it('refuses a synthetic script outside --synthetic', async () => {
+    const result = await cernum('develop', 'real', '--candidates', 'claudeCLI:claude-opus-5', '--synthetic-script', referenceScript());
     expect(result.status).toBe(2);
     expect(fs.existsSync(path.join(campaigns, 'real'))).toBe(false);
     nothingReachedAnything();
@@ -202,10 +218,10 @@ describe('develop: refuses unsafe or unapproved execution before anything exists
 });
 
 describe('develop, develop-status, develop-resume: a synthetic campaign interrupted and finished', () => {
-  it('runs part, reports the gap, resumes without re-running anything, and reports complete coverage', () => {
+  it('runs part, reports the gap, resumes without re-running anything, and reports complete coverage', async () => {
     const script = referenceScript();
     const total = TOTAL_TASKS * 2;
-    const first = cernum('develop', 'synth', '--synthetic', '--synthetic-script', script, '--repeats', '2', '--max-attempts', '3');
+    const first = await cernum('develop', 'synth', '--synthetic', '--synthetic-script', script, '--repeats', '2', '--max-attempts', '3');
     expect(first.status, first.output).toBe(0);
     expect(first.output).toContain('Stopped before the end at --max-attempts 3');
 
@@ -213,26 +229,26 @@ describe('develop, develop-status, develop-resume: a synthetic campaign interrup
     const partialBytes = fs.readFileSync(results);
     expect(partialBytes.toString('utf8').trim().split('\n')).toHaveLength(3);
 
-    const partial = cernum('develop-status', 'synth');
+    const partial = await cernum('develop-status', 'synth');
     expect(partial.status).toBe(0);
     expect(partial.output).toContain('COVERAGE INCOMPLETE');
     expect(partial.output).toContain(`attempts          3 of ${total} terminal`);
     expect(partial.output).toContain('INCOMPLETE');
     expect(partial.output).toContain('measurementIncomplete');
 
-    const preview = cernum('develop-resume', 'synth', '--synthetic-script', script, '--dry-run');
+    const preview = await cernum('develop-resume', 'synth', '--synthetic-script', script, '--dry-run');
     expect(preview.status).toBe(0);
     expect(preview.output).toContain(`3 of ${total} attempt(s) already recorded; ${total - 3} would run`);
     expect(fs.readFileSync(results).equals(partialBytes)).toBe(true);
 
     const wrongScript = path.join(scratch, 'other-script.json');
     fs.writeFileSync(wrongScript, JSON.stringify({ format: SYNTHETIC_DEVELOPMENT_SCRIPT_FORMAT, tasks: {} }));
-    const refused = cernum('develop-resume', 'synth', '--synthetic-script', wrongScript);
+    const refused = await cernum('develop-resume', 'synth', '--synthetic-script', wrongScript);
     expect(refused.status).toBe(2);
     expect(refused.output).toContain('Resuming would join two experiments');
     expect(fs.readFileSync(results).equals(partialBytes)).toBe(true);
 
-    const resumed = cernum('develop-resume', 'synth', '--synthetic-script', script);
+    const resumed = await cernum('develop-resume', 'synth', '--synthetic-script', script);
     expect(resumed.status, resumed.output).toBe(0);
     expect(resumed.output).toContain(`${total - 3} attempt(s) run this time, 3 already recorded before it`);
 
@@ -254,10 +270,10 @@ describe('develop, develop-status, develop-resume: a synthetic campaign interrup
       expect(fs.existsSync(artefact.workspaceRoot)).toBe(false);
     }
 
-    const done = cernum('develop-status', 'synth');
+    const done = await cernum('develop-status', 'synth');
     expect(done.output).toContain('COVERAGE COMPLETE');
     expect(done.output).toContain('provider spend    NONE');
-    const report = JSON.parse(cernum('develop-status', 'synth', '--json').stdout);
+    const report = JSON.parse((await cernum('develop-status', 'synth', '--json')).stdout);
     const candidate = report.candidates[0];
     expect(report.complete).toBe(true);
     expect(candidate.pendingAttempts).toBe(0);
@@ -271,23 +287,23 @@ describe('develop, develop-status, develop-resume: a synthetic campaign interrup
     expect(candidate.statusCounts.partial).toBeGreaterThanOrEqual(6);
     expect(candidate.roles.find((role: { role: string }) => role.role === 'multi-file editor').qualified).toBe(false);
 
-    const again = cernum('develop', 'synth', '--synthetic', '--synthetic-script', script, '--repeats', '2');
+    const again = await cernum('develop', 'synth', '--synthetic', '--synthetic-script', script, '--repeats', '2');
     expect(again.status).toBe(2);
     expect(again.output).toContain('develop-resume');
     expect(fs.readFileSync(results).equals(finalBytes)).toBe(true);
 
     // The text benchmark's status command does not mistake a development campaign for one of its own.
-    const textStatus = cernum('status', 'synth');
+    const textStatus = await cernum('status', 'synth');
     expect(textStatus.status).not.toBe(0);
     nothingReachedAnything();
   }, 600_000);
 });
 
 describe('develop-reinterpret: an edit campaign re-graded from its retained bytes, offline', () => {
-  it('re-grades every edit row from its evidence, touches no provider or network, and moves no recorded byte', () => {
+  it('re-grades every edit row from its evidence, touches no provider or network, and moves no recorded byte', async () => {
     const script = referenceScript();
     const suite = developmentSuites.find((entry) => entry.tasks.some((task) => task.kind === 'repositoryEdit'))!;
-    const run = cernum('develop', 'edits', '--synthetic', '--synthetic-script', script, '--suites', suite.id, '--repeats', '1');
+    const run = await cernum('develop', 'edits', '--synthetic', '--synthetic-script', script, '--suites', suite.id, '--repeats', '1');
     expect(run.status, run.output).toBe(0);
     const directory = path.join(campaigns, 'edits');
     const rows = fs.readFileSync(path.join(directory, 'results.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
@@ -295,13 +311,13 @@ describe('develop-reinterpret: an edit campaign re-graded from its retained byte
     for (const row of rows) expect(row.editEvidence.state, row.taskID).toBe('byteExact');
     const before = new Map(campaignFiles().map((file) => [file, fs.readFileSync(path.join(campaigns, file))]));
 
-    const dry = cernum('develop-reinterpret', 'edits', '--dry-run');
+    const dry = await cernum('develop-reinterpret', 'edits', '--dry-run');
     expect(dry.status, dry.output).toBe(0);
     expect(dry.output).toContain(`re-graded edits   ${suite.tasks.length} edit(s)`);
     expect(dry.output).toContain('DRY RUN');
     expect(campaignFiles().sort()).toEqual([...before.keys()].sort());
 
-    const written = cernum('develop-reinterpret', 'edits');
+    const written = await cernum('develop-reinterpret', 'edits');
     expect(written.status, written.output).toBe(0);
     expect(written.output).toContain('the campaign\'s own files are unchanged');
     const added = campaignFiles().filter((file) => !before.has(file));
@@ -461,8 +477,8 @@ describe('the text benchmark path is unchanged', () => {
     }
   });
 
-  it('prints the same text suites it always did, with no development suite among them', () => {
-    const result = cernum('suites');
+  it('prints the same text suites it always did, with no development suite among them', async () => {
+    const result = await cernum('suites');
     expect(result.status).toBe(0);
     expect(result.output).not.toMatch(/development/);
     for (const suite of registeredSuites.filter((entry) => !entry.id.raw.includes('foundation'))) {
