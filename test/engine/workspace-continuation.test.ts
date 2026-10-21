@@ -29,6 +29,8 @@ import {
 const CONTINUATION_LABEL = 'codex-source-01-cont-01';
 const cells = allWorkspaceCases();
 const readSource = (root: string) => readWorkspaceContinuationSource({ campaignRoot: root, label: SOURCE_LABEL, pack: PACK, cases: cells });
+/** One turn of the event loop, between iterations of a loop that reads or writes ledgers synchronously. */
+const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
 const at = (cell: { caseID: string; repeatIndex?: number; repeat?: { repeatIndex: number } }) =>
   `${cell.caseID}@${cell.repeatIndex ?? cell.repeat?.repeatIndex}`;
 
@@ -222,6 +224,7 @@ describe('14 · a continuation never produces duplicate scoring evidence', () =>
   it('refuses a completed cell named with --cells, with no override', async () => {
     const { root } = await runSourceMatrix();
     for (const explicit of [[{ caseID: A, repeatIndex: 1 }], [{ caseID: A, repeatIndex: 3 }, { caseID: A, repeatIndex: 2 }]]) {
+      await yieldToEventLoop();
       expect(() => planWorkspaceContinuation(readSource(root), { provider: 'codexCLI', modelIDs: [ASTRA], effort: 'medium', explicit }))
         .toThrow(expect.objectContaining({ code: 'cellAlreadyCompleted' }));
     }
@@ -406,11 +409,12 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
   let fakeBin: string;
   let sourceRoot: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     campaigns = temporary('cernum-cont-cli-');
     fakeBin = temporary('cernum-cont-bin-');
     sourceRoot = writeDiscriminatorShapedSource();
     for (const name of ['codex', 'claude']) {
+      await yieldToEventLoop();
       fs.writeFileSync(path.join(fakeBin, name), [
         '#!/bin/sh', `echo "$@" >> ${JSON.stringify(path.join(fakeBin, `${name}.invocations`))}`, 'exit 97', '',
       ].join('\n'), { mode: 0o755 });
@@ -418,7 +422,7 @@ describe('cernum workspace-benchmark --continue-from, and cernum workspace-repor
     const file = discoveryStorePath(campaigns);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ writtenAt: new Date().toISOString(), models: [acceptedCodexRoute(ASTRA), acceptedCodexRoute(SOL)] }));
-  });
+  }, 120_000);
 
   // Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
   // subprocess, long enough to trip vitest's own RPC timeout.

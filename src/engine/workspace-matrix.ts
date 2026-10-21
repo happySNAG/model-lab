@@ -1612,6 +1612,9 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
   let measurementFailure: string | undefined;
 
   for (const cell of plan.cells) {
+    // A TURN OF THE EVENT LOOP between cells. Creating and sealing a record writes and fsyncs
+    // synchronously; without this a caller's own timers and I/O wait for every cell in a row.
+    await new Promise((resolve) => setImmediate(resolve));
     // FIRST, because a cell the breaker has already excluded must not even be looked up: no driver
     // is built for it, no case is resolved, and nothing is sent.
     if (throttle !== undefined

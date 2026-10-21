@@ -317,6 +317,9 @@ export async function runWorkspaceCase(options: WorkspaceRunOptions): Promise<Wo
   let prior: PriorAttemptBriefing | undefined;
 
   for (let attemptIndex = 0; attemptIndex < workspaceCase.execution.maximumAttempts; attemptIndex++) {
+    // A TURN OF THE EVENT LOOP between attempts. An attempt's copies, snapshots and digests are
+    // synchronous; without this a caller's own timers and I/O wait for every attempt in a row.
+    await new Promise((resolve) => setImmediate(resolve));
     if (options.shouldCancel?.()) break;
     const record = await runOneAttempt(options, { attemptIndex, fixtureSource, caseDigest, prior, now });
     attempts.push(record);

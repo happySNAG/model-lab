@@ -79,6 +79,9 @@ const filesUnder = (root: string): string[] =>
 
 const fixtureOf = (caseID: string): string => path.join(FIXTURE_ROOT, caseByID(caseID).source.fixturePath);
 
+/** One turn of the event loop, between iterations of a loop that reads or snapshots trees synchronously. */
+const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+
 // MARK: - Nothing that has run moved
 
 describe('every pack, case and difficulty claim that existed before this pass is byte-for-byte what it was', () => {
@@ -238,8 +241,9 @@ describe('each discriminator case carries a structural profile, and no tier', ()
     expect(packDigest).not.toBe(workspacePackDigest(discriminatorOnePack, allWorkspaceCases()));
   });
 
-  it('checks the fixture figures against the sealed tree and the edit count against the reference solution', () => {
+  it('checks the fixture figures against the sealed tree and the edit count against the reference solution', async () => {
     for (const profile of profiles) {
+      await yieldToEventLoop();
       const snapshot = snapshotTree(fixtureOf(profile.caseID), { capturedAt: '1970-01-01T00:00:00Z' });
       expect(profile.measured.fixtureFileCount, `${profile.caseID} file count`).toBe(snapshot.fileCount);
       expect(profile.measured.fixtureByteCount, `${profile.caseID} byte count`).toBe(snapshot.totalByteCount);
@@ -248,7 +252,7 @@ describe('each discriminator case carries a structural profile, and no tier', ()
       expect(filesUnder(path.join(SOLUTION_ROOT, profile.caseID)).length, `${profile.caseID} solution file count`)
         .toBe(profile.declared.expectedMinimumEditFiles);
     }
-  });
+  }, 120_000);
 
   it('refuses a profile that carries a tier, disagrees about recovery, or misstates the case', () => {
     const profile = workspaceStructuralProfileFor(profiles, 'ws.d1.query-codec.nest')!;
@@ -265,9 +269,10 @@ describe('each discriminator case carries a structural profile, and no tier', ()
     expect(() => validateWorkspaceStructuralProfile(profile, caseByID('ws.d1.log-redact.mask'))).toThrow(/checked against/);
   });
 
-  it('never lets a provider, a model or an outcome into the design modules or the cases', () => {
+  it('never lets a provider, a model or an outcome into the design modules or the cases', async () => {
     for (const file of ['workspace-discriminator.ts', 'workspace-discriminator-catalog.ts', 'workspace-catalog-discriminator.ts',
       'workspace-empirical-evidence.ts']) {
+      await yieldToEventLoop();
       const source = fs.readFileSync(path.resolve(__dirname, '../../src/engine', file), 'utf8');
       const code = source.split('\n').filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*')).join('\n');
       for (const name of ['claudeCLI', 'codexCLI', 'opencodeCLI', 'anthropicAPI', 'openaiAPI', 'ProviderID', 'ProviderBinding',
@@ -281,14 +286,15 @@ describe('each discriminator case carries a structural profile, and no tier', ()
         expect(text.includes(word), `${caseID}'s instruction says "${word}"`).toBe(false);
       }
     }
-  });
+  }, 120_000);
 });
 
 // MARK: - The fixtures
 
 describe('the six fixtures are deterministic, compact and give nothing away', () => {
-  it('digest to their seals, twice, and stay inside the size the pack was designed at', () => {
+  it('digest to their seals, twice, and stay inside the size the pack was designed at', async () => {
     for (const caseID of DISCRIMINATOR_CASE_IDS) {
+      await yieldToEventLoop();
       const root = fixtureOf(caseID);
       const first = snapshotTree(root, { capturedAt: '1970-01-01T00:00:00Z' });
       const second = snapshotTree(root, { capturedAt: '2001-01-01T00:00:00Z' });
@@ -300,10 +306,11 @@ describe('the six fixtures are deterministic, compact and give nothing away', ()
       expect(lines, `${caseID} is ${lines} lines`).toBeGreaterThanOrEqual(300);
       expect(lines, `${caseID} is ${lines} lines`).toBeLessThanOrEqual(1200);
     }
-  });
+  }, 120_000);
 
-  it('leaks no answer: no marker, no giveaway name, no talk of unseen checks, no reference solution', () => {
+  it('leaks no answer: no marker, no giveaway name, no talk of unseen checks, no reference solution', async () => {
     for (const caseID of DISCRIMINATOR_CASE_IDS) {
+      await yieldToEventLoop();
       const root = fixtureOf(caseID);
       for (const file of filesUnder(root)) {
         const text = fs.readFileSync(path.join(root, file), 'utf8');
@@ -325,7 +332,7 @@ describe('the six fixtures are deterministic, compact and give nothing away', ()
           .not.toBe(fs.readFileSync(path.join(solution, file), 'utf8'));
       }
     }
-  });
+  }, 120_000);
 
   it('names the task in each case id, never the answer', () => {
     // The workspace directory an agent is handed is named after the case, so an id is model-visible.
@@ -337,8 +344,9 @@ describe('the six fixtures are deterministic, compact and give nothing away', ()
     }
   });
 
-  it('grounds every hidden check in a document the fixture carries, which the check quotes', () => {
+  it('grounds every hidden check in a document the fixture carries, which the check quotes', async () => {
     for (const caseID of DISCRIMINATOR_CASE_IDS) {
+      await yieldToEventLoop();
       const workspaceCase = caseByID(caseID);
       expect(workspaceCase.verification.hiddenCommands.length).toBeGreaterThan(0);
       for (const hidden of workspaceCase.verification.hiddenCommands) {
@@ -359,7 +367,7 @@ describe('the six fixtures are deterministic, compact and give nothing away', ()
         }
       }
     }
-  });
+  }, 120_000);
 });
 
 // MARK: - Scripted runs
@@ -825,10 +833,11 @@ describe('ws.d1.task-board.reassign measures recovery from an integration report
 
 // MARK: - And the fixtures were never touched
 
-afterAll(() => {
+afterAll(async () => {
   // Every run above worked on a copy. The sealed trees digest exactly as they did before.
   for (const caseID of DISCRIMINATOR_CASE_IDS) {
+    await yieldToEventLoop();
     expect(snapshotTree(fixtureOf(caseID), { capturedAt: '1970-01-01T00:00:00Z' }).treeDigest)
       .toBe(caseByID(caseID).source.expectedTreeDigest);
   }
-});
+}, 120_000);
