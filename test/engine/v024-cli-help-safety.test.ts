@@ -13,7 +13,7 @@
 // executables FIRST on PATH that record every invocation. The assertions are that the recordings
 // stay empty: a test that accidentally sent a request would be the failure it is looking for.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -50,12 +50,27 @@ function nothingWasSent(): void {
 
 const NODE_DIRECTORY = path.dirname(process.execPath);
 
+// Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+// subprocess, and the every-command loop below runs long enough to trip vitest's own RPC timeout.
 function cernum(...args: string[]) {
-  const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
-    cwd: root, encoding: 'utf8',
-    env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+  return new Promise<{
+    pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+    stdout: string; stderr: string; error?: Error; output: string;
+  }>((resolve) => {
+    const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
+      cwd: root,
+      env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+    });
+    let stdout = '';
+    let stderr = '';
+    let error: Error | undefined;
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (err) => { error = err; });
+    child.on('close', (status, signal) => {
+      resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+    });
   });
-  return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 beforeEach(() => {
@@ -71,8 +86,8 @@ afterEach(() => {
 });
 
 describe('v0.2.4 · `cernum help smoke` answers about SMOKE', () => {
-  it('prints the smoke page, not the general index', () => {
-    const result = cernum('help', 'smoke');
+  it('prints the smoke page, not the general index', async () => {
+    const result = await cernum('help', 'smoke');
 
     expect(result.status).toBe(0);
     expect(result.output).toContain('cernum smoke <provider>');
@@ -80,8 +95,8 @@ describe('v0.2.4 · `cernum help smoke` answers about SMOKE', () => {
     nothingWasSent();
   }, 120_000);
 
-  it('documents the provider, the scope flags and the preview — the ones it used to omit', () => {
-    const output = cernum('help', 'smoke').output;
+  it('documents the provider, the scope flags and the preview — the ones it used to omit', async () => {
+    const output = (await cernum('help', 'smoke')).output;
 
     expect(output).toContain('--models');
     expect(output).toContain('--all-ladder');
@@ -91,8 +106,8 @@ describe('v0.2.4 · `cernum help smoke` answers about SMOKE', () => {
     nothingWasSent();
   }, 120_000);
 
-  it('documents metered authorization, including the unpriced acknowledgement', () => {
-    const output = cernum('help', 'smoke').output;
+  it('documents metered authorization, including the unpriced acknowledgement', async () => {
+    const output = (await cernum('help', 'smoke')).output;
 
     expect(output).toContain('--authorize-metered');
     expect(output).toContain('--authorize-unpriced-metered');
@@ -102,8 +117,8 @@ describe('v0.2.4 · `cernum help smoke` answers about SMOKE', () => {
     nothingWasSent();
   }, 120_000);
 
-  it('documents telemetry and identity admission', () => {
-    const output = cernum('help', 'smoke').output;
+  it('documents telemetry and identity admission', async () => {
+    const output = (await cernum('help', 'smoke')).output;
 
     expect(output).toContain('--otlp-observer');
     expect(output).toContain('codexCLI only');
@@ -112,18 +127,18 @@ describe('v0.2.4 · `cernum help smoke` answers about SMOKE', () => {
     nothingWasSent();
   }, 120_000);
 
-  it('is byte-for-byte the page `smoke --help` prints, so the two spellings cannot drift', () => {
-    const viaTopic = cernum('help', 'smoke').stdout;
-    const viaFlag = cernum('smoke', '--help').stdout;
+  it('is byte-for-byte the page `smoke --help` prints, so the two spellings cannot drift', async () => {
+    const viaTopic = (await cernum('help', 'smoke')).stdout;
+    const viaFlag = (await cernum('smoke', '--help')).stdout;
     expect(viaTopic).toBe(viaFlag);
     nothingWasSent();
   }, 240_000);
 });
 
 describe('v0.2.4 · every help path, for every command, sends nothing', () => {
-  it('answers `help <command>` for every command in the table', () => {
+  it('answers `help <command>` for every command in the table', async () => {
     for (const spec of COMMAND_SPECS) {
-      const result = cernum('help', spec.name);
+      const result = await cernum('help', spec.name);
       expect(result.status, `help ${spec.name} should exit 0`).toBe(0);
       if (spec.name === 'help') {
         // `help help` prints the general index, which is what a person typing it means.
@@ -135,32 +150,32 @@ describe('v0.2.4 · every help path, for every command, sends nothing', () => {
     nothingWasSent();
   }, 900_000);
 
-  it('answers -h on smoke, and prints the same page', () => {
-    const viaShort = cernum('smoke', '-h').stdout;
-    const viaLong = cernum('smoke', '--help').stdout;
+  it('answers -h on smoke, and prints the same page', async () => {
+    const viaShort = (await cernum('smoke', '-h')).stdout;
+    const viaLong = (await cernum('smoke', '--help')).stdout;
     expect(viaShort).toBe(viaLong);
     expect(viaShort).toContain('--authorize-metered');
     nothingWasSent();
   }, 240_000);
 
-  it('answers bare `help` with the index, which points at the per-command pages', () => {
-    const output = cernum('help').output;
+  it('answers bare `help` with the index, which points at the per-command pages', async () => {
+    const output = (await cernum('help')).output;
     expect(output).toContain('benchmark engine');
     expect(output).toContain('cernum help smoke');
     expect(output).toContain('help <command>');
     nothingWasSent();
   }, 120_000);
 
-  it('refuses a topic that is not a command, rather than printing the index and hoping', () => {
-    const result = cernum('help', 'smok');
+  it('refuses a topic that is not a command, rather than printing the index and hoping', async () => {
+    const result = await cernum('help', 'smok');
     expect(result.status).toBe(2);
     expect(result.output).toContain("no command named 'smok'");
     expect(result.output).toContain('Nothing was run');
     nothingWasSent();
   }, 120_000);
 
-  it('refuses two topics at once', () => {
-    const result = cernum('help', 'smoke', 'run');
+  it('refuses two topics at once', async () => {
+    const result = await cernum('help', 'smoke', 'run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('one topic at a time');
     nothingWasSent();
@@ -168,50 +183,50 @@ describe('v0.2.4 · every help path, for every command, sends nothing', () => {
 });
 
 describe('v0.2.4 · an option this build cannot read stops the program', () => {
-  it('refuses an unknown option even when --help is also present', () => {
+  it('refuses an unknown option even when --help is also present', async () => {
     // Printing help would be safe and would also be an answer to a question nobody asked: the flag
     // it could not read may be the one carrying the scope or the ceiling.
-    const result = cernum('smoke', 'claudeCLI', '--help', '--modles', 'claude-haiku-4-5');
+    const result = await cernum('smoke', 'claudeCLI', '--help', '--modles', 'claude-haiku-4-5');
     expect(result.status).toBe(2);
     expect(result.output).toContain('unknown option --modles');
     nothingWasSent();
   }, 120_000);
 
-  it('refuses a value-taking option given no value', () => {
-    const result = cernum('smoke', 'claudeCLI', '--models', '--dry-run');
+  it('refuses a value-taking option given no value', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--models', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('--models needs a value');
     expect(result.output).toContain('nothing was run');
     nothingWasSent();
   }, 120_000);
 
-  it('refuses a bare flag given a value', () => {
-    const result = cernum('smoke', 'claudeCLI', '--all-ladder=please', '--dry-run');
+  it('refuses a bare flag given a value', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--all-ladder=please', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('takes no value');
     nothingWasSent();
   }, 120_000);
 
-  it('refuses a count that is not a count, instead of silently not applying it', () => {
+  it('refuses a count that is not a count, instead of silently not applying it', async () => {
     // `Number('banana')` is NaN, `NaN > 0` is false, and the cap silently did not apply — on the one
     // command whose reason for having a cap is to keep a spending run small.
-    const result = cernum('smoke', 'claudeCLI', '--all-ladder', '--max-attempts', 'banana', '--dry-run');
+    const result = await cernum('smoke', 'claudeCLI', '--all-ladder', '--max-attempts', 'banana', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('--max-attempts');
     expect(result.output).toContain('whole number');
     nothingWasSent();
   }, 120_000);
 
-  it('refuses a ceiling that is not an amount', () => {
-    const result = cernum('smoke', 'opencodeCLI', '--models', 'opencode/union-alpha',
+  it('refuses a ceiling that is not an amount', async () => {
+    const result = await cernum('smoke', 'opencodeCLI', '--models', 'opencode/union-alpha',
       '--authorize-metered', 'lots', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('--authorize-metered');
     nothingWasSent();
   }, 120_000);
 
-  it('refuses an empty value', () => {
-    const result = cernum('smoke', 'claudeCLI', '--models=', '--dry-run');
+  it('refuses an empty value', async () => {
+    const result = await cernum('smoke', 'claudeCLI', '--models=', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('empty value');
     nothingWasSent();

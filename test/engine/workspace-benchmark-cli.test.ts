@@ -12,7 +12,7 @@
 // — help without running, unknown options refused, a preview that sends nothing, `--yes` required —
 // is therefore asserted again on this surface rather than assumed to be inherited.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -90,12 +90,27 @@ function proveLineup(modelIDs: string[]): void {
   }, null, 2), 'utf8');
 }
 
+// Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+// subprocess, and this file's run of CLI invocations lasts long enough to trip vitest's own RPC timeout.
 function cernum(...args: string[]) {
-  const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
-    cwd: repositoryRoot, encoding: 'utf8',
-    env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+  return new Promise<{
+    pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+    stdout: string; stderr: string; error?: Error; output: string;
+  }>((resolve) => {
+    const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+    });
+    let stdout = '';
+    let stderr = '';
+    let error: Error | undefined;
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (err) => { error = err; });
+    child.on('close', (status, signal) => {
+      resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+    });
   });
-  return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 beforeEach(() => {
@@ -109,9 +124,9 @@ afterEach(() => {
 });
 
 describe('the dry run shows the whole matrix and runs none of it', () => {
-  it('prints the pack, every case, every model and the two counts that are not the same number', () => {
+  it('prints the pack, every case, every model and the two counts that are not the same number', async () => {
     proveLineup(CLAUDE_LINEUP.split(','));
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
       '--models', CLAUDE_LINEUP, '--dry-run');
     expect(result.status).toBe(0);
 
@@ -165,9 +180,9 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expect(invocations()).toEqual(['auth status --json']);
   }, 120_000);
 
-  it('reports a model this machine has never proven as refused, and still plans the rest', () => {
+  it('reports a model this machine has never proven as refused, and still plans the rest', async () => {
     proveLineup(['claude-haiku-4-5']);
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5,claude-opus-5', '--dry-run');
     expect(result.status).toBe(0);
     expect(result.output).toMatch(/runnable\s+12/);
@@ -176,9 +191,9 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expectNoModelRequest();
   }, 120_000);
 
-  it('says when the operator changed the sample count rather than the pack', () => {
+  it('says when the operator changed the sample count rather than the pack', async () => {
     proveLineup(['claude-haiku-4-5']);
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5', '--repeats', '1', '--max-attempts', '1', '--dry-run');
     expect(result.status).toBe(0);
     expect(result.output).toContain('repeats         1 per case (set by the operator');
@@ -190,12 +205,12 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expect(result.output).toMatch(/max attempts\s+4/);
   }, 120_000);
 
-  it('does NOT call it an override when the operator names the pack\'s own number', () => {
+  it('does NOT call it an override when the operator names the pack\'s own number', async () => {
     proveLineup(['claude-haiku-4-5']);
     // The foundation pack's own `repeatsPerCase` is 3, and the operator asked for 3. Nothing was
     // changed, so the preview must not say the pack wanted something different — which is what it
     // used to say, for every operator who passed the number they had read off the pack.
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5', '--repeats', '3', '--dry-run');
     expect(result.status).toBe(0);
     expect(result.output).toContain('the same number the pack asks for (3)');
@@ -204,9 +219,9 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
     expect(result.output).not.toContain('different number');
   }, 120_000);
 
-  it('asks the CLI about its session without anything that could carry a prompt', () => {
+  it('asks the CLI about its session without anything that could carry a prompt', async () => {
     proveLineup(['claude-haiku-4-5']);
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5', '--dry-run');
     expect(result.status).toBe(0);
     // The probe ran, it is the frozen one, and it is the ONLY process this dry run started.
@@ -222,9 +237,9 @@ describe('the dry run shows the whole matrix and runs none of it', () => {
 describe('the discriminator pack previews as 72 runs and sends nothing', () => {
   const DISCRIMINATOR = discriminatorOnePack.id;
 
-  it('prints the pack, every case, the untiered structure, the recovery design and the two counts', () => {
+  it('prints the pack, every case, the untiered structure, the recovery design and the two counts', async () => {
     proveLineup(CLAUDE_LINEUP.split(','));
-    const result = cernum('workspace-benchmark', DISCRIMINATOR, '--provider', 'claudeCLI',
+    const result = await cernum('workspace-benchmark', DISCRIMINATOR, '--provider', 'claudeCLI',
       '--models', CLAUDE_LINEUP, '--dry-run');
     expect(result.status).toBe(0);
     expect(result.output).toContain(`${DISCRIMINATOR}@1`);
@@ -254,17 +269,17 @@ describe('the discriminator pack previews as 72 runs and sends nothing', () => {
     expect(fs.existsSync(path.join(campaigns, 'workspace'))).toBe(false);
   }, 120_000);
 
-  it('accepts a pack named the way the refusal message lists it, as id@version', () => {
+  it('accepts a pack named the way the refusal message lists it, as id@version', async () => {
     proveLineup(['claude-haiku-4-5']);
-    const result = cernum('workspace-benchmark', `${DISCRIMINATOR}@1`, '--provider', 'claudeCLI',
+    const result = await cernum('workspace-benchmark', `${DISCRIMINATOR}@1`, '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5', '--dry-run');
     expect(result.status).toBe(0);
     expect(result.output).toContain('1 models x 6 cases x 3 repeats = 18 independent runs');
     expectNoModelRequest();
   }, 120_000);
 
-  it('refuses a version this build does not carry, and says both spellings are accepted', () => {
-    const result = cernum('workspace-benchmark', `${DISCRIMINATOR}@9`, '--provider', 'claudeCLI',
+  it('refuses a version this build does not carry, and says both spellings are accepted', async () => {
+    const result = await cernum('workspace-benchmark', `${DISCRIMINATOR}@9`, '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5', '--dry-run');
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('is not a benchmark pack this build knows');
@@ -275,8 +290,8 @@ describe('the discriminator pack previews as 72 runs and sends nothing', () => {
 });
 
 describe('the refusals that make a forty-eight-run command safe to type', () => {
-  it('prints help without planning or running anything', () => {
-    const result = cernum('workspace-benchmark', '--help');
+  it('prints help without planning or running anything', async () => {
+    const result = await cernum('workspace-benchmark', '--help');
     expect(result.status).toBe(0);
     expect(result.output).toContain('SENDS REAL REQUESTS');
     expect(result.output).toContain('A REPEAT IS NOT A RETRY');
@@ -285,42 +300,42 @@ describe('the refusals that make a forty-eight-run command safe to type', () => 
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('appears in the command index with its effect class', () => {
-    const result = cernum('help');
+  it('appears in the command index with its effect class', async () => {
+    const result = await cernum('help');
     expect(result.output).toContain('workspace-benchmark');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses an unknown option rather than ignoring it', () => {
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+  it('refuses an unknown option rather than ignoring it', async () => {
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5', '--repaets', '3', '--dry-run');
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('repaets');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses a pack it does not know, and names the ones it does', () => {
-    const result = cernum('workspace-benchmark', 'pack.not.here', '--provider', 'claudeCLI',
+  it('refuses a pack it does not know, and names the ones it does', async () => {
+    const result = await cernum('workspace-benchmark', 'pack.not.here', '--provider', 'claudeCLI',
       '--models', 'claude-haiku-4-5', '--dry-run');
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('is not a benchmark pack this build knows');
     expect(result.output).toContain(PACK);
   }, 120_000);
 
-  it('refuses to guess a provider or a lineup', () => {
-    const noProvider = cernum('workspace-benchmark', PACK, '--models', 'claude-haiku-4-5', '--dry-run');
+  it('refuses to guess a provider or a lineup', async () => {
+    const noProvider = await cernum('workspace-benchmark', PACK, '--models', 'claude-haiku-4-5', '--dry-run');
     expect(noProvider.status).not.toBe(0);
     expect(noProvider.output).toContain('--provider is required');
 
-    const noModels = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI', '--dry-run');
+    const noModels = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI', '--dry-run');
     expect(noModels.status).not.toBe(0);
     expect(noModels.output).toContain('--models is required');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses a live matrix without --yes, having sent nothing', () => {
+  it('refuses a live matrix without --yes, having sent nothing', async () => {
     proveLineup(['claude-haiku-4-5']);
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI', '--models', 'claude-haiku-4-5');
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI', '--models', 'claude-haiku-4-5');
     expect(result.status).toBe(3);
     expect(result.output).toContain('Re-run with --yes');
     expect(result.output).toContain('12 run(s)');
@@ -330,8 +345,8 @@ describe('the refusals that make a forty-eight-run command safe to type', () => 
     expectNoModelRequest();
   }, 120_000);
 
-  it('refuses a matrix in which every cell was refused, rather than running an empty one', () => {
-    const result = cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
+  it('refuses a matrix in which every cell was refused, rather than running an empty one', async () => {
+    const result = await cernum('workspace-benchmark', PACK, '--provider', 'claudeCLI',
       '--models', 'claude-nothing-proved-this', '--yes');
     expect(result.status).toBe(6);
     expect(result.output).toContain('every cell of this matrix was refused');

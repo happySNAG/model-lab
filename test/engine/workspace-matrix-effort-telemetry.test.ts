@@ -8,7 +8,7 @@
 // names. The conversation-start record is the REAL captured payload with its conversation id, effort and
 // model rewritten per scenario. The collector is the real `OTLPObserver`, bound to 127.0.0.1.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
@@ -978,19 +978,34 @@ describe('cernum workspace-benchmark with a Codex route and the telemetry collec
     void label;
     return file;
   };
+  // Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+  // subprocess, and the live run below lasts long enough to trip vitest's own RPC timeout.
   const cernum = (fake: string, ...args: string[]) => {
     fs.copyFileSync(fake, path.join(fakeBin, 'codex'));
     fs.chmodSync(path.join(fakeBin, 'codex'), 0o755);
-    const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
-      cwd: repositoryRoot, encoding: 'utf8',
-      env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin`, OPENAI_API_KEY: 'sk-cernum-test-not-a-key' },
+    return new Promise<{
+      pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+      stdout: string; stderr: string; error?: Error; output: string;
+    }>((resolve) => {
+      const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
+        cwd: repositoryRoot,
+        env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin`, OPENAI_API_KEY: 'sk-cernum-test-not-a-key' },
+      });
+      let stdout = '';
+      let stderr = '';
+      let error: Error | undefined;
+      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+      child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+      child.on('error', (err) => { error = err; });
+      child.on('close', (status, signal) => {
+        resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+      });
     });
-    return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
   };
 
-  it('a dry run shows the requirement, runs no codex at all, and claims no applied effort', () => {
+  it('a dry run shows the requirement, runs no codex at all, and claims no applied effort', async () => {
     const fake = fakeCodex([]);
-    const dry = cernum(fake.executable, 'workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
+    const dry = await cernum(fake.executable, 'workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
       '--effort', 'medium', '--label', 'f4-effort', '--admit-identity-unverifiable', admission('f4-effort'), '--dry-run');
     expect(dry.status).toBe(0);
     expect(dry.output).toContain('TO BE MEASURED LIVE — this dry run has verified no applied effort');
@@ -1000,10 +1015,10 @@ describe('cernum workspace-benchmark with a Codex route and the telemetry collec
     expect(fake.invocations()).toEqual([]);
   }, 120_000);
 
-  it('a live run (against the fake) starts the collector, measures every run, and writes it all down', () => {
+  it('a live run (against the fake) starts the collector, measures every run, and writes it all down', async () => {
     const fake = fakeCodex([]);
     const aggregate = path.join(campaigns, 'aggregate.json');
-    const live = cernum(fake.executable, 'workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
+    const live = await cernum(fake.executable, 'workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
       '--effort', 'medium', '--label', 'f4-effort', '--repeats', '1', '--max-attempts', '1',
       '--admit-identity-unverifiable', admission('f4-effort'), '--aggregate', aggregate, '--yes');
     expect(live.status, live.output).toBe(0);

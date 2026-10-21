@@ -22,10 +22,11 @@ export default defineConfig({
      * alongside a fully passing run.
      *
      * Capping the workers is the fix rather than loosening the fsyncs: the fsyncs are the thing
-     * being tested. Two keeps the reporter responsive even on the slowest volume this repository is
-     * checked out on (an external USB disk), and leaves the suite well inside its time budget.
+     * being tested. One worker, not two: the `onTaskUpdate` timeout recurred at two workers in a
+     * fully passing run on the Mac mini's external volume, which other lanes' verification runs
+     * share. A single worker keeps the reporter responsive there, at the cost of wall time.
      */
-    maxWorkers: 2,
+    maxWorkers: 1,
     minWorkers: 1,
   },
 });

@@ -11,7 +11,7 @@
 // and RECORDS its invocations, so a test that accidentally reached a provider fails on the
 // assertion that it did not.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -56,12 +56,27 @@ function proveHaiku(): void {
   }, null, 2), 'utf8');
 }
 
+// Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+// subprocess, and this file's run of CLI invocations lasts long enough to trip vitest's own RPC timeout.
 function cernum(...args: string[]) {
-  const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
-    cwd: repositoryRoot, encoding: 'utf8',
-    env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+  return new Promise<{
+    pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+    stdout: string; stderr: string; error?: Error; output: string;
+  }>((resolve) => {
+    const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
+    });
+    let stdout = '';
+    let stderr = '';
+    let error: Error | undefined;
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (err) => { error = err; });
+    child.on('close', (status, signal) => {
+      resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+    });
   });
-  return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 beforeEach(() => {
@@ -75,9 +90,9 @@ afterEach(() => {
 });
 
 describe('the dry run shows everything and does none of it', () => {
-  it('prints the case, the fixture, the route, the driver and where the record would go', () => {
+  it('prints the case, the fixture, the route, the driver and where the record would go', async () => {
     proveHaiku();
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--max-attempts', '1', '--dry-run');
     expect(result.status).toBe(0);
 
@@ -136,19 +151,19 @@ describe('the dry run shows everything and does none of it', () => {
     expect(fs.existsSync(path.join(campaigns, 'workspace'))).toBe(false);
   }, 120_000);
 
-  it('sends nothing and writes nothing even when the route is proven and everything is valid', () => {
+  it('sends nothing and writes nothing even when the route is proven and everything is valid', async () => {
     proveHaiku();
-    cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI', '--model', 'claude-haiku-4-5', '--dry-run');
+    await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI', '--model', 'claude-haiku-4-5', '--dry-run');
     expect(invocations()).toEqual([]);
     expect(fs.readdirSync(campaigns).filter((entry) => entry !== '.providers')).toEqual([]);
   }, 120_000);
 });
 
 describe('the refusals, each of which happens before anything is sent', () => {
-  it('refuses a provider with no WORKSPACE driver, rather than falling through to prose execution', () => {
+  it('refuses a provider with no WORKSPACE driver, rather than falling through to prose execution', async () => {
     proveHaiku();
     // OpenCode gained a workspace driver in the free + local route pass; the metered HTTP APIs have none.
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'anthropicAPI',
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'anthropicAPI',
       '--model', 'claude-haiku-4-5', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('workspace driver unavailable');
@@ -160,8 +175,8 @@ describe('the refusals, each of which happens before anything is sent', () => {
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses a Codex route with no admission, because codex can never prove one', () => {
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI',
+  it('refuses a Codex route with no admission, because codex can never prove one', async () => {
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI',
       '--model', 'gpt-6-astra', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('unprovenRoute');
@@ -169,7 +184,7 @@ describe('the refusals, each of which happens before anything is sent', () => {
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('admits a Codex route only under a written admission for this exact configuration, and says what it is not', () => {
+  it('admits a Codex route only under a written admission for this exact configuration, and says what it is not', async () => {
     const file = path.join(campaigns, 'admission.json');
     const entry = {
       provider: 'codexCLI', requestedModelID: 'gpt-5.6-sol', requestedEffort: 'medium', cliVersion: '0.155.0',
@@ -178,7 +193,7 @@ describe('the refusals, each of which happens before anything is sent', () => {
     };
     fs.writeFileSync(file, JSON.stringify({ authorizedBy: 'a test, in writing', admitted: [entry] }), 'utf8');
 
-    const admitted = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', 'gpt-5.6-sol',
+    const admitted = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', 'gpt-5.6-sol',
       '--effort', 'medium', '--admit-identity-unverifiable', file, '--dry-run');
     expect(admitted.status).toBe(0);
     expect(admitted.output).toContain('ADMITTED BY A SEALED IDENTITY ADMISSION, NOT PROVEN');
@@ -199,28 +214,28 @@ describe('the refusals, each of which happens before anything is sent', () => {
     expect(admitted.output).toContain('No request was sent');
 
     // THE SAME FILE DOES NOT ADMIT A DIFFERENT EFFORT. Admission is per configuration.
-    const otherEffort = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', 'gpt-5.6-sol',
+    const otherEffort = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', 'gpt-5.6-sol',
       '--effort', 'max', '--admit-identity-unverifiable', file, '--dry-run');
     expect(otherEffort.status).toBe(2);
     expect(otherEffort.output).toContain('does not admit this run');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses a Claude route under an admission: the exception is for a tool that cannot name its model', () => {
+  it('refuses a Claude route under an admission: the exception is for a tool that cannot name its model', async () => {
     const file = path.join(campaigns, 'admission.json');
     fs.writeFileSync(file, JSON.stringify({ authorizedBy: 'a test', admitted: [{
       provider: 'claudeCLI', requestedModelID: 'claude-opus-5', requestedEffort: 'none', cliVersion: '2.1.278',
       authenticationBasis: 'subscription', evidenceDigest: 'sha256:x', evidenceCapturedAt: '2026-09-20T00:00:00Z',
     }] }), 'utf8');
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI', '--model', 'claude-opus-5',
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI', '--model', 'claude-opus-5',
       '--admit-identity-unverifiable', file, '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toMatch(/cannot be admitted under this exception/);
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses a case this build does not know, and names the ones it does', () => {
-    const result = cernum('workspace', 'ws.not.a.case', '--provider', 'claudeCLI',
+  it('refuses a case this build does not know, and names the ones it does', async () => {
+    const result = await cernum('workspace', 'ws.not.a.case', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('is not a workspace case this build knows');
@@ -228,8 +243,8 @@ describe('the refusals, each of which happens before anything is sent', () => {
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses a route nothing has proven, and says what would prove it', () => {
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+  it('refuses a route nothing has proven, and says what would prove it', async () => {
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-opus-5', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('unprovenRoute');
@@ -237,50 +252,50 @@ describe('the refusals, each of which happens before anything is sent', () => {
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('requires both halves of the route to be named, with no default for either', () => {
-    expect(cernum('workspace', 'ws.broken-sum.mean', '--dry-run').output).toContain('--provider is required');
-    expect(cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI', '--dry-run').output)
+  it('requires both halves of the route to be named, with no default for either', async () => {
+    expect((await cernum('workspace', 'ws.broken-sum.mean', '--dry-run')).output).toContain('--provider is required');
+    expect((await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI', '--dry-run')).output)
       .toContain('--model is required');
-    expect(cernum('workspace', '--dry-run').output).toContain('no workspace case named');
+    expect((await cernum('workspace', '--dry-run')).output).toContain('no workspace case named');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('parses the attempt ceiling strictly, and refuses a value that is not one', () => {
+  it('parses the attempt ceiling strictly, and refuses a value that is not one', async () => {
     proveHaiku();
-    const bad = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+    const bad = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--max-attempts', 'two', '--dry-run');
     expect(bad.status).toBe(2);
     expect(bad.output).toContain('--max-attempts');
     expect(bad.output).toContain('nothing was run');
 
     // A ceiling ABOVE the case's own is narrowed to the case's, never raised past it.
-    const high = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+    const high = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--max-attempts', '9', '--dry-run');
     expect(high.status).toBe(0);
     expect(high.output).toContain('2 (operator cap; the case allows 2)');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses an unknown option rather than ignoring it', () => {
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+  it('refuses an unknown option rather than ignoring it', async () => {
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--modles', 'x', '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('unknown option');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('refuses a sandbox inside a Git working tree, in the DRY RUN as well as the live one', () => {
+  it('refuses a sandbox inside a Git working tree, in the DRY RUN as well as the live one', async () => {
     proveHaiku();
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--sandbox', repositoryRoot, '--dry-run');
     expect(result.status).toBe(2);
     expect(result.output).toContain('Git working tree');
     expect(invocations()).toEqual([]);
   }, 120_000);
 
-  it('will not run live without --yes, and sends nothing while refusing', () => {
+  it('will not run live without --yes, and sends nothing while refusing', async () => {
     proveHaiku();
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--max-attempts', '1');
     expect(result.status).toBe(3);
     expect(result.output).toContain('Nothing was run.');
@@ -288,8 +303,8 @@ describe('the refusals, each of which happens before anything is sent', () => {
     expect(fs.existsSync(path.join(campaigns, 'workspace'))).toBe(false);
   }, 120_000);
 
-  it('answers --help without sending anything, whatever else is on the line', () => {
-    const result = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
+  it('answers --help without sending anything, whatever else is on the line', async () => {
+    const result = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'claudeCLI',
       '--model', 'claude-haiku-4-5', '--help');
     expect(result.status).toBe(0);
     expect(result.output).toContain('SENDS REAL REQUESTS TO A MODEL');

@@ -5,7 +5,7 @@
 // store; the runs use a scripted driver that stands in for `codex exec` and never starts a process;
 // the CLI tests put a RECORDING `codex` and `claude` first on PATH and assert that neither was run.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -685,13 +685,26 @@ describe('cernum workspace-benchmark with a Codex route', () => {
     fs.writeFileSync(file, JSON.stringify({ writtenAt: new Date().toISOString(), models: [acceptedCodexRoute(SOL)] }), 'utf8');
   });
 
-  const cernum = (...args: string[]) => {
-    const result = spawnSync('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
-      cwd: repositoryRoot, encoding: 'utf8',
+  // Asynchronous on purpose: a synchronous spawn blocks the vitest worker's event loop for the whole
+  // subprocess, which is long enough to trip vitest's own RPC timeout.
+  const cernum = (...args: string[]) => new Promise<{
+    pid: number | undefined; status: number | null; signal: NodeJS.Signals | null;
+    stdout: string; stderr: string; error?: Error; output: string;
+  }>((resolve) => {
+    const child = spawn('npx', ['tsx', 'src/cli/cernum.ts', ...args, '--root', campaigns], {
+      cwd: repositoryRoot,
       env: { ...process.env, PATH: `${fakeBin}:${NODE_DIRECTORY}:/usr/bin:/bin` },
     });
-    return { ...result, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
-  };
+    let stdout = '';
+    let stderr = '';
+    let error: Error | undefined;
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (err) => { error = err; });
+    child.on('close', (status, signal) => {
+      resolve({ pid: child.pid, status, signal, stdout, stderr, error, output: `${stdout}${stderr}` });
+    });
+  });
   const nothingRan = () => {
     for (const name of ['codex', 'claude']) expect(fs.existsSync(path.join(fakeBin, `${name}.invocations`))).toBe(false);
   };
@@ -705,23 +718,23 @@ describe('cernum workspace-benchmark with a Codex route', () => {
     pack: { id: foundationFourPack.id, version: foundationFourPack.version, digest: f4Digest },
   });
 
-  it('dry-runs without an admission: states it is required and absent, and a live run refuses', () => {
-    const dry = cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
+  it('dry-runs without an admission: states it is required and absent, and a live run refuses', async () => {
+    const dry = await cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
       '--effort', 'medium', '--label', 'f4-codex', '--dry-run');
     expect(dry.status).toBe(0);
     expect(dry.output).toContain('identity adm.   ABSENT');
     expect(dry.output).toContain('REQUIRED — ABSENT; live execution refused.');
     expect(dry.output).toContain('A route above needs an identity admission');
-    const live = cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
+    const live = await cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
       '--effort', 'medium', '--label', 'f4-codex', '--yes');
     expect(live.status).toBe(6);
     expect(live.output).toContain('every cell of this matrix was refused');
     nothingRan();
-  });
+  }, 120_000);
 
-  it('dry-runs with an admission: runnable, sealed, and still identity-unverifiable', () => {
+  it('dry-runs with an admission: runnable, sealed, and still identity-unverifiable', async () => {
     const file = writeAdmission(f4Admission());
-    const dry = cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
+    const dry = await cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
       '--effort', 'medium', '--label', 'f4-codex', '--admit-identity-unverifiable', file, '--dry-run');
     expect(dry.status).toBe(0);
     expect(dry.output).toMatch(/identity adm\. {3}PRESENT cma1:[0-9a-f]{64}/);
@@ -732,29 +745,29 @@ describe('cernum workspace-benchmark with a Codex route', () => {
     expect(dry.output).toContain(`--admit-identity-unverifiable ${file}`);
     expect(dry.output).not.toMatch(/identity\s+verified/);
     nothingRan();
-  });
+  }, 120_000);
 
-  it('refuses a single-record admission file, and refuses a matrix file on the single-record command', () => {
+  it('refuses a single-record admission file, and refuses a matrix file on the single-record command', async () => {
     const single = writeAdmission(JSON.stringify({ authorizedBy: 'x', admitted: [{ provider: 'codexCLI' }] }));
-    const matrix = cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
+    const matrix = await cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
       '--effort', 'medium', '--admit-identity-unverifiable', single, '--dry-run');
     expect(matrix.status).toBe(2);
     expect(matrix.output).toContain('wrongScope');
 
     const matrixFile = writeAdmission(f4Admission());
-    const one = cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', SOL, '--effort', 'medium',
+    const one = await cernum('workspace', 'ws.broken-sum.mean', '--provider', 'codexCLI', '--model', SOL, '--effort', 'medium',
       '--admit-identity-unverifiable', matrixFile, '--dry-run');
     expect(one.status).toBe(2);
     expect(one.output).toContain("declares admissionScope 'workspaceMatrix'");
     nothingRan();
-  });
+  }, 120_000);
 
-  it('refuses an admission for another pack before planning anything', () => {
+  it('refuses an admission for another pack before planning anything', async () => {
     const file = writeAdmission(admissionText());
-    const dry = cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
+    const dry = await cernum('workspace-benchmark', foundationFourPack.id, '--provider', 'codexCLI', '--models', SOL,
       '--effort', 'medium', '--admit-identity-unverifiable', file, '--dry-run');
     expect(dry.status).toBe(2);
     expect(dry.output).toContain('matrixAdmissionScopeMismatch');
     nothingRan();
-  });
+  }, 120_000);
 });
