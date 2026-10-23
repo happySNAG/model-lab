@@ -1,4 +1,4 @@
-// Where the sealed model-lab evidence lives on this machine.
+// Where the sealed evaluation evidence lives on this machine.
 //
 // CERNUM_EVIDENCE_ROOT wins when it is set. Otherwise the first of the two known homes that
 // exists is used, LaCie first: the tree was sealed on the LaCie volume and later copied, byte
