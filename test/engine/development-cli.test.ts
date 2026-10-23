@@ -427,7 +427,7 @@ describe('the text benchmark path is unchanged', () => {
     // their own suites. The point of this test is that an addition must be DECLARED to be allowed,
     // whichever line it came from; it is not that there are only two lines.
     const FLEET = ['observations', 'observations-export', 'observations-import', 'availability',
-      'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates'];
+      'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates', 'history'];
     const isAddition = (name: string) => name.startsWith('develop') || name.startsWith('workspace')
       || FLEET.includes(name);
     expect(current.filter(([name]) => !isAddition(name))).toEqual(PRE_PASS_D_COMMANDS);
@@ -436,7 +436,7 @@ describe('the text benchmark path is unchanged', () => {
     expect(current.filter(([name]) => FLEET.includes(name)).map(([name, effect]) => [name, effect])).toEqual([
       ['observations', 'readOnly'], ['observations-export', 'writesLocal'], ['observations-import', 'writesLocal'],
       ['availability', 'readOnly'], ['discovery-refresh', 'invokesLocalTool'], ['discovery-run', 'invokesLocalTool'],
-      ['discovery-schedule', 'writesLocal'], ['candidates', 'readOnly'],
+      ['discovery-schedule', 'writesLocal'], ['candidates', 'readOnly'], ['history', 'readOnly'],
     ]);
     expect(current.filter(([name]) => name.startsWith('develop')).map(([name, effect]) => [name, effect])).toEqual([
       ['develop', 'spendsAllowance'], ['develop-resume', 'spendsAllowance'], ['develop-status', 'readOnly'],

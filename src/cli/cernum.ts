@@ -98,6 +98,8 @@ import {
   qualifiedRouteCandidatesFromStore, readMachineFingerprint, routeSpendPosture,
   readObservationBundle, readObservationStore, refreshDiscovery, runDiscoveryOnce,
   writeObservationBundle,
+  // A route's qualification verdicts over time, re-derived and never stored.
+  QualificationHistoryError, deriveQualificationHistory, parseRouteKey,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3379,20 +3381,7 @@ async function commandCandidates(positional: string[], options: Options): Promis
   //
   // NOTHING IS COPIED OR MOVED. These roots are read where they are, by the same reader
   // `workspace-report` uses, and the sealed records stay the single authoritative copy of themselves.
-  const evidenceRoots = [root, ...(options['evidence-roots'] === undefined ? []
-    : String(options['evidence-roots']).split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
-  for (const directory of evidenceRoots) {
-    if (!fs.existsSync(directory)) {
-      fail(`candidates: --evidence-roots names ${directory}, which does not exist. Nothing was read. `
-        + 'A root that is not there would contribute no rows and silently narrow the answer.', 2);
-    }
-  }
-  // DE-DUPLICATED BY RUN IDENTITY. Naming a root twice, or naming one that is also the default, must
-  // not count a run twice: the qualification policy asks for "at least N scored runs", and a
-  // double-counted run would buy a route a qualification it did not earn.
-  const seenRuns = new Set<string>();
-  const workspaceRows = evidenceRoots.flatMap((directory) => collectWorkspaceRunRows(directory))
-    .filter((row) => { const id = workspaceRunIdentity(row); if (seenRuns.has(id)) return false; seenRuns.add(id); return true; });
+  const workspaceRows = workspaceRowsFromEvidenceRoots('candidates', root, options);
   const cases = allWorkspaceCases();
   const profiles = registeredWorkspaceDifficultyProfiles();
   const routes = [...new Set(availability.filter((entry) => entry.machineKey === machine).map((entry) => entry.routeKey))].sort();
@@ -3437,6 +3426,99 @@ async function commandCandidates(positional: string[], options: Options): Promis
   say('');
   say(`Ordering: ${set.ordering}`);
   for (const line of wrap(set.disclosure, 76)) say(line);
+}
+
+/** The sealed workspace runs under --root and every --evidence-roots root, each run counted once. */
+function workspaceRowsFromEvidenceRoots(command: string, root: string, options: Options): ReturnType<typeof collectWorkspaceRunRows> {
+  const evidenceRoots = [root, ...(options['evidence-roots'] === undefined ? []
+    : String(options['evidence-roots']).split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+  for (const directory of evidenceRoots) {
+    if (!fs.existsSync(directory)) {
+      fail(`${command}: --evidence-roots names ${directory}, which does not exist. Nothing was read. `
+        + 'A root that is not there would contribute no rows and silently narrow the answer.', 2);
+    }
+  }
+  // DE-DUPLICATED BY RUN IDENTITY. Naming a root twice, or naming one that is also the default, must
+  // not count a run twice: the qualification policy asks for "at least N scored runs", and a
+  // double-counted run would buy a route a qualification it did not earn.
+  const seenRuns = new Set<string>();
+  return evidenceRoots.flatMap((directory) => collectWorkspaceRunRows(directory))
+    .filter((row) => { const id = workspaceRunIdentity(row); if (seenRuns.has(id)) return false; seenRuns.add(id); return true; });
+}
+
+/**
+ * One route's qualification verdicts, oldest first. READ-ONLY: the store and the sealed runs are read
+ * where they are, every verdict is re-derived by `deriveRouteQualification`, and nothing is written.
+ */
+async function commandHistory(positional: string[], options: Options): Promise<void> {
+  const routeKey = positional[0];
+  if (routeKey === undefined) {
+    fail(`history: name the route. ${TERMINAL_COMMAND} history claudeCLI:claude-haiku-4-5`, 2);
+  }
+  const root = String(options.root ?? defaultCampaignRoot());
+  const policyAsked = options.policy === undefined ? CURRENT_ROUTING_POLICY_VERSION : String(options.policy);
+  if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
+    fail(`history: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
+  }
+  let provider: ProviderID;
+  let modelID: string;
+  try {
+    ({ provider, modelID } = parseRouteKey(routeKey));
+  } catch (error) {
+    fail(`history: ${error instanceof Error ? error.message : String(error)} Nothing was read.`, 2);
+  }
+  const machine = machineFromOptions(options);
+  const contents = readObservationStore(root);
+  const workspaceRows = workspaceRowsFromEvidenceRoots('history', root, options);
+
+  let history;
+  try {
+    history = deriveQualificationHistory({
+      routeKey, machineKey: machine, contents, workspaceRows,
+      workspaceCases: allWorkspaceCases(), difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
+      spendAt: (at) => routeSpendPosture({ provider, modelID, now: at }),
+      routingPolicyVersion: policyAsked,
+    });
+  } catch (error) {
+    if (error instanceof QualificationHistoryError) fail(`history: ${error.message}`, 2);
+    throw error;
+  }
+  if (options.json === true) { say(JSON.stringify(history, null, 2)); return; }
+
+  say(`Qualification history of ${history.routeKey} · effort ${history.effort} · machine ${history.machineKey}`);
+  say(`${history.entries.length} verdict(s), oldest first.`);
+  if (history.entries.length === 0) {
+    say('');
+    say('This route is known, but nothing about it was recorded on this machine and no sealed run of it carries a time.');
+  }
+  for (const entry of history.entries) {
+    say('');
+    say(`  ${entry.recordedAt}  ${entry.verdict === 'safeToRoute' ? 'SAFE TO ROUTE' : 'not routable'}`
+      + `  · ${entry.policyID} · ${entry.routingPolicyVersion}${entry.changed ? '' : '  (unchanged)'}`);
+    say(`    evidence   ${entry.evidenceWindow.from} … ${entry.evidenceWindow.to}  `
+      + `(${entry.evidenceWindow.workspaceRuns} run(s), ${entry.evidenceWindow.observations} observation(s))`);
+    say(`    moved by   ${entry.triggeredBy.map((trigger) => trigger.kind).join(', ')}`);
+    if (entry.routableCapabilities.length > 0) say(`    routable   ${entry.routableCapabilities.join(', ')}`);
+    for (const blocker of entry.blockers) {
+      const [first, ...rest] = wrap(`${blocker.kind}: ${blocker.reason}`, 66);
+      say(`    blocker    ${first}`);
+      for (const line of rest) say(`               ${line}`);
+    }
+    for (const stale of entry.stalenessRecorded) say(`    staleness recorded: ${stale.reasons.join(', ')}`);
+  }
+  if (history.undatedWorkspaceRuns.length > 0) {
+    say('');
+    say(`${history.undatedWorkspaceRuns.length} run(s) of this route carry no readable time and sit on no entry:`);
+    for (const recordRoot of history.undatedWorkspaceRuns) say(`  ${recordRoot}`);
+  }
+  say('');
+  for (const line of wrap(history.disclosure, 76)) say(line);
+  if (history.corrupt.length > 0) {
+    say('');
+    for (const entry of history.corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+    fail(`${history.corrupt.length} observation file(s) did not verify and were not read, so the history above may be `
+      + 'missing evidence. They are listed above, by path. Nothing was changed.', 2);
+  }
 }
 
 // MARK: - The installed command
@@ -4327,6 +4409,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'discovery-run': return commandDiscoveryRun(positional, options);
     case 'discovery-schedule': return commandDiscoverySchedule(positional, options);
     case 'candidates': return commandCandidates(positional, options);
+    case 'history': return commandHistory(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();
