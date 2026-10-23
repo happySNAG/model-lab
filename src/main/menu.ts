@@ -1,4 +1,4 @@
-// Model Lab · the application menu. On macOS this is the menu bar (the only way a Mac app quits,
+// Cernum · the application menu. On macOS this is the menu bar (the only way a Mac app quits,
 // hides, and exposes keyboard shortcuts natively); on Windows the same template backs the hidden
 // menu bar so the accelerators (Ctrl+1…7, Ctrl+N, Ctrl+E) work identically.
 //

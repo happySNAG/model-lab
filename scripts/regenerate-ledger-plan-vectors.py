@@ -8,7 +8,7 @@ with.
 No campaign evidence is read or written. The catalogue below is synthetic and the candidate names
 are invented.
 
-    MODEL_LAB_HARNESS=/path/to/harness python3 scripts/regenerate-ledger-plan-vectors.py \
+    CERNUM_HARNESS=/path/to/harness python3 scripts/regenerate-ledger-plan-vectors.py \
         > fixtures/parity/engine/ledger-plan-vectors.json
 """
 import hashlib
@@ -16,12 +16,13 @@ import json
 import os
 import sys
 
-# The reference harness is not part of this repository. Point MODEL_LAB_HARNESS at a checkout of it
+# The reference harness is not part of this repository. Point CERNUM_HARNESS at a checkout of it
 # to regenerate; without it, the committed fixture stands and the parity tests still run against it.
-HARNESS = os.environ.get("MODEL_LAB_HARNESS", "")
+# MODEL_LAB_HARNESS, the pre-rename name, is still read so an existing maintainer script keeps working.
+HARNESS = os.environ.get("CERNUM_HARNESS") or os.environ.get("MODEL_LAB_HARNESS", "")
 if not HARNESS or not os.path.isdir(HARNESS):
     sys.stderr.write(
-        "set MODEL_LAB_HARNESS to a checkout of the reference Python harness to regenerate "
+        "set CERNUM_HARNESS to a checkout of the reference Python harness to regenerate "
         "this fixture; the committed fixture is used otherwise\n")
     raise SystemExit(2)
 sys.path.insert(0, HARNESS)

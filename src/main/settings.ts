@@ -1,5 +1,5 @@
-// Model Lab · settings and application paths. Settings are a small JSON file in the user-data
-// directory (Windows: %APPDATA%\Model Lab). The evidence store lives beside it unless overridden.
+// Cernum · settings and application paths. Settings are a small JSON file in the user-data
+// directory (Windows: %APPDATA%\Cernum). The evidence store lives beside it unless overridden.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';

@@ -1,4 +1,4 @@
-// Model Lab · benchmark sessions. A session groups the runs of one benchmark (one run per suite,
+// Cernum · benchmark sessions. A session groups the runs of one benchmark (one run per suite,
 // all selected models in each run) with the machine and runtime context they ran under. Sessions are
 // application metadata; the evidence itself lives only in the append-only evidence store.
 

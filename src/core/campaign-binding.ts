@@ -1,4 +1,4 @@
-// Model Lab core · Cernum REQ-03 Phase 6 — binding a campaign to a scoring policy generation.
+// Cernum core · Cernum REQ-03 Phase 6 — binding a campaign to a scoring policy generation.
 //
 // A campaign must say, before it runs, WHICH generation scored it, and must be refused if that
 // generation is not exactly what the catalog can still produce. This module is the whole of that

@@ -1,4 +1,4 @@
-// Model Lab · Ollama runtime detection, guided setup, and the explicit model-pull workflow.
+// Cernum · Ollama runtime detection, guided setup, and the explicit model-pull workflow.
 //
 // This module is deliberately SEPARATE from the benchmark transport (`core/ollama-http.ts`):
 // benchmark execution can only read, describe, and generate. Downloading a model is a separate,

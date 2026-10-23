@@ -1,4 +1,4 @@
-// Model Lab core · sealed, versioned scoring policies (port of `ModelLabScoringPolicy`).
+// Cernum core · sealed, versioned scoring policies (port of `ModelLabScoringPolicy`).
 
 import { fnv1a64Hex, seal, compareCodePoints } from './digest';
 import { containsPhrase } from './text';

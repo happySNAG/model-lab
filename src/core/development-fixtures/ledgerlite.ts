@@ -1,4 +1,4 @@
-// Model Lab core · `ledgerlite` — the fixture repository the development suites run against.
+// Cernum core · `ledgerlite` — the fixture repository the development suites run against.
 //
 // WHAT IT HAS TO BE, AND WHY EACH PROPERTY IS LOAD-BEARING.
 //

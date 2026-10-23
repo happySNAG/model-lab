@@ -95,8 +95,8 @@ let campaignRoot: string;
 
 test.beforeAll(async () => {
   runtime = await startRuntime();
-  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-canonical-'));
-  campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-canonical-campaigns-'));
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-canonical-'));
+  campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-canonical-campaigns-'));
   fs.writeFileSync(path.join(userData, 'settings.json'),
     JSON.stringify({ ollamaEndpoint: runtime.endpoint, thinkingMode: 'disabled', evidenceRootOverride: '' }));
 });
@@ -109,7 +109,7 @@ test.beforeEach(() => { runtime.resident.clear(); runtime.refuseToUnload = false
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
   const app = await electron.launch({
     args: [path.join(root, 'out/main/index.js')],
-    env: { ...process.env, MODEL_LAB_USER_DATA: userData, MODEL_LAB_CAMPAIGN_ROOT: campaignRoot },
+    env: { ...process.env, CERNUM_USER_DATA: userData, CERNUM_CAMPAIGN_ROOT: campaignRoot },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.shell');

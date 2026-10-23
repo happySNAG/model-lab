@@ -1,4 +1,4 @@
-// Model Lab core · disposable fixture repositories for the development benchmark.
+// Cernum core · disposable fixture repositories for the development benchmark.
 //
 // WHY A REPOSITORY IS A FIRST-CLASS FIXTURE, AND NOT A `syntheticContext` STRING. Every case this
 // engine scored before this pass was a prompt and an answer. `SyntheticInputPackage` carries one

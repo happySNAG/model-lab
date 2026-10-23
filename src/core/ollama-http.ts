@@ -1,4 +1,4 @@
-// Model Lab core · the live Ollama HTTP transport (port of `ModelLabOllamaHTTPTransport`).
+// Cernum core · the live Ollama HTTP transport (port of `ModelLabOllamaHTTPTransport`).
 //
 // The ONE place the benchmark engine may touch a network. Three fail-closed properties:
 //   • Construction REQUIRES a `LiveExecutionAuthorization`, obtainable only by acknowledging both

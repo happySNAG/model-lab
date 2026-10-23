@@ -398,8 +398,9 @@ Requirements: **Node 20 or later** and npm. Nothing else. macOS packaging requir
 packaging works from macOS, Linux or Windows.
 
 ```bash
-git clone https://github.com/happySNAG/model-lab.git
-cd model-lab
+# The GitHub repository still carries the product's pre-rename slug; see docs/NAMING.md.
+git clone https://github.com/happySNAG/model-lab.git cernum
+cd cernum
 npm install
 
 npm run dev            # hot-reloading development window

@@ -47,7 +47,7 @@ function plant(endpoint: string, fields: Record<string, unknown> = {}): Record<s
     nonce: 'plantedplantedplantedplanted0000',
     pid: 998_001,
     processType: 'desktop',
-    command: 'Model Lab · Campaigns screen',
+    command: 'Cernum · Campaigns screen',
     hostname: os.hostname(),
     campaignID: 'campaign:other',
     campaignName: 'the-other-one',

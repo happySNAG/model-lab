@@ -13,7 +13,7 @@ import { syntheticEnvironment } from '@core/run';
 import type { SessionRecord } from '../../src/shared/ipc';
 
 let dir: string;
-beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-unit-')); });
+beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-unit-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe('settings store', () => {
@@ -119,30 +119,30 @@ describe('application menu', () => {
   };
   const labels = (items: { label?: string; role?: string }[]) => items.map((i) => i.label ?? i.role);
   it('on macOS leads with the application menu (About, Settings…, Quit) and ends with Window and Help', () => {
-    const template = menuTemplate({ platform: 'darwin', isDev: false, productName: 'Model Lab' }, actions);
-    expect(labels(template)).toEqual(['Model Lab', 'File', 'Edit', 'View', 'Ollama', 'window', 'help']);
+    const template = menuTemplate({ platform: 'darwin', isDev: false, productName: 'Cernum' }, actions);
+    expect(labels(template)).toEqual(['Cernum', 'File', 'Edit', 'View', 'Ollama', 'window', 'help']);
     const appMenu = template[0].submenu as { label?: string; role?: string; accelerator?: string }[];
-    expect(appMenu[0].label).toBe('About Model Lab');
+    expect(appMenu[0].label).toBe('About Cernum');
     expect(appMenu.find((i) => i.label === 'Settings…')?.accelerator).toBe('Command+,');
     expect(appMenu[appMenu.length - 1].role).toBe('quit');
     expect((template[1].submenu as { role?: string }[]).some((i) => i.role === 'close')).toBe(true);
   });
   it('on Windows puts Exit under File and About under Help, with no application menu', () => {
-    const template = menuTemplate({ platform: 'win32', isDev: false, productName: 'Model Lab' }, actions);
+    const template = menuTemplate({ platform: 'win32', isDev: false, productName: 'Cernum' }, actions);
     expect(labels(template)[0]).toBe('File');
     const file = template[0].submenu as { label?: string; role?: string }[];
     expect(file[file.length - 1]).toMatchObject({ role: 'quit', label: 'Exit' });
     const help = template[template.length - 1].submenu as { label?: string }[];
-    expect(help[help.length - 1].label).toBe('About Model Lab');
+    expect(help[help.length - 1].label).toBe('About Cernum');
   });
   it('gives every screen a Cmd/Ctrl+digit shortcut and never duplicates an accelerator', () => {
-    const template = menuTemplate({ platform: 'darwin', isDev: false, productName: 'Model Lab' }, actions);
+    const template = menuTemplate({ platform: 'darwin', isDev: false, productName: 'Cernum' }, actions);
     const all = accelerators(template);
     for (let i = 1; i <= 7; i++) expect(all).toContain(`CmdOrCtrl+${i}`);
     expect(new Set(all).size).toBe(all.length);
   });
   it('exposes reload and developer tools only in development', () => {
-    const view = (isDev: boolean) => (menuTemplate({ platform: 'darwin', isDev, productName: 'Model Lab' }, actions)[3].submenu as { role?: string }[]).map((i) => i.role);
+    const view = (isDev: boolean) => (menuTemplate({ platform: 'darwin', isDev, productName: 'Cernum' }, actions)[3].submenu as { role?: string }[]).map((i) => i.role);
     expect(view(false)).not.toContain('toggleDevTools');
     expect(view(true)).toContain('toggleDevTools');
   });

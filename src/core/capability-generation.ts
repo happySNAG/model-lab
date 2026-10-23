@@ -1,4 +1,4 @@
-// Model Lab core · Cernum REQ-03 Phase 6 — scoring policy GENERATION 2, routed into the live path.
+// Cernum core · Cernum REQ-03 Phase 6 — scoring policy GENERATION 2, routed into the live path.
 //
 // WHAT A GENERATION IS. A scoring policy generation is the complete set of policies a campaign scores
 // through. Generation 1 is the sealed vintage: every policy exactly as it has always been, and what

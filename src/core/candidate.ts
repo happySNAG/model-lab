@@ -1,4 +1,4 @@
-// Model Lab core · honest measurements and the capability-based candidate contract.
+// Cernum core · honest measurements and the capability-based candidate contract.
 // Port of `ModelLabMeasurement`, `ModelLabCapabilityClaim`, `ModelLabCandidate*`, and the registry.
 // Every type is shaped exactly like its persisted JSON so records round-trip byte-identically.
 
@@ -147,7 +147,7 @@ export const deterministicFake: CandidateDescriptor = makeCandidate({
  * A second registry entry that exists ONLY so this registry stays byte-identical to the sealed
  * reference corpus (see docs/PARITY.md). It describes a private network relay from the project the
  * engine was first written for; it is permanently `unavailable`, has no adapter and no transport in
- * this codebase, and Model Lab never lists or runs it — the application offers the Ollama models it
+ * this codebase, and Cernum never lists or runs it — the application offers the Ollama models it
  * finds plus the built-in reference model, and nothing else. Its wording is pinned test data and is
  * deliberately left exactly as the corpus recorded it.
  */

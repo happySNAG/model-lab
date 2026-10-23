@@ -1,4 +1,4 @@
-// Model Lab core · turning a development attempt into a graded result.
+// Cernum core · turning a development attempt into a graded result.
 //
 // ONE PATH FOR BOTH DIMENSIONS. A repository-understanding attempt produces a JSON answer and a
 // multi-file-editing attempt produces a changed repository, but both are graded by the same

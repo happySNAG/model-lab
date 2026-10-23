@@ -1,4 +1,4 @@
-// Model Lab core · development capability evidence, and the routing statements built on it.
+// Cernum core · development capability evidence, and the routing statements built on it.
 //
 // THE DEFAULT IS "NOT MEASURED", AND IT IS THE DEFAULT BY CONSTRUCTION. `noDevelopmentEvidence` is
 // what every candidate has until it runs these suites, and it is what the ranking layer fills in

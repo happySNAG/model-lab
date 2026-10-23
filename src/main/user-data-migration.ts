@@ -34,6 +34,8 @@ export const MIGRATED_ENTRIES: readonly string[] = [
   'campaigns',
   'evidence',
   'settings.json',
+  // The pre-rename log name. It is copied across under the SAME name and kept as history beside
+  // `cernum.log`; renaming it here would make the migration miss it on every old install.
   'model-lab.log',
 ];
 

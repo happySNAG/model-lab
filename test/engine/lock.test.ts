@@ -33,7 +33,7 @@ function plant(fields: Partial<Record<string, unknown>> = {}): Record<string, un
     nonce: 'plantedplantedplantedplanted0000',
     pid: 424242,
     processType: 'desktop',
-    command: 'Model Lab · Campaigns screen',
+    command: 'Cernum · Campaigns screen',
     hostname: os.hostname(),
     campaignID: 'campaign:abc',
     campaignName: 'demo',
@@ -76,7 +76,7 @@ describe('taking a campaign', () => {
     expect(error).toBeInstanceOf(CampaignLockError);
     expect(error!.code).toBe('heldByLiveOwner');
     expect(error!.message).toContain('desktop process 999001');
-    expect(error!.message).toContain('Model Lab · Campaigns screen');
+    expect(error!.message).toContain('Cernum · Campaigns screen');
     expect(error!.message).toMatch(/Pause the first one/);
     // The refusal changed nothing.
     expect((JSON.parse(fs.readFileSync(campaignLockPath(root), 'utf8')) as { pid: number }).pid).toBe(999_001);

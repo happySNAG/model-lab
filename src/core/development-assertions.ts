@@ -1,4 +1,4 @@
-// Model Lab core · the hidden assertion language for the development benchmark.
+// Cernum core · the hidden assertion language for the development benchmark.
 //
 // WHY PREDICATES AND NOT PHRASE LISTS. Every evaluator this engine had before this pass judges a
 // STRING: does the answer contain one of these forms, is it this exact word, does this JSON carry

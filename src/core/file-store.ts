@@ -1,4 +1,4 @@
-// Model Lab core · durable file-backed result store (port of `ModelLabFileResultStore`).
+// Cernum core · durable file-backed result store (port of `ModelLabFileResultStore`).
 //
 // One JSON document per record, each wrapped in a self-describing envelope (schema version, record
 // type, `mla1:` integrity digest, payload). The layout IS the index and is byte-compatible with the
@@ -29,6 +29,8 @@ import { EvidenceBundle, ResultStore, ResultStoreError, STORE_SCHEMA_VERSION, St
 
 interface Envelope<Payload> { schemaVersion: number; recordType: string; payloadDigest: string; payload: Payload }
 
+// Sealed: written into every store-manifest.json and compared byte for byte by the parity suite, so
+// the pre-rename wording stays. See docs/NAMING.md.
 export const STORE_MANIFEST_PURPOSE =
   'Skippy Model Lab permanent evaluation history. Evidence, not authorization. Append-only; records are never overwritten; model files are never stored here.';
 

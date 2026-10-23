@@ -1,7 +1,7 @@
-import type { ModelLabAPI } from '../shared/ipc';
+import type { CernumAPI } from '../shared/ipc';
 
 declare global {
-  interface Window { modelLab: ModelLabAPI }
+  interface Window { cernum: CernumAPI }
 }
 
-export const api: ModelLabAPI = window.modelLab;
+export const api: CernumAPI = window.cernum;

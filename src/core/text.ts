@@ -1,4 +1,4 @@
-// Model Lab core · deterministic text normalization (port of `ModelLabTextNormalization`).
+// Cernum core · deterministic text normalization (port of `ModelLabTextNormalization`).
 //
 // Evaluators compare model output against sealed criteria using ONLY these pure helpers — never a
 // second language model, never a network service, never a fuzzy semantic score. Lowercase, fold

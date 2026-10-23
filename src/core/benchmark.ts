@@ -1,4 +1,4 @@
-// Model Lab core · versioned, immutable benchmark-case specification (port of `ModelLabBenchmark`).
+// Cernum core · versioned, immutable benchmark-case specification (port of `ModelLabBenchmark`).
 
 import { fnv1a64Hex, seal, compareCodePoints } from './digest';
 import { graphemeCount } from './text';

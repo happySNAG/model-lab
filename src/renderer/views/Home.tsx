@@ -67,7 +67,7 @@ export function HomeView({ shell }: { shell: Shell }) {
           {sessions === undefined ? <p className="muted">Loading…</p> : sessions.length === 0 ? (
             <Empty title="No benchmarks yet">
               <div className="guide" style={{ textAlign: 'left', width: '100%' }}>
-                <div className="guide-item"><span className="step-n" aria-hidden>1</span><span><strong>Have a model ready</strong>{ollamaRunning ? 'Ollama is running; add a model on the Models screen.' : 'Start Ollama, or use the built-in reference model to try the lab.'}</span></div>
+                <div className="guide-item"><span className="step-n" aria-hidden>1</span><span><strong>Have a model ready</strong>{ollamaRunning ? 'Ollama is running; add a model on the Models screen.' : 'Start Ollama, or use the built-in reference model to try Cernum.'}</span></div>
                 <div className="guide-item"><span className="step-n" aria-hidden>2</span><span><strong>Choose what to test</strong>Pick models and suites on the Benchmark screen.</span></div>
                 <div className="guide-item"><span className="step-n" aria-hidden>3</span><span><strong>Start</strong>Watch it live; results and history stay on {here}.</span></div>
               </div>

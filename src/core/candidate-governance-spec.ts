@@ -1,4 +1,4 @@
-// Model Lab core · CANDIDATE governance spec (Cernum Pass 10). Not canonical; nothing imports it.
+// Cernum core · CANDIDATE governance spec (Cernum Pass 10). Not canonical; nothing imports it.
 //
 // One entry per governed rule. Each entry says whether a prohibited phrase inside a negation should be
 // suppressed, and — for each required concept — the paraphrase family that counts as the same

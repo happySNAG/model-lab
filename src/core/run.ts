@@ -1,4 +1,4 @@
-// Model Lab core · immutable run planning and execution records (port of `ModelLabRun`).
+// Cernum core · immutable run planning and execution records (port of `ModelLabRun`).
 
 import { seal, compareCodePoints, isoSeconds } from './digest';
 import { CandidateDescriptor, CandidateID, Measurement, descriptorDigest } from './candidate';

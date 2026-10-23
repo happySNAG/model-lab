@@ -1,4 +1,4 @@
-// Model Lab · machine and environment capture for the desktop application.
+// Cernum · machine and environment capture for the desktop application.
 //
 // The same honesty rule as the canonical lab: every field is measured from what the operating
 // system genuinely reports, or explicitly unavailable with a reason. Nothing is estimated. Windows

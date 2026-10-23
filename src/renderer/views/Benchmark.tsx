@@ -81,7 +81,7 @@ export function BenchmarkView({ shell }: { shell: Shell }) {
                   <input type="checkbox" checked={selectedModels.has(m.key)} onChange={() => toggle(selectedModels, m.key, setSelectedModels)} data-testid={`model-${m.key}`} />
                   <span className="check-body">
                     <span className="row"><strong>{m.name}</strong>{m.kind === 'reference' ? <Pill tone="accent">built-in</Pill> : <Pill tone="ok">Ollama</Pill>}</span>
-                    <span className="small muted">{m.kind === 'reference' ? 'Fixed answers; useful to try the lab or check it is working.' : [m.parameterSize, m.quantization, m.family].filter(Boolean).join(' · ') || 'installed model'}</span>
+                    <span className="small muted">{m.kind === 'reference' ? 'Fixed answers; useful to try Cernum or check it is working.' : [m.parameterSize, m.quantization, m.family].filter(Boolean).join(' · ') || 'installed model'}</span>
                   </span>
                 </label>
               ))}

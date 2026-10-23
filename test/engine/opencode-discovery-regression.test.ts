@@ -29,6 +29,7 @@ import {
   discoverProvider, discoverOpenCodeCLI, DISCOVERABLE_PROVIDERS, isDiscoverableProvider,
   refuseToDiscover, selectableModels,
 } from '../../src/engine/discovery';
+import { overrideSystemExecutableDirectories } from '../../src/engine/cli-process';
 import { UNION_ALPHA_MODEL_ID } from '../../src/engine/opencode-cli';
 import { PROVIDER_IDS } from '../../src/engine/provider';
 
@@ -94,12 +95,17 @@ beforeEach(() => {
   // The real lookup reads the real environment, so the environment is what the test controls.
   process.env.HOME = home;
   process.env.PATH = FINDER_PATH;
+  // `/opt/homebrew/bin` and `/usr/local/bin` are absolute, so HOME cannot fence them off. Point
+  // them at an empty directory of this test's own, or "nothing is installed" becomes a claim about
+  // whichever Mac runs the suite -- and false on any that installed OpenCode through Homebrew.
+  overrideSystemExecutableDirectories([path.join(home, 'system', 'bin')]);
   environment = process.env;
 });
 
 afterEach(() => {
   process.env.PATH = saved.PATH;
   process.env.HOME = saved.HOME;
+  overrideSystemExecutableDirectories();
   fs.rmSync(home, { recursive: true, force: true });
   void environment;
 });
@@ -156,6 +162,15 @@ describe('v0.2.1 · an OpenCode the person installed is reported as installed', 
     // OpenCode there has not made it uninstalled. The absolute path is reported either way, so a
     // find outside PATH is always visible as the unusual location it came from.
     const installed = installOpenCode(path.join(home, '.local', 'bin'));
+
+    const status = await discoverProvider('opencodeCLI');
+
+    expect(status.reachability).toBe('ready');
+    expect(status.executablePath).toBe(installed);
+  });
+
+  it('finds an OpenCode installed machine-wide, the way Homebrew installs one', async () => {
+    const installed = installOpenCode(path.join(home, 'system', 'bin'));
 
     const status = await discoverProvider('opencodeCLI');
 

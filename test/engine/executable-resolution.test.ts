@@ -16,7 +16,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { findExecutable } from '../../src/engine/cli-process';
+import {
+  DEFAULT_SYSTEM_EXECUTABLE_DIRECTORIES, findExecutable, overrideSystemExecutableDirectories,
+} from '../../src/engine/cli-process';
 
 /** The PATH a macOS app inherits from `launchd` when it is opened from Finder or the Dock. */
 const FINDER_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
@@ -32,8 +34,19 @@ function install(where: string, name: string): string {
   return file;
 }
 
-beforeAll(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-exec-')); });
-afterAll(() => { fs.rmSync(home, { recursive: true, force: true }); });
+/** Stands in for `/opt/homebrew/bin` and `/usr/local/bin`, which HOME cannot fence off. */
+const systemBin = () => path.join(home, 'system', 'bin');
+
+beforeAll(() => {
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-exec-'));
+  // Without this, every "nothing is there" below is a claim about the Mac running the suite, and
+  // false on any that installed the CLI through Homebrew.
+  overrideSystemExecutableDirectories([systemBin()]);
+});
+afterAll(() => {
+  overrideSystemExecutableDirectories();
+  fs.rmSync(home, { recursive: true, force: true });
+});
 
 describe('findExecutable · a truncated PATH is a fact about the launcher, not about the machine', () => {
   it('finds the OpenCode CLI in its installer directory when PATH is what Finder gives an app', () => {
@@ -59,5 +72,27 @@ describe('findExecutable · a truncated PATH is a fact about the launcher, not a
   it('searches nothing under a home directory it was never told about', () => {
     install(executable('.opencode', 'bin'), 'opencode');
     expect(findExecutable('opencode', { PATH: FINDER_PATH })).toBeUndefined();
+  });
+});
+
+describe('findExecutable · the machine-wide directories', () => {
+  it('finds a CLI installed machine-wide, the way Homebrew installs one, with no HOME at all', () => {
+    const installed = install(systemBin(), 'a-homebrew-cli');
+    expect(findExecutable('a-homebrew-cli', { PATH: FINDER_PATH })).toBe(installed);
+  });
+
+  it('searches Homebrew on Apple Silicon, then on Intel, when nothing has overridden them', () => {
+    expect(DEFAULT_SYSTEM_EXECUTABLE_DIRECTORIES).toEqual(['/opt/homebrew/bin', '/usr/local/bin']);
+  });
+
+  it('goes back to those defaults when the override is lifted', () => {
+    const installed = install(systemBin(), 'only-in-the-override');
+    overrideSystemExecutableDirectories();
+    try {
+      expect(findExecutable('only-in-the-override', { PATH: FINDER_PATH })).toBeUndefined();
+    } finally {
+      overrideSystemExecutableDirectories([systemBin()]);
+    }
+    expect(findExecutable('only-in-the-override', { PATH: FINDER_PATH })).toBe(installed);
   });
 });

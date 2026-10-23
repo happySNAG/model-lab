@@ -83,8 +83,8 @@ async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
     args: [path.join(root, 'out/main/index.js')],
     env: {
       ...process.env,
-      MODEL_LAB_USER_DATA: userData,
-      MODEL_LAB_CAMPAIGN_ROOT: campaignRoot,
+      CERNUM_USER_DATA: userData,
+      CERNUM_CAMPAIGN_ROOT: campaignRoot,
       // The fake CLIs come first, so nothing can reach a real one.
       PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
       // Any API request would land on the loopback recorder, never on a provider.
@@ -101,9 +101,9 @@ async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
 }
 
 test.beforeAll(async () => {
-  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-providers-'));
-  campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-provider-campaigns-'));
-  fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'model-lab-e2e-bin-'));
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-providers-'));
+  campaignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-provider-campaigns-'));
+  fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cernum-e2e-bin-'));
   cliLog = path.join(fakeBin, 'invocations.log');
   const SIGNED_IN = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}';
   writeFakeCLI('claude', SIGNED_IN);

@@ -1,4 +1,4 @@
-// Model Lab core · evaluation adapter boundary (port of `ModelLabAdapter`).
+// Cernum core · evaluation adapter boundary (port of `ModelLabAdapter`).
 
 import { seal } from './digest';
 import { CandidateDescriptor, ExecutionClass } from './candidate';
