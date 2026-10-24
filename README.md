@@ -278,6 +278,28 @@ Clicking any row opens the attempt in full: the exact prompt that was sent, the 
 back, every rule that was applied and what each one decided, the timing breakdown, and whether the
 runtime's reported model identity matched what was asked for.
 
+### Routing evidence from the terminal
+
+The `cernum` terminal command also answers, from recorded evidence alone, which routes a scheduler
+such as Ordra could use. None of these contacts a model or provider, and none picks a winner.
+
+| Command | What it answers |
+| --- | --- |
+| `cernum history <route> [--json]` | One route's qualification verdicts over time, oldest first, re-derived from the observation store and sealed runs. Writes nothing. See [docs/ordra-lane/qualification-history.md](docs/ordra-lane/qualification-history.md). |
+| `cernum history <route> --metrics [--json]` | The route's metrics rollup instead: count, nearest-rank median and p90 of wall clock and tokens, cost where recorded (unknown otherwise), retry and failure rates, per route and per capability. See [docs/ordra-lane/metrics-rollup.md](docs/ordra-lane/metrics-rollup.md). |
+| `cernum candidates --task <type> --tier <n> --context <tokens>` | The candidate set for an Ordra pass, mapped by task taxonomy ctt1; an unknown task type or tier is refused with its reason. See [docs/ordra-lane/task-taxonomy.md](docs/ordra-lane/task-taxonomy.md). |
+| `cernum candidates … --fallback [--json]` | The same set as an advisory fallback chain (cfc1), every exclusion with its reasons, unavailable and throttled routes falling through. Never a selection. See [docs/ordra-lane/fallback-chain.md](docs/ordra-lane/fallback-chain.md). |
+| `cernum candidates … --log` | Appends the answer to the routing decision log (crd1); without `--log`, `candidates` writes nothing. See [docs/ordra-lane/routing-decision-log.md](docs/ordra-lane/routing-decision-log.md). |
+| `cernum decision-log [--json]` | Reads that log back, verifying every record's digest, name and chain; a tampered record is refused and the command exits 4. Writes nothing. |
+| `cernum availability` | Now also reports a usage or rate limit a provider returned (limit evidence cle1) and holds the routes it reaches unavailable until it expires; `candidates` excludes them with that reason. See [docs/ordra-lane/limit-evidence.md](docs/ordra-lane/limit-evidence.md). |
+| `cernum regressions [<route>] [--json]` | Each route's latest qualification evidence against its own history under thresholds crt1, beside stale qualifications. Detection only; writes nothing. See [docs/ordra-lane/regression-detector.md](docs/ordra-lane/regression-detector.md). |
+| `cernum status-export [--json] [--context <tokens>]` | One read-only document, schema cse1 version 1, for Ordra Office. See [docs/ordra-lane/status-export.md](docs/ordra-lane/status-export.md). |
+
+Debugging and instruction-compliance coverage (ccm1, `src/engine/capability-coverage.ts`) is engine
+code only: no command reads it yet. See
+[docs/ordra-lane/capability-coverage.md](docs/ordra-lane/capability-coverage.md). [docs/ordra-lane/block-2-summary.md](docs/ordra-lane/block-2-summary.md) lists the
+commits that added all of this.
+
 ## Where your data lives
 
 | | macOS | Windows |
@@ -378,7 +400,7 @@ different things:
 | --- | --- |
 | The Windows installer and portable executable build | ✅ **Verified** — cross-built from macOS; both artifacts produced, with the installer licence page configured |
 | The engine is platform-independent TypeScript with no Windows-specific logic | ✅ **Verified** by reading it — nothing in `src/core/` touches an operating-system API |
-| Typecheck, the vitest suite (120 files: unit, parity and engine), and the production build, on Windows | ⏳ **Not yet run.** `.github/workflows/ci.yml` is configured to run them on `windows-latest` on every push, but no CI run has happened — this repository has not been pushed anywhere yet |
+| Typecheck, the vitest suite (133 files: unit, parity and engine), and the production build, on Windows | ⏳ **Not yet run.** `.github/workflows/ci.yml` is configured to run them on `windows-latest` on every push, but no CI run has happened — this repository has not been pushed anywhere yet |
 | The end-to-end suite driving the real Electron application on Windows | ⏳ **Not yet run.** Also configured in CI, also never executed |
 | Windows-specific code paths (CIM hardware query, `%APPDATA%` locations, Ctrl accelerators, starting Ollama) | ⚠️ **Reviewed by reading the code only.** Never executed anywhere |
 | Installing, launching and uninstalling the packaged application on a real Windows PC | ❌ **Not done** |
@@ -404,7 +426,7 @@ cd cernum
 npm install
 
 npm run dev            # hot-reloading development window
-npm test               # unit, parity and engine suites (vitest, 120 files); disk-bound,
+npm test               # unit, parity and engine suites (vitest, 133 files); disk-bound,
                        # many minutes on an external volume — see docs/ordra-lane/baseline.md
 npm run typecheck      # tsc --noEmit
 npm run build          # electron-vite → out/
@@ -447,14 +469,14 @@ The renderer has no Node access: `contextIsolation` on, `nodeIntegration` off, a
 | --- | --- |
 | `test/unit/` (3 files) | Engine behaviour (fail-closed execution, append-only store, cancellation, idempotent evaluation), the Ollama transport against a scripted loopback server (unavailable, available, no models, enumeration, not found, malformed, timeout, cancellation), and application state (settings persistence and validation, session recovery after an unclean exit, machine-summary honesty, the application menu). |
 | `test/parity/` (3 files) | Byte-for-byte equality with a frozen corpus generated by an independent second implementation of the same engine, written in Swift: digests, catalog, plans, executed bundles, evaluations, profiles, recommendations and a complete on-disk store. See [docs/PARITY.md](docs/PARITY.md). |
-| `test/engine/` (114 files) | The benchmark engine: byte-for-byte canonical-encoding parity with the Python harness this engine is ported from, the durable ledger (torn writes, checkpoint drift, duplicate results, resume, reconciliation), frozen-manifest drift detection, new-hardware retest derivation, the safety guards, the residency proof, supplied-context and model-identity verification, per-attempt telemetry from an observed token stream (visible-only, thinking-then-visible, thinking-only budget exhaustion, malformed stream, mid-stream disconnect, cancellation and resume) and its refusal to estimate a token count it was not given, the isolation boundary, blinded packets and their leak audit, rankings and capability roles, retention interpretation, the cross-process campaign lock and the runtime-endpoint lease (atomic acquisition raced between real processes, live refusal, stale recovery after a crash, never breaking a live lock, endpoint normalization, and two campaigns on separate endpoints running side by side), canonical versus observe-only execution (residency managed and proved, residency failure as an abort rather than a warning, and an observe-only run labelled noncanonical in its manifest identity, every ledger row, its rankings, its counting rules and its retention notes), frozen thinking mode and its preflight refusal, the packaged terminal launcher and the one file its install writes, and a complete synthetic campaign driven end to end — created, paused, resumed, aborted, finalized and reviewed — without a request reaching any server. |
+| `test/engine/` (127 files) | The benchmark engine: byte-for-byte canonical-encoding parity with the Python harness this engine is ported from, the durable ledger (torn writes, checkpoint drift, duplicate results, resume, reconciliation), frozen-manifest drift detection, new-hardware retest derivation, the safety guards, the residency proof, supplied-context and model-identity verification, per-attempt telemetry from an observed token stream (visible-only, thinking-then-visible, thinking-only budget exhaustion, malformed stream, mid-stream disconnect, cancellation and resume) and its refusal to estimate a token count it was not given, the isolation boundary, blinded packets and their leak audit, rankings and capability roles, retention interpretation, the cross-process campaign lock and the runtime-endpoint lease (atomic acquisition raced between real processes, live refusal, stale recovery after a crash, never breaking a live lock, endpoint normalization, and two campaigns on separate endpoints running side by side), canonical versus observe-only execution (residency managed and proved, residency failure as an abort rather than a warning, and an observe-only run labelled noncanonical in its manifest identity, every ledger row, its rankings, its counting rules and its retention notes), frozen thinking mode and its preflight refusal, the packaged terminal launcher and the one file its install writes, the routing evidence read from recorded fixtures (qualification history, the metrics rollup, capability coverage, the routing decision log and its tamper refusal, the task taxonomy, the fallback chain, limit evidence, the regression detector and the status export against its schema), and a complete synthetic campaign driven end to end — created, paused, resumed, aborted, finalized and reviewed — without a request reaching any server. |
 | `test/e2e/` (15) | The built application under Playwright: install-to-results with the reference model, relaunch persistence, cancel-and-keep, a two-model benchmark against a scripted Ollama covering HTTP failure, malformed output, timeout and a hard-boundary violation, settings persistence, refusal of non-loopback endpoints, menu navigation, the packaged `Cernum.app` launching from its bundle, one campaign created, paused and resumed entirely in the terminal then read, verified and finalized in the desktop application, one campaign contested by two real processes — a second runner refused by name, the holder shown on the Campaigns screen, and the lock reclaimed after the holder is killed outright; and, against a scripted streaming runtime, a canonical campaign started from the desktop Start button running to clean completion, a runtime that will not release its weights aborting the campaign, an observe-only campaign labelled noncanonical throughout, a second campaign on the same endpoint refused before a single request, and the terminal refusing to change a mode the manifest froze. |
 
 `.github/workflows/ci.yml` is configured to run the typecheck, unit and parity suites on macOS,
 Windows and Linux, and the end-to-end suite on macOS and Windows, on every push and pull request. The
 Windows and Linux legs will report for the first time on the first push.
 
-`npm test` runs the unit, parity and engine suites together: 120 files. The engine tests fsync every
+`npm test` runs the unit, parity and engine suites together: 133 files. The engine tests fsync every
 ledger row by design, so the suite is disk-bound and takes many minutes on an external volume. Its
 whole-suite test count, duration and result are not yet measured; see
 [docs/ordra-lane/baseline.md](docs/ordra-lane/baseline.md) for what has been measured so far.
