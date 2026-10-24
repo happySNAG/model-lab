@@ -102,6 +102,8 @@ import {
   QualificationHistoryError, deriveQualificationHistory, parseRouteKey,
   // A route's latency, token, cost, retry and failure figures, from the sealed runs alone.
   deriveMetricsRollup,
+  // The append-only log of what `candidates` answered, and why each answer moved.
+  RoutingDecisionLogError, appendRoutingDecision, describeDecisionChange, readRoutingDecisionLog,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3400,7 +3402,26 @@ async function commandCandidates(positional: string[], options: Options): Promis
     return { record };
   });
   const set = qualifiedRouteCandidatesFromStore(query, contents, derived, now);
-  if (options.json === true) { say(JSON.stringify(set, null, 2)); return; }
+  // OFF BY DEFAULT. Without --log this command writes nothing, exactly as before; with it, the answer
+  // is appended to the routing decision log before it is printed, and a log that does not verify is
+  // refused rather than appended to.
+  let logged: ReturnType<typeof appendRoutingDecision> | undefined;
+  if (options.log === true) {
+    try {
+      logged = appendRoutingDecision(root, set, {
+        decidedAt: now.toISOString(),
+        provenance: `${TERMINAL_COMMAND} candidates ${capability} --log, answered from ${observationStorePath(root)} and the sealed runs it reads`,
+      });
+    } catch (error) {
+      if (error instanceof RoutingDecisionLogError) fail(`candidates: ${error.message}`, 4);
+      throw error;
+    }
+  }
+  if (options.json === true) {
+    say(JSON.stringify(logged === undefined ? set : { ...set, loggedDecision: { recordID: logged.record.recordID,
+      written: logged.written, filePath: logged.filePath, change: logged.record.change } }, null, 2));
+    return;
+  }
 
   say(`Routing contract ${set.contract} · routing policy ${set.routingPolicyVersion} · machine ${machine}`);
   say(`Capability: ${capability}${tier === undefined ? '' : ` at ${tier}`}`);
@@ -3428,6 +3449,49 @@ async function commandCandidates(positional: string[], options: Options): Promis
   say('');
   say(`Ordering: ${set.ordering}`);
   for (const line of wrap(set.disclosure, 76)) say(line);
+  if (logged !== undefined) {
+    say('');
+    say(`Logged as ${logged.record.recordID}${logged.written ? '' : ' (already in the log; nothing new was written)'}`);
+    for (const line of describeDecisionChange(logged.record.change)) for (const wrapped of wrap(line, 74)) say(`  ${wrapped}`);
+  }
+}
+
+/**
+ * The routing decision log, oldest first. READ-ONLY: every record is verified, by digest, by name and
+ * by its link to the answer before it, and a record that fails is listed and never shown as an answer.
+ */
+async function commandDecisionLog(positional: string[], options: Options): Promise<void> {
+  if (positional.length > 0) fail(`decision-log: takes no positional argument; filter with --capability or --query.`, 2);
+  const root = String(options.root ?? defaultCampaignRoot());
+  const contents = readRoutingDecisionLog(root);
+  const capability = options.capability === undefined ? undefined : String(options.capability);
+  const queryDigest = options.query === undefined ? undefined : String(options.query);
+  const decisions = contents.decisions
+    .filter((record) => capability === undefined || record.query.capability === capability)
+    .filter((record) => queryDigest === undefined || record.queryDigest.startsWith(queryDigest));
+  if (options.json === true) {
+    say(JSON.stringify({ ...contents, decisions }, null, 2));
+    if (contents.corrupt.length > 0) process.exitCode = 4;
+    return;
+  }
+  say(`Routing decision log ${contents.root}`);
+  say(`log digest ${contents.logDigest}`);
+  say('');
+  if (decisions.length === 0) say('No routing decision has been logged' + (capability ?? queryDigest ? ' for this filter.' : ' yet.'));
+  for (const record of decisions) {
+    const names = record.answer.candidates.map((entry) => entry.routeKey);
+    say(`${record.decidedAt}  ${record.recordID.slice(0, 16)}  query ${record.queryDigest.slice(0, 12)}  ${record.query.capability}`
+      + `${record.query.structuralTier === undefined ? '' : ` at ${record.query.structuralTier}`}  machine ${record.machineKey}`);
+    say(`  policies   ${record.policies.routingContract} · ${record.policies.routingPolicy} · ${record.policies.qualificationPolicies.join(',')}`);
+    say(`  answer     ${names.length === 0 ? 'no candidate' : names.join(', ')}; ${record.answer.excluded.length} excluded`);
+    for (const line of describeDecisionChange(record.change)) for (const wrapped of wrap(line, 72)) say(`  ${wrapped}`);
+  }
+  if (contents.corrupt.length > 0) {
+    say('');
+    say(`${contents.corrupt.length} record(s) did not verify and were NOT read:`);
+    for (const entry of contents.corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+    fail(`${contents.corrupt.length} routing decision record(s) did not verify. They are listed above, by path. Nothing was changed.`, 4);
+  }
 }
 
 /** The sealed workspace runs under --root and every --evidence-roots root, each run counted once. */
@@ -4462,6 +4526,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'discovery-schedule': return commandDiscoverySchedule(positional, options);
     case 'candidates': return commandCandidates(positional, options);
     case 'history': return commandHistory(positional, options);
+    case 'decision-log': return commandDecisionLog(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();

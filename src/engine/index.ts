@@ -133,6 +133,7 @@ export * from './route-spend-posture';
 export * from './route-qualification';
 export * from './routing-contract';
 export * from './qualification-history';
+export * from './routing-decision-log';
 export * from './percentile';
 export * from './metrics-rollup';
 // Governance and fleet persistence: the versioned routing policy that supersedes the Pass 6/7
