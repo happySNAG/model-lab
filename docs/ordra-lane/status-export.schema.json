@@ -1,0 +1,541 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cernum:status-export:cse1:1",
+  "title": "Cernum status export, cse1 version 1",
+  "description": "The read-only document `cernum status-export --json` prints. Every section is the output of the module that owns it; see docs/ordra-lane/status-export.md. Sections that carry another versioned document (cmr1, crg1, cqh1 entries) pin that document's schema id and its required fields and admit fields it adds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "schemaVersion", "jsonSchema", "generatedAt", "machineKey", "effort", "readOnly", "versions",
+    "discoveredModels", "qualifiedRoutes", "capabilityCandidates", "metricsRollup", "regressions",
+    "recentQualificationResults", "costs", "fallbackChains", "activeLeases", "corrupt", "disclosure"
+  ],
+  "properties": {
+    "schema": { "const": "cse1" },
+    "schemaVersion": { "const": 1 },
+    "jsonSchema": { "const": "docs/ordra-lane/status-export.schema.json" },
+    "generatedAt": { "$ref": "#/$defs/instant" },
+    "machineKey": { "type": "string", "minLength": 1 },
+    "effort": { "type": "string", "minLength": 1 },
+    "readOnly": { "const": true },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observationStore", "discoverySnapshot", "qualificationPolicy", "routingPolicy", "routingContract",
+        "metricsRollup", "regressionReport", "regressionThresholds", "qualificationHistory", "taskTaxonomy", "fallbackChain"
+      ],
+      "properties": {
+        "observationStore": { "const": "cos1" },
+        "discoverySnapshot": { "const": "cds1" },
+        "qualificationPolicy": { "type": "string", "minLength": 1 },
+        "routingPolicy": { "enum": ["crp1", "crp2"] },
+        "routingContract": { "const": "crc2" },
+        "metricsRollup": { "const": "cmr1" },
+        "regressionReport": { "const": "crg1" },
+        "regressionThresholds": { "type": "string", "minLength": 1 },
+        "qualificationHistory": { "const": "cqh1" },
+        "taskTaxonomy": { "const": "ctt1" },
+        "fallbackChain": { "const": "cfc1" }
+      }
+    },
+    "discoveredModels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotSchema", "providers", "models", "reason"],
+      "properties": {
+        "snapshotSchema": { "const": "cds1" },
+        "snapshotTakenAt": { "$ref": "#/$defs/instant" },
+        "providerAllowlist": { "type": "string" },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["provider", "refreshed", "detail"],
+            "properties": {
+              "provider": { "type": "string", "minLength": 1 },
+              "refreshed": { "type": "boolean" },
+              "detail": { "type": "string" },
+              "refusedByAllowlist": { "type": "string" }
+            }
+          }
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["routeKey", "provider", "modelID", "listed", "observedAt"],
+            "properties": {
+              "routeKey": { "$ref": "#/$defs/routeKey" },
+              "provider": { "type": "string", "minLength": 1 },
+              "modelID": { "type": "string", "minLength": 1 },
+              "listed": { "type": "boolean" },
+              "availability": { "type": "string" },
+              "priceFingerprint": { "type": "string" },
+              "publishedFree": { "type": "boolean" },
+              "contextWindowTokens": { "type": "integer", "minimum": 0 },
+              "runtimeDigest": { "type": "string" },
+              "runtimeVersion": { "type": "string" },
+              "observedAt": { "$ref": "#/$defs/instant" }
+            }
+          }
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "qualifiedRoutes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["safeToRouteKeys", "routes"],
+      "properties": {
+        "safeToRouteKeys": { "type": "array", "items": { "$ref": "#/$defs/routeKey" } },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "routeKey", "provider", "modelID", "safeToRoute", "routableCapabilities", "qualificationScope", "discovered",
+              "availability", "identityConfidence", "identityAdmitted", "capabilities", "blockers"
+            ],
+            "properties": {
+              "routeKey": { "$ref": "#/$defs/routeKey" },
+              "provider": { "type": "string", "minLength": 1 },
+              "modelID": { "type": "string", "minLength": 1 },
+              "safeToRoute": { "type": "boolean" },
+              "routableCapabilities": { "type": "array", "items": { "type": "string" } },
+              "qualificationScope": { "enum": ["route", "machine"] },
+              "discovered": { "$ref": "#/$defs/stateWithReason" },
+              "availability": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["state", "reason"],
+                "properties": {
+                  "state": { "$ref": "#/$defs/availabilityState" },
+                  "reason": { "type": "string" },
+                  "observedAt": { "type": "string" }
+                }
+              },
+              "identityConfidence": { "type": "string", "minLength": 1 },
+              "identityAdmitted": { "type": "boolean" },
+              "lastSuccessfulQualificationAt": { "type": "string" },
+              "staleness": {
+                "type": "object",
+                "required": ["valid", "reasons", "detail"],
+                "properties": {
+                  "valid": { "type": "boolean" },
+                  "reasons": { "type": "array", "items": { "type": "string" } },
+                  "detail": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["capability", "verdict", "scoredRunCount", "successCount", "reason"],
+                  "properties": {
+                    "capability": { "type": "string", "minLength": 1 },
+                    "verdict": { "$ref": "#/$defs/capabilityVerdict" },
+                    "scoredRunCount": { "type": "integer", "minimum": 0 },
+                    "successCount": { "type": "integer", "minimum": 0 },
+                    "reason": { "type": "string" }
+                  }
+                }
+              },
+              "blockers": { "type": "array", "items": { "$ref": "#/$defs/blocker" } }
+            }
+          }
+        }
+      }
+    },
+    "capabilityCandidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disclosure", "capabilities"],
+      "properties": {
+        "disclosure": { "type": "string", "minLength": 1 },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["capability", "query", "candidates", "excluded", "ordering"],
+            "properties": {
+              "capability": { "type": "string", "minLength": 1 },
+              "query": { "$ref": "#/$defs/query" },
+              "candidates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["routeKey", "group", "locality", "identityConfidence", "identityAdmitted", "availability"],
+                  "properties": {
+                    "routeKey": { "$ref": "#/$defs/routeKey" },
+                    "group": { "$ref": "#/$defs/costGroup" },
+                    "locality": { "enum": ["local", "remote"] },
+                    "identityConfidence": { "type": "string", "minLength": 1 },
+                    "identityAdmitted": { "type": "boolean" },
+                    "availability": { "$ref": "#/$defs/availabilityState" }
+                  }
+                }
+              },
+              "excluded": { "$ref": "#/$defs/excluded" },
+              "ordering": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "metricsRollup": {
+      "type": "object",
+      "required": ["schema", "effort", "routes", "unattributedRunCount", "disclosure"],
+      "properties": {
+        "schema": { "const": "cmr1" },
+        "effort": { "type": "string" },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["routeKey", "provider", "modelID", "route", "capabilities", "unclassifiedRunCount"],
+            "properties": {
+              "routeKey": { "$ref": "#/$defs/routeKey" },
+              "route": { "$ref": "#/$defs/metricsEntry" },
+              "capabilities": { "type": "array", "items": { "$ref": "#/$defs/metricsEntry" } },
+              "unclassifiedRunCount": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "unattributedRunCount": { "type": "integer", "minimum": 0 },
+        "disclosure": { "type": "string", "minLength": 1 }
+      }
+    },
+    "regressions": {
+      "type": "object",
+      "required": [
+        "schema", "thresholds", "qualificationPolicyID", "routingPolicyVersion", "machineKey", "derivedAt", "routes",
+        "regressedRouteCount", "staleRouteCount", "undatedWorkspaceRuns", "corrupt", "disclosure"
+      ],
+      "properties": {
+        "schema": { "const": "crg1" },
+        "thresholds": {
+          "type": "object",
+          "required": ["thresholdsID"],
+          "properties": { "thresholdsID": { "type": "string", "minLength": 1 } }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["routeKey", "historyEntryCount", "downgrades", "windows", "comparisons", "staleness", "findings"],
+            "properties": {
+              "routeKey": { "$ref": "#/$defs/routeKey" },
+              "historyEntryCount": { "type": "integer", "minimum": 0 },
+              "downgrades": { "type": "array" },
+              "comparisons": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["metric", "threshold", "state", "reason"],
+                  "properties": { "state": { "enum": ["regressed", "withinThreshold", "notComparable"] } }
+                }
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["kind", "scope", "summary"],
+                  "properties": {
+                    "kind": { "enum": ["verdictDowngrade", "successRateDrop", "p90LatencyIncrease", "p90TokenIncrease", "staleQualification"] }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "regressedRouteCount": { "type": "integer", "minimum": 0 },
+        "staleRouteCount": { "type": "integer", "minimum": 0 },
+        "undatedWorkspaceRuns": { "type": "array", "items": { "type": "string" } },
+        "corrupt": { "$ref": "#/$defs/corrupt" },
+        "disclosure": { "type": "string", "minLength": 1 }
+      }
+    },
+    "recentQualificationResults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entriesPerRoute", "routes"],
+      "properties": {
+        "entriesPerRoute": { "type": "integer", "minimum": 1 },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["routeKey", "historyEntryCount", "entries", "undatedWorkspaceRuns"],
+            "properties": {
+              "routeKey": { "$ref": "#/$defs/routeKey" },
+              "historyEntryCount": { "type": "integer", "minimum": 0 },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "recordedAt", "policyID", "routingPolicyVersion", "verdict", "routableCapabilities", "capabilities",
+                    "blockers", "evidenceWindow", "triggeredBy", "stalenessRecorded", "changed"
+                  ],
+                  "properties": {
+                    "recordedAt": { "$ref": "#/$defs/instant" },
+                    "verdict": { "enum": ["safeToRoute", "notRoutable"] },
+                    "routableCapabilities": { "type": "array", "items": { "type": "string" } },
+                    "blockers": { "type": "array", "items": { "$ref": "#/$defs/blocker" } },
+                    "changed": { "type": "boolean" }
+                  }
+                }
+              },
+              "undatedWorkspaceRuns": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "costs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["routeKey", "state", "reason"],
+        "properties": {
+          "routeKey": { "$ref": "#/$defs/routeKey" },
+          "spend": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["eligibility", "zeroMarginalCost", "requiresSpendingAuthorization", "mayRouteByDefault", "reasons"],
+            "properties": {
+              "eligibility": { "type": "string", "minLength": 1 },
+              "zeroMarginalCost": { "type": "boolean" },
+              "requiresSpendingAuthorization": { "type": "boolean" },
+              "mayRouteByDefault": { "type": "boolean" },
+              "reasons": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "published": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["observedAt"],
+            "properties": {
+              "priceFingerprint": { "type": "string" },
+              "publishedFree": { "type": "boolean" },
+              "observedAt": { "type": "string" }
+            }
+          },
+          "recorded": { "$ref": "#/$defs/metricsCost" },
+          "state": { "enum": ["known", "partlyKnown", "unknown"] },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "fallbackChains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taxonomyVersion", "rule", "contextRequirement", "isSelection", "disclosure", "tasks"],
+      "properties": {
+        "taxonomyVersion": { "const": "ctt1" },
+        "rule": { "const": "cfc1" },
+        "contextRequirement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["applied", "reason"],
+          "properties": {
+            "applied": { "type": "boolean" },
+            "contextTokens": { "type": "integer", "minimum": 1 },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        "isSelection": { "const": false },
+        "disclosure": { "type": "string", "minLength": 1 },
+        "tasks": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["taskType", "capability", "tiers"],
+            "properties": {
+              "taskType": { "enum": ["implement", "fix", "test-repair", "refactor", "docs", "verify", "plan", "review"] },
+              "capability": { "type": "string", "pattern": "^workspace:" },
+              "tiers": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["tier", "query", "chain", "entries", "excluded"],
+                  "properties": {
+                    "tier": { "enum": ["tier1", "tier2", "tier3"] },
+                    "query": { "$ref": "#/$defs/query" },
+                    "chain": { "type": "array", "items": { "$ref": "#/$defs/routeKey" } },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["position", "routeKey", "standing", "fallsThroughBecause", "group", "failureRateMilli", "p90WallClockMilliseconds"],
+                        "properties": {
+                          "position": { "type": "integer", "minimum": 1 },
+                          "routeKey": { "$ref": "#/$defs/routeKey" },
+                          "standing": { "enum": ["inChain", "fallsThrough"] },
+                          "fallsThroughBecause": { "type": "array", "items": { "type": "string" } },
+                          "group": { "$ref": "#/$defs/costGroup" },
+                          "lastSuccessfulQualificationAt": { "type": "string" },
+                          "failureRateMilli": { "$ref": "#/$defs/quantity" },
+                          "p90WallClockMilliseconds": { "$ref": "#/$defs/quantity" }
+                        }
+                      }
+                    },
+                    "excluded": { "$ref": "#/$defs/excluded" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "activeLeases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read", "activeCount", "leases"],
+      "properties": {
+        "read": { "type": "boolean" },
+        "activeCount": { "type": "integer", "minimum": 0 },
+        "leases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state", "active", "recoverable", "message"],
+            "properties": {
+              "endpoint": { "type": "string" },
+              "campaignName": { "type": "string" },
+              "campaignID": { "type": "string" },
+              "processType": { "type": "string" },
+              "pid": { "type": "integer" },
+              "hostname": { "type": "string" },
+              "command": { "type": "string" },
+              "acquiredAt": { "type": "string" },
+              "heartbeatAt": { "type": "string" },
+              "heartbeatAgeMilliseconds": { "type": "number" },
+              "modelStoreCount": { "type": "integer", "minimum": 0 },
+              "state": { "enum": ["live", "selfHeld", "stale", "unresponsive", "foreignHost", "undecodable"] },
+              "active": { "type": "boolean" },
+              "recoverable": { "type": "boolean" },
+              "message": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "corrupt": { "$ref": "#/$defs/corrupt" },
+    "disclosure": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "instant": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "routeKey": { "type": "string", "pattern": "^[^:]+:.+$" },
+    "availabilityState": { "enum": ["available", "unavailable", "stale", "neverObserved"] },
+    "capabilityVerdict": { "enum": ["qualified", "notQualified", "insufficientEvidence", "notExercised"] },
+    "costGroup": { "enum": ["zeroMarginalCost", "meteredRequiresAuthorization"] },
+    "stateWithReason": {
+      "type": "object",
+      "required": ["state", "reason"],
+      "properties": { "state": { "type": "string", "minLength": 1 }, "reason": { "type": "string" } }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason"],
+      "properties": { "kind": { "type": "string", "minLength": 1 }, "reason": { "type": "string" } }
+    },
+    "quantity": {
+      "type": "object",
+      "required": ["provenance"],
+      "properties": {
+        "provenance": { "type": "string", "minLength": 1 },
+        "value": { "type": "number" },
+        "note": { "type": "string" }
+      }
+    },
+    "metricsCost": {
+      "type": "object",
+      "required": ["knownRunCount", "unknownRunCount", "totalMicroUSD", "perRunMicroUSD", "unknownBecause"],
+      "properties": {
+        "knownRunCount": { "type": "integer", "minimum": 0 },
+        "unknownRunCount": { "type": "integer", "minimum": 0 },
+        "totalMicroUSD": { "$ref": "#/$defs/quantity" },
+        "perRunMicroUSD": { "$ref": "#/$defs/quantity" },
+        "unknownBecause": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "metricsEntry": {
+      "type": "object",
+      "required": [
+        "capability", "runCount", "scoredRunCount", "passCount", "wallClockMilliseconds", "totalTokens", "cost",
+        "failureRateMilli", "retryRateMilli"
+      ],
+      "properties": {
+        "capability": { "type": "string", "minLength": 1 },
+        "runCount": { "type": "integer", "minimum": 0 },
+        "scoredRunCount": { "type": "integer", "minimum": 0 },
+        "passCount": { "type": "integer", "minimum": 0 },
+        "wallClockMilliseconds": { "$ref": "#/$defs/distribution" },
+        "totalTokens": { "$ref": "#/$defs/distribution" },
+        "cost": { "$ref": "#/$defs/metricsCost" },
+        "failureRateMilli": { "$ref": "#/$defs/quantity" },
+        "retryRateMilli": { "$ref": "#/$defs/quantity" }
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "required": ["count", "missing", "median", "p90"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "missing": { "type": "integer", "minimum": 0 },
+        "median": { "$ref": "#/$defs/quantity" },
+        "p90": { "$ref": "#/$defs/quantity" }
+      }
+    },
+    "query": {
+      "type": "object",
+      "required": ["machineKey", "capability", "costPolicy"],
+      "properties": {
+        "machineKey": { "type": "string", "minLength": 1 },
+        "capability": { "type": "string", "minLength": 1 },
+        "structuralTier": { "enum": ["tier1", "tier2", "tier3"] },
+        "minimumContextTokens": { "type": "integer", "minimum": 1 },
+        "costPolicy": { "enum": ["zeroMarginalCostOnly", "allowMeteredWithAuthorization"] },
+        "routingPolicyVersion": { "enum": ["crp1", "crp2"] }
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["routeKey", "reasons"],
+        "properties": {
+          "routeKey": { "$ref": "#/$defs/routeKey" },
+          "reasons": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+        }
+      }
+    },
+    "corrupt": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["filePath", "reason"],
+        "properties": { "filePath": { "type": "string" }, "reason": { "type": "string" } }
+      }
+    }
+  }
+}

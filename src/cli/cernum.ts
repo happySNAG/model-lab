@@ -113,6 +113,8 @@ import {
   recordLimitEvidence,
   // Each route's latest evidence against its own history, under thresholds crt1. Detection only.
   detectRegressions,
+  // Everything above, gathered into one read-only document for Ordra Office (cse1).
+  StatusExportError, deriveStatusExport,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3816,6 +3818,69 @@ async function commandRegressions(positional: string[], options: Options): Promi
   }
 }
 
+/**
+ * One versioned, read-only document (cse1) gathering the discovered models, qualified routes, per-capability
+ * candidates, metrics rollup, regressions, recent qualification results, costs, a fallback chain for every
+ * task type and the runtime leases. READ-ONLY: it reads what is on disk, writes nothing and contacts nothing.
+ */
+async function commandStatusExport(positional: string[], options: Options): Promise<void> {
+  if (positional.length > 0) fail('status-export: takes no positional argument. Nothing was read.', 2);
+  const root = String(options.root ?? defaultCampaignRoot());
+  const policyAsked = options.policy === undefined ? CURRENT_ROUTING_POLICY_VERSION : String(options.policy);
+  if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
+    fail(`status-export: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
+  }
+  let contextTokens: number | undefined;
+  if (options.context !== undefined) {
+    const asked = String(options.context).trim();
+    contextTokens = /^[0-9]+$/.test(asked) ? Number(asked) : Number.NaN;
+    if (!Number.isSafeInteger(contextTokens) || contextTokens <= 0) {
+      fail(`status-export: --context must be a positive whole number of tokens, not '${String(options.context)}'. Nothing was read.`, 2);
+    }
+  }
+  const machine = machineFromOptions(options);
+  const contents = readObservationStore(root);
+  const workspaceRows = workspaceRowsFromEvidenceRoots('status-export', root, options);
+
+  let document;
+  try {
+    document = deriveStatusExport({
+      machineKey: machine, contents, workspaceRows, now: new Date(),
+      workspaceCases: allWorkspaceCases(), difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
+      leases: leasedEndpoints(root),
+      spendFor: ({ provider, modelID }, at) => routeSpendPosture({ provider, modelID, now: at }),
+      routingPolicyVersion: policyAsked,
+      ...(contextTokens === undefined ? {} : { contextTokens }),
+    });
+  } catch (error) {
+    if (error instanceof StatusExportError) fail(`status-export: ${error.message}`, 2);
+    throw error;
+  }
+  if (options.json === true) {
+    say(JSON.stringify(document, null, 2));
+    // THE DOCUMENT STAYS WHOLE JSON: the damage is in its `corrupt` list and in the exit status.
+    if (document.corrupt.length > 0) process.exitCode = 2;
+    return;
+  }
+  say(`Status export ${document.schema} v${document.schemaVersion} · machine ${document.machineKey} · ${document.generatedAt}`);
+  say(`  discovered models   ${document.discoveredModels.models.length}${document.discoveredModels.snapshotTakenAt === undefined
+    ? ' (no snapshot on this machine)' : ` (snapshot ${document.discoveredModels.snapshotTakenAt})`}`);
+  say(`  routes              ${document.qualifiedRoutes.routes.length} known · ${document.qualifiedRoutes.safeToRouteKeys.length} safe to route`);
+  say(`  capabilities        ${document.capabilityCandidates.capabilities.length} with evidence`);
+  say(`  regressions         ${document.regressions.regressedRouteCount} regressed · ${document.regressions.staleRouteCount} stale`);
+  say(`  fallback chains     ${document.fallbackChains.tasks.length} task type(s), each at ${document.fallbackChains.tasks[0]?.tiers.length ?? 0} tier(s)`);
+  say(`  leases              ${document.activeLeases.activeCount} active of ${document.activeLeases.leases.length}`);
+  say('');
+  say(`The whole document: ${TERMINAL_COMMAND} status-export --json  (schema ${document.jsonSchema})`);
+  for (const line of wrap(document.disclosure, 76)) say(line);
+  if (document.corrupt.length > 0) {
+    say('');
+    for (const entry of document.corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+    fail(`${document.corrupt.length} observation file(s) did not verify and were not read, so the document may be `
+      + 'missing evidence. They are listed above, by path. Nothing was changed.', 2);
+  }
+}
+
 // MARK: - The installed command
 
 function renderTerminalCommandStatus(): void {
@@ -4707,6 +4772,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'history': return commandHistory(positional, options);
     case 'decision-log': return commandDecisionLog(positional, options);
     case 'regressions': return commandRegressions(positional, options);
+    case 'status-export': return commandStatusExport(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();
