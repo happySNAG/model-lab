@@ -104,6 +104,8 @@ import {
   deriveMetricsRollup,
   // The append-only log of what `candidates` answered, and why each answer moved.
   RoutingDecisionLogError, appendRoutingDecision, describeDecisionChange, readRoutingDecisionLog,
+  // An Ordra pass's task type, tier and context, translated to the query `candidates` answers.
+  TASK_TAXONOMY_VERSION, TaskQueryAnswer, routeQueryForTask,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3322,10 +3324,36 @@ function workspaceRunIdentity(run: { row: Record<string, unknown> }): string {
   return createHash('sha256').update(stable).digest('hex');
 }
 
+/**
+ * `candidates --task <type> --tier <n> --context <tokens>`: the query comes from task taxonomy ctt1, not
+ * from the flags. Everything the table decides — capability, cost policy, locality — is refused as a flag
+ * beside --task rather than silently overriding it or being overridden; refused before anything is read.
+ */
+function taskQueryFromOptions(positional: string[], options: Options, machine: string): TaskQueryAnswer & { ok: true } {
+  const clashing = ['min-context', 'cost-policy', 'local-only'].filter((name) => options[name] !== undefined);
+  if (positional.length > 0) clashing.unshift('<capability>');
+  if (clashing.length > 0) {
+    fail(`candidates: --task takes its capability, context, cost policy and locality from task taxonomy ${TASK_TAXONOMY_VERSION}; `
+      + `${clashing.join(', ')} cannot be given beside it. Nothing was read.`, 2);
+  }
+  const missing = ['tier', 'context'].filter((name) => options[name] === undefined || options[name] === true);
+  if (missing.length > 0) {
+    fail(`candidates: --task needs ${missing.map((name) => `--${name}`).join(' and ')}; nothing is defaulted. Nothing was read.`, 2);
+  }
+  const answer = routeQueryForTask({ machineKey: machine, taskType: String(options.task),
+    tier: String(options.tier), contextTokens: String(options.context) });
+  if (!answer.ok) fail(`candidates: refused by task taxonomy ${answer.taxonomyVersion}: ${answer.refusals.join('; ')}. Nothing was read.`, 2);
+  return answer;
+}
+
 async function commandCandidates(positional: string[], options: Options): Promise<void> {
-  const capability = positional[0];
+  if (options.context !== undefined && options.task === undefined) {
+    fail('candidates: --context is the context requirement of a --task; without --task use --min-context. Nothing was read.', 2);
+  }
+  const task = options.task === undefined ? undefined : taskQueryFromOptions(positional, options, machineFromOptions(options));
+  const capability = task === undefined ? positional[0] : task.query.capability;
   if (capability === undefined) {
-    fail(`candidates: name the capability. ${TERMINAL_COMMAND} candidates workspace:multiFileEditing`, 2);
+    fail(`candidates: name the capability, or a --task. ${TERMINAL_COMMAND} candidates workspace:multiFileEditing`, 2);
   }
   const root = String(options.root ?? defaultCampaignRoot());
   const contents = readObservationStore(root);
@@ -3335,7 +3363,7 @@ async function commandCandidates(positional: string[], options: Options): Promis
   if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
     fail(`candidates: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
   }
-  const tier = options.tier === undefined ? undefined : String(options.tier);
+  const tier = task !== undefined ? task.query.structuralTier : options.tier === undefined ? undefined : String(options.tier);
   if (tier !== undefined && !ALL_WORKSPACE_DIFFICULTY_TIERS.includes(tier as WorkspaceDifficultyTier)) {
     fail(`candidates: --tier must be one of ${ALL_WORKSPACE_DIFFICULTY_TIERS.join(', ')}, not '${tier}'.`, 2);
   }
@@ -3354,7 +3382,11 @@ async function commandCandidates(positional: string[], options: Options): Promis
     fail(`candidates: --cost-policy must be 'zero' or 'metered', not '${costAsked}'.`, 2);
   }
 
-  const query: RouteCandidateQuery = {
+  const query: RouteCandidateQuery = task !== undefined ? {
+    ...task.query,
+    requireVerifiedIdentity: options['require-verified-identity'] === true,
+    routingPolicyVersion: policyAsked,
+  } : {
     machineKey: machine,
     capability,
     ...(tier === undefined ? {} : { structuralTier: tier as WorkspaceDifficultyTier }),
@@ -3410,7 +3442,8 @@ async function commandCandidates(positional: string[], options: Options): Promis
     try {
       logged = appendRoutingDecision(root, set, {
         decidedAt: now.toISOString(),
-        provenance: `${TERMINAL_COMMAND} candidates ${capability} --log, answered from ${observationStorePath(root)} and the sealed runs it reads`,
+        provenance: `${TERMINAL_COMMAND} candidates ${task === undefined ? capability
+          : `--task ${task.taskType} (${task.taxonomyVersion}: ${capability})`} --log, answered from ${observationStorePath(root)} and the sealed runs it reads`,
       });
     } catch (error) {
       if (error instanceof RoutingDecisionLogError) fail(`candidates: ${error.message}`, 4);
@@ -3418,12 +3451,16 @@ async function commandCandidates(positional: string[], options: Options): Promis
     }
   }
   if (options.json === true) {
-    say(JSON.stringify(logged === undefined ? set : { ...set, loggedDecision: { recordID: logged.record.recordID,
+    const taskView = task === undefined ? {} : { task: { taxonomyVersion: task.taxonomyVersion, taskType: task.taskType, row: task.row } };
+    say(JSON.stringify(logged === undefined ? { ...set, ...taskView } : { ...set, ...taskView, loggedDecision: { recordID: logged.record.recordID,
       written: logged.written, filePath: logged.filePath, change: logged.record.change } }, null, 2));
     return;
   }
 
   say(`Routing contract ${set.contract} · routing policy ${set.routingPolicyVersion} · machine ${machine}`);
+  if (task !== undefined) {
+    say(`Task: ${task.taskType} (task taxonomy ${task.taxonomyVersion}) · at least ${task.query.minimumContextTokens} context tokens`);
+  }
   say(`Capability: ${capability}${tier === undefined ? '' : ` at ${tier}`}`);
   say(`requireVerifiedIdentity: ${query.requireVerifiedIdentity === true ? 'YES' : 'no (the default)'}`);
   say('');

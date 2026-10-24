@@ -136,6 +136,7 @@ export * from './qualification-history';
 export * from './routing-decision-log';
 export * from './percentile';
 export * from './metrics-rollup';
+export * from './task-taxonomy';
 // Governance and fleet persistence: the versioned routing policy that supersedes the Pass 6/7
 // restriction prospectively, and the append-only store two machines share observations through.
 export * from './routing-policy';
