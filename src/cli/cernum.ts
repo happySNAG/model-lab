@@ -100,6 +100,8 @@ import {
   writeObservationBundle,
   // A route's qualification verdicts over time, re-derived and never stored.
   QualificationHistoryError, deriveQualificationHistory, parseRouteKey,
+  // A route's latency, token, cost, retry and failure figures, from the sealed runs alone.
+  deriveMetricsRollup,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3467,6 +3469,7 @@ async function commandHistory(positional: string[], options: Options): Promise<v
   } catch (error) {
     fail(`history: ${error instanceof Error ? error.message : String(error)} Nothing was read.`, 2);
   }
+  if (options.metrics === true) { commandHistoryMetrics(routeKey, root, options); return; }
   const machine = machineFromOptions(options);
   const contents = readObservationStore(root);
   const workspaceRows = workspaceRowsFromEvidenceRoots('history', root, options);
@@ -3519,6 +3522,55 @@ async function commandHistory(positional: string[], options: Options): Promise<v
     fail(`${history.corrupt.length} observation file(s) did not verify and were not read, so the history above may be `
       + 'missing evidence. They are listed above, by path. Nothing was changed.', 2);
   }
+}
+
+/**
+ * `history <route> --metrics`: the route's metrics rollup, from its sealed runs alone. READ-ONLY, like
+ * the timeline: the runs are read where they are and nothing is written.
+ */
+function commandHistoryMetrics(routeKey: string, root: string, options: Options): void {
+  const rollup = deriveMetricsRollup({
+    workspaceRows: workspaceRowsFromEvidenceRoots('history', root, options), routeKey,
+    workspaceCases: allWorkspaceCases(), difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
+  });
+  const route = rollup.routes[0];
+  if (route === undefined) {
+    fail(`history --metrics: no sealed run of ${routeKey} is under these evidence roots, so there is nothing to roll up. `
+      + 'Nothing was derived. Name the roots that hold its runs with --evidence-roots.', 2);
+  }
+  if (options.json === true) { say(JSON.stringify(rollup, null, 2)); return; }
+
+  const figure = (quantity: { value?: number; provenance: string }, unit: string): string =>
+    (quantity.provenance === 'unavailable' || quantity.value === undefined ? 'unknown' : `${quantity.value}${unit}`);
+  const rateText = (quantity: { value?: number; provenance: string }): string =>
+    (quantity.provenance === 'unavailable' || quantity.value === undefined ? 'n/a' : `${(quantity.value / 10).toFixed(1)}%`);
+  const dollars = (quantity: { value?: number; provenance: string }): string =>
+    (quantity.provenance === 'unavailable' || quantity.value === undefined ? 'unknown'
+      : `$${(quantity.value / 1_000_000).toFixed(6)} (${quantity.provenance})`);
+  say(`Metrics of ${route.routeKey} · effort ${rollup.effort} · from sealed runs only`);
+  for (const entry of [route.route, ...route.capabilities]) {
+    say('');
+    say(`  ${entry.capability}`);
+    say(`    runs       ${entry.runCount} (${entry.scoredRunCount} scored, ${entry.notMeasuredRunCount} measured no work)`);
+    say(`    wall clock median ${figure(entry.wallClockMilliseconds.median, ' ms')} · p90 ${figure(entry.wallClockMilliseconds.p90, ' ms')}`
+      + ` · ${entry.wallClockMilliseconds.count} recorded, ${entry.wallClockMilliseconds.missing} missing`);
+    say(`    tokens     median ${figure(entry.totalTokens.median, '')} · p90 ${figure(entry.totalTokens.p90, '')}`
+      + ` · ${entry.totalTokens.count} recorded, ${entry.totalTokens.missing} missing`);
+    say(`    cost       total ${dollars(entry.cost.totalMicroUSD)} · per run ${dollars(entry.cost.perRunMicroUSD)}`);
+    for (const reason of entry.cost.unknownBecause) {
+      const [first, ...rest] = wrap(`unknown: ${reason}`, 64);
+      say(`               ${first}`);
+      for (const line of rest) say(`               ${line}`);
+    }
+    say(`    rates      failure ${rateText(entry.failureRateMilli)} · retry ${rateText(entry.retryRateMilli)}`
+      + ` · measured no work ${rateText(entry.notMeasuredRateMilli)}`);
+  }
+  if (route.unclassifiedRunCount > 0) {
+    say('');
+    say(`${route.unclassifiedRunCount} run(s) are of a case this build does not hold, and sit on no capability entry.`);
+  }
+  say('');
+  for (const line of wrap(rollup.disclosure, 76)) say(line);
 }
 
 // MARK: - The installed command

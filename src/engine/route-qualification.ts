@@ -43,6 +43,7 @@ import {
 } from './machine-availability';
 import { IdentityConfidence, ModelDescription } from './model-description';
 import { EffortLevel, ProviderID } from './provider';
+import { nearestRankMedian } from './percentile';
 import { CandidateRanking } from './ranking';
 import { RouteSpendPosture } from './route-spend-posture';
 import { WorkspaceCase } from './workspace-case';
@@ -179,13 +180,6 @@ const text = (row: Record<string, unknown>, key: string): string | undefined =>
   (typeof row[key] === 'string' ? row[key] as string : undefined);
 const num = (row: Record<string, unknown>, key: string): number | undefined =>
   (typeof row[key] === 'number' ? row[key] as number : undefined);
-
-function median(values: number[]): number | undefined {
-  if (values.length === 0) return undefined;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
-}
 
 function latest(rows: Record<string, unknown>[]): Record<string, unknown> | undefined {
   return [...rows].sort((a, b) => String(a.recordedAt ?? '').localeCompare(String(b.recordedAt ?? ''))).pop();
@@ -331,8 +325,9 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
   const throttled = latest(rows.filter((row) => row.providerThrottled === true || row.terminationReason === 'providerDeclined'));
   const failed = latest(rows.filter((row) => STATUSES_THAT_MEASURED_NO_WORK.includes(String(row.status))
     && row.providerThrottled !== true && row.terminationReason !== 'providerDeclined'));
-  const wallClock = median(passes.map((row) => num(row, 'wallClockMilliseconds')).filter((v): v is number => v !== undefined));
-  const tokens = median(passes.map((row) => num(row, 'totalTokens')).filter((v): v is number => v !== undefined));
+  // THE SHARED NEAREST-RANK MEDIAN (`percentile.ts`). Efficiency figures only: no verdict reads them.
+  const wallClock = nearestRankMedian(passes.map((row) => num(row, 'wallClockMilliseconds')).filter((v): v is number => v !== undefined));
+  const tokens = nearestRankMedian(passes.map((row) => num(row, 'totalTokens')).filter((v): v is number => v !== undefined));
 
   // ---- the locus, and whether the evidence applies HERE -------------------------------------------
   const newest = latest(rows);
@@ -406,7 +401,7 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
     efficiency: {
       medianWallClockMilliseconds: wallClock === undefined ? unavailableQuantity('no passing run recorded a wall clock') : measuredQuantity(wallClock),
       medianTotalTokens: tokens === undefined ? unavailableQuantity('no passing run reported tokens') : measuredQuantity(tokens),
-      basis: 'medians over PASSING workspace runs of this route only; never compared across execution classes',
+      basis: 'nearest-rank medians over PASSING workspace runs of this route only; never compared across execution classes',
     },
     locus,
     staleness,
