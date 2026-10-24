@@ -106,6 +106,8 @@ import {
   RoutingDecisionLogError, appendRoutingDecision, describeDecisionChange, readRoutingDecisionLog,
   // An Ordra pass's task type, tier and context, translated to the query `candidates` answers.
   TASK_TAXONOMY_VERSION, TaskQueryAnswer, routeQueryForTask,
+  // The candidate set in advisory fallback order, by rule cfc1. Never a selection.
+  deriveFallbackChain, throttleEvidenceFromRecords,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3450,10 +3452,46 @@ async function commandCandidates(positional: string[], options: Options): Promis
       throw error;
     }
   }
+  const taskView = task === undefined ? {} : { task: { taxonomyVersion: task.taxonomyVersion, taskType: task.taskType, row: task.row } };
+  const loggedView = logged === undefined ? {} : { loggedDecision: { recordID: logged.record.recordID,
+    written: logged.written, filePath: logged.filePath, change: logged.record.change } };
+  // --fallback: THE SAME SET, in advisory order by rule cfc1, from the same rows and records. Throttles are
+  // read from EVERY derived record, excluded ones too, because a provider-scoped throttle reaches siblings.
+  if (options.fallback === true) {
+    const fallback = deriveFallbackChain(set, {
+      now,
+      metrics: deriveMetricsRollup({ workspaceRows, workspaceCases: cases, difficultyProfiles: profiles }),
+      throttles: throttleEvidenceFromRecords(derived.map((entry) => entry.record)),
+    });
+    if (options.json === true) {
+      say(JSON.stringify({ ...fallback, ...taskView, ...loggedView }, null, 2));
+      return;
+    }
+    say(`Fallback chain ${fallback.schema} over routing contract ${fallback.contract} · routing policy ${fallback.routingPolicyVersion} · machine ${machine}`);
+    say(`Capability: ${capability}${tier === undefined ? '' : ` at ${tier}`}`);
+    say('');
+    if (fallback.entries.length === 0) say('No route qualifies for this query, so there is no fallback chain.');
+    for (const entry of fallback.entries) {
+      say(`  ${String(entry.position).padStart(2)}. ${entry.routeKey}  [${entry.orderedBy.group}]  `
+        + `${entry.standing === 'inChain' ? 'in chain' : 'FALLS THROUGH'}`);
+      for (const reason of entry.fallsThroughBecause) for (const line of wrap(reason, 70)) say(`      ${line}`);
+    }
+    say('');
+    say(`Chain: ${fallback.chain.length === 0 ? 'none' : fallback.chain.join(' → ')}`);
+    if (fallback.excluded.length > 0) {
+      say(`${fallback.excluded.length} route(s) excluded, each with every reason:`);
+      for (const entry of fallback.excluded) {
+        say(`  ${entry.routeKey}`);
+        for (const reason of entry.reasons) for (const line of wrap(reason, 70)) say(`    ${line}`);
+      }
+    }
+    say('');
+    for (const line of wrap(fallback.orderingRule, 76)) say(line);
+    for (const line of wrap(fallback.disclosure, 76)) say(line);
+    return;
+  }
   if (options.json === true) {
-    const taskView = task === undefined ? {} : { task: { taxonomyVersion: task.taxonomyVersion, taskType: task.taskType, row: task.row } };
-    say(JSON.stringify(logged === undefined ? { ...set, ...taskView } : { ...set, ...taskView, loggedDecision: { recordID: logged.record.recordID,
-      written: logged.written, filePath: logged.filePath, change: logged.record.change } }, null, 2));
+    say(JSON.stringify({ ...set, ...taskView, ...loggedView }, null, 2));
     return;
   }
 
