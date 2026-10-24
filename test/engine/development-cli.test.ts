@@ -427,7 +427,7 @@ describe('the text benchmark path is unchanged', () => {
     // their own suites. The point of this test is that an addition must be DECLARED to be allowed,
     // whichever line it came from; it is not that there are only two lines.
     const FLEET = ['observations', 'observations-export', 'observations-import', 'availability',
-      'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates', 'history', 'decision-log'];
+      'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates', 'history', 'decision-log', 'regressions'];
     const isAddition = (name: string) => name.startsWith('develop') || name.startsWith('workspace')
       || FLEET.includes(name);
     expect(current.filter(([name]) => !isAddition(name))).toEqual(PRE_PASS_D_COMMANDS);
@@ -439,6 +439,7 @@ describe('the text benchmark path is unchanged', () => {
       // `candidates` writes the routing decision log under --log, so it is declared by its most
       // consequential effect; without --log it still writes nothing (routing-decision-log.test.ts).
       ['discovery-schedule', 'writesLocal'], ['candidates', 'writesLocal'], ['history', 'readOnly'], ['decision-log', 'readOnly'],
+      ['regressions', 'readOnly'],
     ]);
     expect(current.filter(([name]) => name.startsWith('develop')).map(([name, effect]) => [name, effect])).toEqual([
       ['develop', 'spendsAllowance'], ['develop-resume', 'spendsAllowance'], ['develop-status', 'readOnly'],

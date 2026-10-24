@@ -111,6 +111,8 @@ import {
   // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
   availabilityLimitInEffect, availabilityLimitsFrom, describeAvailabilityLimit, describeLimitEvidence, limitObservationsFromSessionStatus, limitObservationsFromThrottleSignal,
   recordLimitEvidence,
+  // Each route's latest evidence against its own history, under thresholds crt1. Detection only.
+  detectRegressions,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3745,6 +3747,75 @@ function commandHistoryMetrics(routeKey: string, root: string, options: Options)
   for (const line of wrap(rollup.disclosure, 76)) say(line);
 }
 
+/**
+ * Each route's latest qualification evidence against its own history, under thresholds crt1, beside the
+ * stale-qualification findings. READ-ONLY: detection only, and nothing is written.
+ */
+async function commandRegressions(positional: string[], options: Options): Promise<void> {
+  const routeKey = positional[0];
+  const root = String(options.root ?? defaultCampaignRoot());
+  const policyAsked = options.policy === undefined ? CURRENT_ROUTING_POLICY_VERSION : String(options.policy);
+  if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
+    fail(`regressions: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
+  }
+  if (routeKey !== undefined) {
+    try {
+      parseRouteKey(routeKey);
+    } catch (error) {
+      fail(`regressions: ${error instanceof Error ? error.message : String(error)} Nothing was read.`, 2);
+    }
+  }
+  const machine = machineFromOptions(options);
+  const contents = readObservationStore(root);
+  const workspaceRows = workspaceRowsFromEvidenceRoots('regressions', root, options);
+
+  let report;
+  try {
+    report = detectRegressions({
+      machineKey: machine, contents, workspaceRows, now: new Date(),
+      ...(routeKey === undefined ? {} : { routeKey }),
+      workspaceCases: allWorkspaceCases(), difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
+      spendFor: ({ provider, modelID }, at) => routeSpendPosture({ provider, modelID, now: at }),
+      routingPolicyVersion: policyAsked,
+    });
+  } catch (error) {
+    if (error instanceof QualificationHistoryError) fail(`regressions: ${error.message}`, 2);
+    throw error;
+  }
+  if (options.json === true) {
+    say(JSON.stringify(report, null, 2));
+  } else {
+    say(`Regressions · thresholds ${report.thresholds.thresholdsID} · ${report.qualificationPolicyID} · ${report.routingPolicyVersion}`
+      + ` · machine ${report.machineKey}`);
+    say(`${report.routes.length} route(s) compared · ${report.regressedRouteCount} regressed · ${report.staleRouteCount} stale`);
+    for (const route of report.routes) {
+      say('');
+      say(`  ${route.routeKey}  ${route.latest === undefined ? 'no verdict on this machine'
+        : `latest ${route.latest.verdict === 'safeToRoute' ? 'SAFE TO ROUTE' : 'not routable'} at ${route.latest.recordedAt}`}`);
+      say(`    windows    ${route.windows.baseline.scoredRunCount} scored run(s) before · ${route.windows.latest.scoredRunCount} latest`);
+      for (const comparison of route.comparisons) {
+        const [first, ...rest] = wrap(`${comparison.metric}: ${comparison.state} — ${comparison.reason}`, 66);
+        say(`    compared   ${first}`);
+        for (const line of rest) say(`               ${line}`);
+      }
+      if (route.findings.length === 0) say('    findings   none');
+      for (const finding of route.findings) {
+        const [first, ...rest] = wrap(`${finding.kind} (${finding.scope}): ${finding.summary}`, 66);
+        say(`    FINDING    ${first}`);
+        for (const line of rest) say(`               ${line}`);
+      }
+    }
+    say('');
+    for (const line of wrap(report.disclosure, 76)) say(line);
+  }
+  if (report.corrupt.length > 0) {
+    say('');
+    for (const entry of report.corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+    fail(`${report.corrupt.length} observation file(s) did not verify and were not read, so the comparison above may be `
+      + 'missing evidence. They are listed above, by path. Nothing was changed.', 2);
+  }
+}
+
 // MARK: - The installed command
 
 function renderTerminalCommandStatus(): void {
@@ -4635,6 +4706,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'candidates': return commandCandidates(positional, options);
     case 'history': return commandHistory(positional, options);
     case 'decision-log': return commandDecisionLog(positional, options);
+    case 'regressions': return commandRegressions(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();
