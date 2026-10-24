@@ -21,10 +21,12 @@ import { compareCodePoints } from './canonical';
 import { CapabilityQualification, RouteQualificationRecord } from './route-qualification';
 import { IdentityConfidence, ModelDescription } from './model-description';
 import {
-  LOCAL_QUALIFICATION_DOES_NOT_TRANSFER, MachineAvailability, MachineAvailabilityState,
-  RouteAvailabilityObservation, availabilityOnMachine,
+  AvailabilityLimit, LOCAL_QUALIFICATION_DOES_NOT_TRANSFER, MachineAvailability, MachineAvailabilityState,
+  RouteAvailabilityObservation, applyAvailabilityLimits, availabilityOnMachine,
 } from './machine-availability';
-import { ObservationStoreContents, StoredObservation, availabilityObservationsFrom } from './observation-store';
+import {
+  ObservationStoreContents, StoredObservation, availabilityLimitsFrom, availabilityObservationsFrom,
+} from './observation-store';
 import { RouteSpendPosture } from './route-spend-posture';
 import {
   CURRENT_ROUTING_POLICY_VERSION, ROUTABLE_CONDITION_DESCRIPTIONS, RoutingPolicyVersion, identityPermitsRouting,
@@ -127,6 +129,8 @@ export interface RouteAvailabilitySource {
   origin: StoredObservation['origin'];
   observedAt?: string;
   importedFromMachine?: string;
+  /** The usage-limit or rate-limit evidence that holds this route unavailable, while it is in force (cle1). */
+  limit?: AvailabilityLimit;
   reason: string;
 }
 
@@ -338,7 +342,10 @@ export function qualifiedRouteCandidates(query: RouteCandidateQuery, routes: Rou
 export function availabilityFromStore(contents: ObservationStoreContents, routeKey: string, machineKey: string,
                                       now: Date, maxAge?: number): RouteAvailabilitySource {
   const observations = availabilityObservationsFrom(contents);
-  const availability: MachineAvailability = availabilityOnMachine(observations, routeKey, machineKey, now, maxAge);
+  // A USAGE OR RATE LIMIT STILL IN FORCE OVERRIDES THE ORDINARY ANSWER until its evidence expires (cle1).
+  const { limits, lifts } = availabilityLimitsFrom(contents);
+  const availability: MachineAvailability = applyAvailabilityLimits(
+    availabilityOnMachine(observations, routeKey, machineKey, now, maxAge), limits, lifts, routeKey, machineKey, now);
   const stored = contents.observations
     .filter((entry) => entry.record.routeKey === routeKey && entry.record.machineKey === machineKey
       && (entry.record.kind === 'routeAvailability' || entry.record.kind === 'localModelAvailability'))
@@ -351,6 +358,7 @@ export function availabilityFromStore(contents: ObservationStoreContents, routeK
     origin: latest?.origin ?? 'observedHere',
     ...(availability.latest === undefined ? {} : { observedAt: availability.latest.observedAt }),
     ...(latest?.importedFromMachine === undefined ? {} : { importedFromMachine: latest.importedFromMachine }),
+    ...(availability.limit === undefined ? {} : { limit: availability.limit }),
     reason: availability.reason,
   };
 }

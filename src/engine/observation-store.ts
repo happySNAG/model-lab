@@ -43,7 +43,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CanonicalValue, canonicalJSON, compareCodePoints, digestObject } from './canonical';
 import { DiscoveryDelta, DiscoverySnapshot } from './discovery-refresh';
-import { MachineAvailability, MachineFingerprint, RouteAvailabilityObservation, availabilityOnMachine } from './machine-availability';
+import {
+  AvailabilityLimit, AvailabilityLimitLift, MachineAvailability, MachineFingerprint, RouteAvailabilityObservation,
+  applyAvailabilityLimits, availabilityOnMachine,
+} from './machine-availability';
 import { ProviderID } from './provider';
 
 export const OBSERVATION_STORE_SCHEMA = 'cos1';
@@ -533,6 +536,9 @@ export function qualificationStalenessObservation(options: {
 export function availabilityObservationsFrom(contents: ObservationStoreContents): RouteAvailabilityObservation[] {
   return contents.observations
     .filter((entry) => entry.record.kind === 'routeAvailability' || entry.record.kind === 'localModelAvailability')
+    // LIMIT EVIDENCE IS NOT AN ORDINARY OBSERVATION. It expires, and it is read by `availabilityLimitsFrom`
+    // below; read here as well, an expired limit would go on being "the latest observation" for a day.
+    .filter((entry) => !isLimitEvidence(entry.record))
     .map((entry) => {
       const body = entry.record.body as { available?: boolean; reason?: string; runtimeDigest?: string };
       return {
@@ -545,6 +551,56 @@ export function availabilityObservationsFrom(contents: ObservationStoreContents)
         ...(typeof body.runtimeDigest === 'string' ? { runtimeDigest: body.runtimeDigest } : {}),
       };
     });
+}
+
+/** Does this record carry a usage-limit or rate-limit event (limit evidence cle1) rather than an ordinary reading? */
+export function isLimitEvidence(record: ObservationRecord): boolean {
+  const body = record.body as { limit?: unknown } | null;
+  return (record.kind === 'providerAvailability' || record.kind === 'routeAvailability')
+    && body !== null && typeof body === 'object' && !Array.isArray(body) && typeof body.limit === 'object' && body.limit !== null;
+}
+
+/**
+ * Every limit and every lift this store holds, as availability evidence.
+ *
+ * A limit record whose payload cannot be read as one — no expiry, no scope — is NOT guessed into a
+ * limit. It is skipped here and still listed by `observations`, because an unreadable limit must not
+ * hold a route unavailable on the strength of fields it does not have.
+ */
+export function availabilityLimitsFrom(contents: ObservationStoreContents): { limits: AvailabilityLimit[]; lifts: AvailabilityLimitLift[] } {
+  const limits: AvailabilityLimit[] = [];
+  const lifts: AvailabilityLimitLift[] = [];
+  for (const { record } of contents.observations) {
+    if (record.kind !== 'providerAvailability' && record.kind !== 'routeAvailability') continue;
+    const body = record.body as { detail?: unknown; reason?: unknown; limit?: Record<string, unknown>; limitLifted?: Record<string, unknown> };
+    if (record.kind === 'providerAvailability' && typeof body?.limitLifted === 'object' && body.limitLifted !== null
+        && record.provider !== undefined) {
+      lifts.push({ provider: record.provider, machineKey: record.machineKey, observedAt: record.observedAt,
+        source: typeof body.limitLifted.source === 'string' ? body.limitLifted.source : record.provenance });
+      continue;
+    }
+    if (!isLimitEvidence(record)) continue;
+    const limit = body.limit!;
+    const scope = limit.scope;
+    const kind = limit.kind;
+    const expiresBy = limit.expiresBy;
+    if (record.provider === undefined || record.expiresAt === undefined
+        || (scope !== 'route' && scope !== 'provider' && scope !== 'subscriptionSession')
+        || (kind !== 'usageLimit' && kind !== 'rateLimit' && kind !== 'throttleReported')
+        || (expiresBy !== 'expectedReturn' && expiresBy !== 'availabilityWindow')
+        || (scope === 'route' && record.routeKey === undefined)) continue;
+    limits.push({
+      kind, provider: record.provider, machineKey: record.machineKey, machineLabel: record.machineLabel, scope,
+      ...(record.routeKey === undefined ? {} : { routeKey: record.routeKey }),
+      observedAt: record.observedAt, expiresAt: record.expiresAt, expiresBy,
+      ...(typeof limit.expectedReturn === 'string' ? { expectedReturn: limit.expectedReturn } : {}),
+      ...(typeof limit.reported === 'string' ? { reported: limit.reported } : {}),
+      source: typeof limit.source === 'string' ? limit.source : record.provenance,
+      detail: typeof body.detail === 'string' ? body.detail : typeof body.reason === 'string' ? body.reason : '',
+      recordID: record.recordID,
+    });
+  }
+  return { limits, lifts };
 }
 
 /** The newest discovery snapshot taken ON one machine. Snapshots are never merged across machines. */
@@ -573,14 +629,19 @@ export function fleetAvailability(contents: ObservationStoreContents, now: Date,
   }[];
 }[] {
   const observations = availabilityObservationsFrom(contents);
-  const routeKeys = [...new Set(observations.map((entry) => entry.routeKey))].sort();
+  const { limits, lifts } = availabilityLimitsFrom(contents);
+  // A ROUTE A LIMIT WAS OBSERVED ON IS SHOWN even when nothing else ever observed it, so a throttled
+  // route is visible as throttled rather than absent. A provider-wide limit reaches the routes listed.
+  const routeKeys = [...new Set([...observations.map((entry) => entry.routeKey),
+    ...limits.flatMap((limit) => (limit.routeKey === undefined ? [] : [limit.routeKey]))])].sort();
   return routeKeys.map((routeKey) => {
-    const machineKeys = [...new Set(observations.filter((entry) => entry.routeKey === routeKey)
-      .map((entry) => entry.machineKey))].sort();
+    const machineKeys = [...new Set([...observations.filter((entry) => entry.routeKey === routeKey).map((entry) => entry.machineKey),
+      ...limits.filter((limit) => limit.routeKey === routeKey).map((limit) => limit.machineKey)])].sort();
     return {
       routeKey,
       machines: machineKeys.map((machineKey) => {
-        const availability = availabilityOnMachine(observations, routeKey, machineKey, now, maxAge);
+        const availability = applyAvailabilityLimits(availabilityOnMachine(observations, routeKey, machineKey, now, maxAge),
+          limits, lifts, routeKey, machineKey, now);
         const stored = contents.observations
           .filter((entry) => entry.record.routeKey === routeKey && entry.record.machineKey === machineKey
             && (entry.record.kind === 'routeAvailability' || entry.record.kind === 'localModelAvailability'))
@@ -588,7 +649,7 @@ export function fleetAvailability(contents: ObservationStoreContents, now: Date,
         const latest = stored[stored.length - 1];
         return {
           machineKey,
-          machineLabel: availability.latest?.machineLabel ?? machineKey,
+          machineLabel: availability.latest?.machineLabel ?? availability.limit?.machineLabel ?? machineKey,
           origin: latest?.origin ?? 'observedHere',
           availability,
           ...(latest?.importedFromMachine === undefined ? {} : { importedFromMachine: latest.importedFromMachine }),

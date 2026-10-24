@@ -108,6 +108,9 @@ import {
   TASK_TAXONOMY_VERSION, TaskQueryAnswer, routeQueryForTask,
   // The candidate set in advisory fallback order, by rule cfc1. Never a selection.
   deriveFallbackChain, throttleEvidenceFromRecords,
+  // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
+  availabilityLimitInEffect, availabilityLimitsFrom, describeAvailabilityLimit, describeLimitEvidence, limitObservationsFromSessionStatus, limitObservationsFromThrottleSignal,
+  recordLimitEvidence,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -2357,6 +2360,19 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   if (plan.runnableRunCount === 0) {
     fail('every cell of this matrix was refused, so nothing was sent. The reasons are listed above.', 6);
   }
+  // A THROTTLE STATE THE PROBE REPORTED IS AVAILABILITY EVIDENCE (cle1), persisted before any refusal so
+  // `availability` and `candidates` read the route as unavailable until it expires. `notReported` writes nothing.
+  const limitMachine = thisMachine();
+  const limitTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const sessionLimit = limitObservationsFromSessionStatus(sessionStatus, {
+    machineKey: limitMachine.key, machineLabel: limitMachine.fingerprint.hostname, observedAt: now.toISOString(),
+    provenance: `${TERMINAL_COMMAND} workspace-benchmark session preflight`, reportedTimeZone: limitTimeZone,
+  });
+  if (sessionLimit.records.length > 0) {
+    recordLimitEvidence(root, sessionLimit, new Date().toISOString());
+    for (const line of describeLimitEvidence(sessionLimit)) say(`  ${line}`);
+    say('');
+  }
   // The one refusal the preflight can support: no signed-in session at all. Everything else it
   // could "warn" about would be a guess at an allowance this tool does not report.
   if (preflightRefusal !== undefined) {
@@ -2422,6 +2438,14 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       say('');
       say('  ** CIRCUIT BREAKER TRIPPED — the provider declined, so the matrix stops launching affected work. **');
       for (const line of describeProviderThrottle(signal)) say(`  ${line}`);
+      // THE DECLINE OUTLIVES THE MATRIX as limit evidence (cle1), timed when it was seen, not when the matrix began.
+      const seenAt = new Date().toISOString();
+      const limit = limitObservationsFromThrottleSignal(signal, {
+        machineKey: limitMachine.key, machineLabel: limitMachine.fingerprint.hostname, observedAt: seenAt,
+        provenance: `${TERMINAL_COMMAND} workspace-benchmark circuit breaker`, reportedTimeZone: limitTimeZone,
+      });
+      recordLimitEvidence(root, limit, seenAt);
+      for (const line of describeLimitEvidence(limit)) say(`  ${line}`);
       say('');
     },
   });
@@ -3104,6 +3128,15 @@ async function commandAvailability(options: Options): Promise<void> {
   say(`Availability as of ${now.toISOString()}`);
   say(`  asking about   ${machine}${machine === here.key ? '  (this machine)' : '  (NOT this machine)'}`);
   say('');
+  // EVERY LIMIT STILL IN FORCE ON THE MACHINE ASKED ABOUT, including a provider-wide one no listed route shows.
+  const { limits, lifts } = availabilityLimitsFrom(contents);
+  const inForce = limits.filter((limit) => limit.machineKey === machine
+    && availabilityLimitInEffect([limit], lifts, limit.routeKey ?? `${limit.provider}:`, machine, now) !== undefined);
+  if (inForce.length > 0) {
+    say(`  ${inForce.length} usage or rate limit(s) in force here (limit evidence cle1):`);
+    for (const limit of inForce) for (const line of wrap(describeAvailabilityLimit(limit), 70)) say(`    ${line}`);
+    say('');
+  }
   if (view.length === 0) {
     say('No route availability has been observed or imported yet.');
     say(`Observe this machine:  ${TERMINAL_COMMAND} discovery-refresh`);

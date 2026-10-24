@@ -529,6 +529,8 @@ export const COMMAND_SPECS: CommandSpec[] = [
     detail: [
       'Every row says WHERE the observation was taken and whether this store made it or received it.',
       'A route available on another machine is shown as exactly that, and never as available here.',
+      'A usage or rate limit a provider returned (limit evidence cle1) holds the routes it reaches',
+      'unavailable until its expected return, or the end of the availability window when none was named.',
     ],
   },
   {

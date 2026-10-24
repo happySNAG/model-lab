@@ -1,0 +1,86 @@
+{
+  "fixture": "usage-limit-2026-09-21",
+  "schema": "cle1",
+  "modelledOn": "The 2026-09-21 usage-limit incident: the Codex service answered sixty-nine consecutive gpt-6-astra@max attempts with \"You've hit your usage limit. Upgrade to Pro ... or try again at Sep 21st, 2026 1:55 AM.\" (src/engine/attempt-disposition.ts), beside the Claude subscription session limit the first sealed Claude matrix recorded (\"You've hit your session limit · resets 8:10pm (America/Chicago)\"). The provider messages are kept verbatim as this repository records them. The machine, the record roots and the observation instants are placed by this fixture so the expected returns fall after them; they are not recovered from the incident's own records.",
+  "machine": {
+    "machineKey": "cmk1:fixture-limit-incident-20260921",
+    "machineLabel": "fixture-incident-host",
+    "timeZone": "America/Chicago"
+  },
+  "otherMachine": {
+    "machineKey": "cmk1:fixture-limit-other-machine",
+    "machineLabel": "fixture-other-host"
+  },
+  "ordinaryAvailability": [
+    { "routeKey": "codexCLI:gpt-6-astra", "provider": "codexCLI", "observedAt": "2026-09-21T05:00:00Z", "available": true, "reason": "codex installed and signed in with a ChatGPT session (fixture)" },
+    { "routeKey": "codexCLI:gpt-6-astra-mini", "provider": "codexCLI", "observedAt": "2026-09-21T05:00:00Z", "available": true, "reason": "codex installed and signed in with a ChatGPT session (fixture)" },
+    { "routeKey": "claudeCLI:claude-haiku-4-5", "provider": "claudeCLI", "observedAt": "2026-09-21T05:00:00Z", "available": true, "reason": "claude installed and signed in (fixture)" },
+    { "routeKey": "claudeCLI:claude-sonnet-4-5", "provider": "claudeCLI", "observedAt": "2026-09-21T05:00:00Z", "available": true, "reason": "claude installed and signed in (fixture)" },
+    { "routeKey": "opencodeCLI:opencode/big-pickle", "provider": "opencodeCLI", "observedAt": "2026-09-21T05:00:00Z", "available": true, "reason": "opencode installed (fixture)" }
+  ],
+  "throttleObservations": [
+    {
+      "event": "codexUsageLimit",
+      "provider": "codexCLI",
+      "candidate": "codexCLI:gpt-6-astra@max",
+      "caseID": "refuse-harm",
+      "repeatIndex": 1,
+      "recordRoot": "fixture://usage-limit-2026-09-21/codex/refuse-harm/1",
+      "providerThrottled": true,
+      "failureKind": "rateLimited",
+      "detail": "the CLI reported a failed turn (turn.failed, no HTTP status): You've hit your usage limit. Upgrade to Pro ... or try again at Sep 21st, 2026 1:55 AM.",
+      "observedAt": "2026-09-21T05:40:00Z"
+    },
+    {
+      "event": "openCodeRateLimit",
+      "provider": "opencodeCLI",
+      "candidate": "opencodeCLI:opencode/big-pickle",
+      "caseID": "receipt-refunds-sign",
+      "repeatIndex": 2,
+      "recordRoot": "fixture://usage-limit-2026-09-21/opencode/receipt-refunds-sign/2",
+      "providerThrottled": true,
+      "failureKind": "rateLimited",
+      "detail": "the CLI reported a failed turn (HTTP 429): Too Many Requests — rate limit exceeded, retry after 120 seconds",
+      "observedAt": "2026-09-21T12:00:00Z"
+    },
+    {
+      "event": "claudeSessionLimit",
+      "provider": "claudeCLI",
+      "candidate": "claudeCLI:claude-haiku-4-5",
+      "caseID": "task-priority-propagate",
+      "repeatIndex": 1,
+      "recordRoot": "fixture://usage-limit-2026-09-21/claude/task-priority-propagate/1",
+      "providerThrottled": true,
+      "failureKind": "rateLimited",
+      "detail": "the CLI reported a failed turn (api_error, HTTP 429): You've hit your session limit · resets 8:10pm (America/Chicago)",
+      "observedAt": "2026-09-21T23:52:00Z"
+    },
+    {
+      "event": "codexNotAuthenticated",
+      "provider": "codexCLI",
+      "candidate": "codexCLI:gpt-6-astra-mini",
+      "caseID": "refuse-harm",
+      "repeatIndex": 1,
+      "recordRoot": "fixture://usage-limit-2026-09-21/codex-mini/refuse-harm/1",
+      "providerThrottled": true,
+      "failureKind": "notAuthenticated",
+      "detail": "the CLI reported that it is not signed in",
+      "observedAt": "2026-09-21T06:00:00Z"
+    }
+  ],
+  "sessionStatuses": [
+    {
+      "event": "claudePreflightNotReported",
+      "provider": "claudeCLI",
+      "probe": "claude auth status --json",
+      "probePurpose": "Claude Code's own `auth status` subcommand (fixture)",
+      "probeSucceeded": true,
+      "signedIn": true,
+      "subscriptionType": "max",
+      "authMethod": "claude.ai",
+      "remainingAllowance": { "provenance": "unavailable", "note": "Claude Code exposes no remaining-allowance figure (fixture)" },
+      "throttleState": "notReported",
+      "observedAt": "2026-09-21T04:59:00Z"
+    }
+  ]
+}

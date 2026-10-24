@@ -93,6 +93,115 @@ export interface MachineAvailability {
   state: MachineAvailabilityState;
   reason: string;
   latest?: RouteAvailabilityObservation;
+  /** Present when a usage-limit or rate-limit observation still in force decided this state. */
+  limit?: AvailabilityLimit;
+}
+
+/**
+ * How far a recorded limit reaches: one route, or every route of one provider on the machine that
+ * observed it. Same three words as `workspace-throttle.ts`'s `ThrottleScope`, repeated rather than
+ * imported so that this pure module depends on nothing that knows about runs.
+ */
+export type AvailabilityLimitScope = 'route' | 'provider' | 'subscriptionSession';
+
+/**
+ * A usage-limit or rate-limit event, as availability evidence (limit evidence cle1, see `limit-evidence.ts`).
+ *
+ * IT EXPIRES. `expiresAt` is the provider's own expected return when one could be placed in time, and
+ * otherwise the end of the availability window from `observedAt`; `expiresBy` says which. Until then
+ * the route it reaches reads as unavailable on the machine that observed it, whatever an ordinary
+ * availability observation says — a probe that found the CLI installed and signed in did not ask whether
+ * the allowance came back. After it, the limit says nothing and the ordinary observations decide again.
+ */
+export interface AvailabilityLimit {
+  kind: 'usageLimit' | 'rateLimit' | 'throttleReported';
+  provider: string;
+  machineKey: string;
+  machineLabel: string;
+  scope: AvailabilityLimitScope;
+  /** The route the limit was observed on. For a `route` scope, the only route it reaches. */
+  routeKey?: string;
+  observedAt: string;
+  expiresAt: string;
+  expiresBy: 'expectedReturn' | 'availabilityWindow';
+  /** The provider's expected return as an instant, when it named one that could be placed in time. */
+  expectedReturn?: string;
+  /** The provider's own words about when it returns, verbatim, when it said anything. */
+  reported?: string;
+  /** What established the limit, in words a person can check. */
+  source: string;
+  detail: string;
+  /** The observation record that carries it, when it came from a store. */
+  recordID?: string;
+}
+
+/** A later statement, by the provider's own session probe, that it is NOT throttled. */
+export interface AvailabilityLimitLift {
+  provider: string;
+  machineKey: string;
+  observedAt: string;
+  source: string;
+}
+
+const providerOfRoute = (routeKey: string): string => routeKey.split(':')[0] ?? '';
+
+/**
+ * The limit that still holds this route unavailable on this machine at `now`, if any.
+ *
+ * A limit reaches only the machine that observed it, never another. A `route` limit reaches its own
+ * route; a `provider` or `subscriptionSession` limit reaches every route of its provider. A lift — the
+ * provider's own probe saying it is not throttled — clears the provider-wide limits observed before
+ * it and never a route-scoped one, which the session probe says nothing about. When several reach, the
+ * one that holds longest is reported, because that is the one the route is waiting on.
+ */
+export function availabilityLimitInEffect(limits: AvailabilityLimit[], lifts: AvailabilityLimitLift[], routeKey: string,
+                                          machine: string, now: Date): AvailabilityLimit | undefined {
+  const at = now.getTime();
+  const reaching = limits.filter((limit) => {
+    if (limit.machineKey !== machine) return false;
+    const observed = Date.parse(limit.observedAt);
+    const expires = Date.parse(limit.expiresAt);
+    // AN UNDATED OR NOT-YET-OBSERVED LIMIT CANNOT SPEAK TO `now`, and an expired one has stopped speaking.
+    if (Number.isNaN(observed) || Number.isNaN(expires) || observed > at || expires <= at) return false;
+    if (limit.scope === 'route') return limit.routeKey === routeKey;
+    if (limit.provider !== providerOfRoute(routeKey)) return false;
+    return !lifts.some((lift) => lift.machineKey === machine && lift.provider === limit.provider
+      && Date.parse(lift.observedAt) > observed && Date.parse(lift.observedAt) <= at);
+  });
+  return reaching.sort((a, b) => Date.parse(b.expiresAt) - Date.parse(a.expiresAt)
+    || (a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0))[0];
+}
+
+/** The sentence a limit puts in an availability answer: its source, its time, and when it lifts. */
+export function describeAvailabilityLimit(limit: AvailabilityLimit): string {
+  const kind = limit.kind === 'usageLimit' ? 'a usage limit' : limit.kind === 'rateLimit' ? 'a rate limit' : 'a throttle';
+  const reach = limit.scope === 'route' ? `on ${limit.routeKey ?? 'this route'}`
+    : `across every ${limit.provider} route (${limit.scope}-scoped${limit.routeKey === undefined ? '' : `, observed on ${limit.routeKey}`})`;
+  const until = limit.expiresBy === 'expectedReturn'
+    ? `until ${limit.expiresAt}, the provider's expected return${limit.reported === undefined ? '' : ` ("${limit.reported}")`}`
+    : `until ${limit.expiresAt}, the end of the availability window — the provider named `
+      + `${limit.reported === undefined ? 'no return time' : `"${limit.reported}", which could not be placed in time`}`;
+  return `limit: ${kind} was recorded ${reach} at ${limit.observedAt} by ${limit.source}; unavailable ${until}`;
+}
+
+/**
+ * An ordinary availability answer, with the recorded limits applied on top.
+ *
+ * A limit in force makes the route `unavailable` whatever the ordinary state was, and carries itself on
+ * the answer. Without one the ordinary answer is returned unchanged, so a store with no limit evidence
+ * answers exactly as it always did.
+ */
+export function applyAvailabilityLimits(base: MachineAvailability, limits: AvailabilityLimit[], lifts: AvailabilityLimitLift[],
+                                        routeKey: string, machine: string, now: Date): MachineAvailability {
+  const limit = availabilityLimitInEffect(limits, lifts, routeKey, machine, now);
+  if (limit === undefined) return base;
+  return {
+    state: 'unavailable',
+    ...(base.latest === undefined ? {} : { latest: base.latest }),
+    limit,
+    reason: `${routeKey} is NOT available from this machine: ${describeAvailabilityLimit(limit)}. `
+      + `Without the limit: ${base.reason}`,
+  };
 }
 
 /** Is this route reachable from this machine, as of the latest observation made ON it? */
