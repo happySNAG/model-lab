@@ -302,6 +302,11 @@ code only: no command reads it yet. See
 [docs/ordra-lane/capability-coverage.md](docs/ordra-lane/capability-coverage.md). [docs/ordra-lane/block-2-summary.md](docs/ordra-lane/block-2-summary.md) lists the
 commits that added all of this.
 
+Catalogue discovery for Claude and Codex (ccd1, `src/engine/catalogue-discovery.ts`) is also engine code only. It
+records the Codex catalogue as listed and unproven, records that the Claude CLI cannot list models, and consults the
+Anthropic API listing only behind an already-configured credential. See
+[docs/ordra-lane/catalogue-discovery.md](docs/ordra-lane/catalogue-discovery.md).
+
 ## Where your data lives
 
 | | macOS | Windows |
