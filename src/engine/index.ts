@@ -141,6 +141,8 @@ export * from './fallback-chain';
 export * from './limit-evidence';
 export * from './regression-detector';
 export * from './status-export';
+export * from './discovery-delta';
+export * from './release-report';
 // Governance and fleet persistence: the versioned routing policy that supersedes the Pass 6/7
 // restriction prospectively, and the append-only store two machines share observations through.
 export * from './routing-policy';

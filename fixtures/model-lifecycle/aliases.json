@@ -1,0 +1,5 @@
+{
+  "aliases": [
+    { "provider": "claudeCLI", "alias": "sonnet", "canonicalModelID": "claude-sonnet-4-5", "source": "fixture: a recorded alias table for the claude CLI --model flag", "observedAt": "2026-10-20T00:00:00Z" }
+  ]
+}

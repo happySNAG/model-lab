@@ -115,6 +115,9 @@ import {
   detectRegressions,
   // Everything above, gathered into one read-only document for Ordra Office (cse1).
   StatusExportError, deriveStatusExport,
+  // Which models are new, changed or gone between two snapshots (cdd1), and each new one reported once (crl1).
+  AliasStatement, DiscoveryDeltaError, DiscoverySnapshot, ReleaseLedgerError, buildAliasTable, deriveDiscoveryDelta,
+  deriveReleaseReport, describeDiscoveryDelta, describeReleaseReport, readReleaseLedger, recordReleaseReport,
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
@@ -3881,6 +3884,171 @@ async function commandStatusExport(positional: string[], options: Options): Prom
   }
 }
 
+/** Alias statements from `--aliases <file>`: a JSON list, or an object with an `aliases` list. Refused, never guessed. */
+function aliasesFromOptions(command: string, options: Options): AliasStatement[] {
+  if (options.aliases === undefined) return [];
+  const file = String(options.aliases);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+  } catch (error) {
+    fail(`${command}: --aliases ${file} could not be read as JSON: ${error instanceof Error ? error.message : String(error)}. Nothing was read.`, 2);
+  }
+  const list = Array.isArray(parsed) ? parsed
+    : parsed !== null && typeof parsed === 'object' && Array.isArray((parsed as { aliases?: unknown }).aliases)
+      ? (parsed as { aliases: unknown[] }).aliases : undefined;
+  if (list === undefined) fail(`${command}: --aliases ${file} holds no list of alias statements. Nothing was read.`, 2);
+  for (const entry of list) {
+    const statement = entry as Partial<AliasStatement>;
+    if (typeof statement?.provider !== 'string' || !(PROVIDER_IDS as string[]).includes(statement.provider)
+        || typeof statement.alias !== 'string' || typeof statement.canonicalModelID !== 'string') {
+      fail(`${command}: --aliases ${file}: every statement needs a known provider, an alias and a canonicalModelID. Nothing was read.`, 2);
+    }
+  }
+  try {
+    buildAliasTable(list as AliasStatement[]);
+  } catch (error) {
+    fail(`${command}: --aliases ${file}: ${error instanceof Error ? error.message : String(error)} Nothing was read.`, 2);
+  }
+  return list as AliasStatement[];
+}
+
+/** A cds1 snapshot from a file: the snapshot itself, or `discovery-refresh --json`'s `{ snapshot }`. */
+function snapshotFromFile(command: string, file: string): DiscoverySnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+  } catch (error) {
+    fail(`${command}: ${file} could not be read as JSON: ${error instanceof Error ? error.message : String(error)}. Nothing was read.`, 2);
+  }
+  const candidate = (parsed as { snapshot?: unknown })?.snapshot ?? parsed;
+  const snapshot = candidate as Partial<DiscoverySnapshot>;
+  if (snapshot?.schema !== 'cds1' || typeof snapshot.machineKey !== 'string' || typeof snapshot.takenAt !== 'string'
+      || !Array.isArray(snapshot.routes) || !Array.isArray(snapshot.providers)) {
+    fail(`${command}: ${file} is not a cds1 discovery snapshot. Nothing was read.`, 2);
+  }
+  return snapshot as DiscoverySnapshot;
+}
+
+/** Every discovery snapshot taken ON one machine, oldest first. */
+function discoverySnapshotsOn(root: string, machine: string): { snapshots: DiscoverySnapshot[]; corrupt: { filePath: string; reason: string }[] } {
+  const contents = readObservationStore(root);
+  const snapshots = contents.observations
+    .filter((entry) => entry.record.kind === 'discoverySnapshot' && entry.record.machineKey === machine)
+    .map((entry) => entry.record.body as unknown as DiscoverySnapshot)
+    .sort((a, b) => Date.parse(a.takenAt) - Date.parse(b.takenAt) || (a.takenAt < b.takenAt ? -1 : a.takenAt > b.takenAt ? 1 : 0));
+  return { snapshots, corrupt: contents.corrupt };
+}
+
+/**
+ * Which models are new, changed or gone between two discovery snapshots (cdd1). READ-ONLY: by default the
+ * two newest snapshots this machine recorded; `--before`/`--after` compare two snapshot files instead.
+ */
+async function commandDiscoveryDelta(positional: string[], options: Options): Promise<void> {
+  if (positional.length > 0) fail('discovery-delta: takes no positional argument. Nothing was read.', 2);
+  const aliases = aliasesFromOptions('discovery-delta', options);
+  let before: DiscoverySnapshot | undefined;
+  let after: DiscoverySnapshot;
+  let corrupt: { filePath: string; reason: string }[] = [];
+  if (options.before !== undefined || options.after !== undefined) {
+    if (options.after === undefined) fail('discovery-delta: --before needs --after. Nothing was read.', 2);
+    before = options.before === undefined ? undefined : snapshotFromFile('discovery-delta', String(options.before));
+    after = snapshotFromFile('discovery-delta', String(options.after));
+  } else {
+    const root = String(options.root ?? defaultCampaignRoot());
+    const machine = machineFromOptions(options);
+    const found = discoverySnapshotsOn(root, machine);
+    corrupt = found.corrupt;
+    if (found.snapshots.length === 0) {
+      fail(`discovery-delta: no discovery snapshot was recorded on ${machine}. Run \`${TERMINAL_COMMAND} discovery-refresh\` `
+        + 'first, or compare two files with --before and --after. Nothing was read.', 2);
+    }
+    after = found.snapshots[found.snapshots.length - 1];
+    before = found.snapshots.length > 1 ? found.snapshots[found.snapshots.length - 2] : undefined;
+  }
+  let report;
+  try {
+    report = deriveDiscoveryDelta(before, after, { aliases });
+  } catch (error) {
+    if (error instanceof DiscoveryDeltaError) fail(`discovery-delta: ${error.message}`, 2);
+    throw error;
+  }
+  if (options.json === true) say(JSON.stringify(report, null, 2));
+  else {
+    sayLines(describeDiscoveryDelta(report));
+    say('');
+    for (const line of wrap(report.disclosure, 76)) say(line);
+  }
+  if (corrupt.length > 0) {
+    say('');
+    for (const entry of corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+    fail(`${corrupt.length} observation file(s) did not verify and were not read, so a snapshot may be missing. `
+      + 'They are listed above, by path. Nothing was changed.', 2);
+  }
+}
+
+/**
+ * The models this machine's newest discovery snapshot lists that no earlier release report recorded (crl1).
+ * Writes nothing unless `--record`, which appends the new models to the sealed ledger so they are never
+ * reported again.
+ */
+async function commandReleaseReport(positional: string[], options: Options): Promise<void> {
+  if (positional.length > 0) fail('release-report: takes no positional argument. Nothing was read.', 2);
+  const root = String(options.root ?? defaultCampaignRoot());
+  const aliases = aliasesFromOptions('release-report', options);
+  let providers: ProviderID[] | undefined;
+  if (options.providers !== undefined) {
+    providers = String(options.providers).split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0) as ProviderID[];
+    const unknownProviders = providers.filter((provider) => !(PROVIDER_IDS as string[]).includes(provider));
+    if (providers.length === 0 || unknownProviders.length > 0) {
+      fail(`release-report: --providers must name providers from ${PROVIDER_IDS.join(', ')}`
+        + `${unknownProviders.length === 0 ? '' : `, not ${unknownProviders.join(', ')}`}. Nothing was read.`, 2);
+    }
+  }
+  const machine = machineFromOptions(options);
+  const found = discoverySnapshotsOn(root, machine);
+  const snapshot = found.snapshots[found.snapshots.length - 1];
+  if (snapshot === undefined) {
+    fail(`release-report: no discovery snapshot was recorded on ${machine}. Run \`${TERMINAL_COMMAND} discovery-refresh\` first. `
+      + 'Nothing was read.', 2);
+  }
+  const ledger = readReleaseLedger(root);
+  const report = deriveReleaseReport({ snapshot, ledger, aliases, ...(providers === undefined ? {} : { providers }) });
+  let recorded: ReturnType<typeof recordReleaseReport> | undefined;
+  if (options.record === true) {
+    try {
+      recorded = recordReleaseReport(root, report, { reportedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z') });
+    } catch (error) {
+      if (error instanceof ReleaseLedgerError) fail(`release-report: ${error.message}`, 4);
+      throw error;
+    }
+  }
+  if (options.json === true) {
+    say(JSON.stringify({ ...report, ...(recorded === undefined ? {} : { recorded: {
+      recordID: recorded.written?.recordID ?? null, sequence: recorded.written?.sequence ?? null,
+      droppedAlreadyReported: recorded.droppedAlreadyReported,
+    } }) }, null, 2));
+  } else {
+    sayLines(describeReleaseReport(report));
+    say('');
+    if (options.record !== true) say(`Nothing was written. With --record the new models are appended to ${ledger.filePath}.`);
+    else if (recorded?.written === undefined) say('Nothing new to record; the ledger is unchanged.');
+    else say(`Recorded as line ${recorded.written.sequence} of ${ledger.filePath} (${recorded.written.recordID.slice(0, 16)}…).`);
+    for (const line of wrap(report.disclosure, 76)) say(line);
+  }
+  if (report.corrupt.length > 0) {
+    say('');
+    for (const entry of report.corrupt) say(`  line ${entry.line}: ${entry.reason}`);
+    fail(`${report.corrupt.length} ledger line(s) did not verify, so the models above may repeat an earlier report. `
+      + 'Nothing was changed.', 4);
+  }
+  if (found.corrupt.length > 0) {
+    say('');
+    for (const entry of found.corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+    fail(`${found.corrupt.length} observation file(s) did not verify and were not read. Nothing else was changed.`, 2);
+  }
+}
+
 // MARK: - The installed command
 
 function renderTerminalCommandStatus(): void {
@@ -4773,6 +4941,8 @@ export async function main(argv: string[]): Promise<void> {
     case 'decision-log': return commandDecisionLog(positional, options);
     case 'regressions': return commandRegressions(positional, options);
     case 'status-export': return commandStatusExport(positional, options);
+    case 'discovery-delta': return commandDiscoveryDelta(positional, options);
+    case 'release-report': return commandReleaseReport(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();

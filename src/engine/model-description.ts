@@ -300,3 +300,320 @@ export function describeLocalModel(model: {
     + `${model.sizeBytes === undefined ? '' : ` · ${model.sizeBytes} bytes`}`);
   return description;
 }
+
+// MARK: - cmd2: lifecycle, aliases and one canonical id
+//
+// WHAT cmd2 ADDS. Three things a release watcher needs and cmd1 cannot say:
+//
+//   LIFECYCLE    whether a model is active, deprecated or retired — a `Known<…>` like every other
+//                property, so "no source said" is `unknown` with its reason and never `active`.
+//                It is set only from a STRUCTURED lifecycle statement a source published. A refused
+//                smoke is not retirement (it may be tier, region or moderation), a model missing from
+//                a listing is not retirement (the listing may be partial), and `-preview` or `-latest`
+//                in an identifier is a name, which says nothing.
+//   ALIASES      other identifiers that a source STATED reach the same model, each with that source.
+//                An alias is never inferred from two names looking alike.
+//   CANONICAL    the one id the model is filed under, so `sonnet` and `claude-sonnet-4-5` are one model
+//                when — and only when — a source said so. Dedup is by that id.
+//
+// cmd1 STAYS READABLE. `readModelDescription` accepts a cmd1 document and returns it as cmd2 with the
+// lifecycle unknown, no aliases and its own id as canonical: exactly what cmd1 established, no more.
+
+export const MODEL_DESCRIPTION_SCHEMA_V2 = 'cmd2';
+
+/** Where a model is in its provider's lifecycle. `unknown` is the `Known` wrapper's, not a member. */
+export type LifecycleState = 'active' | 'deprecated' | 'retired';
+
+export const LIFECYCLE_STATES: LifecycleState[] = ['active', 'deprecated', 'retired'];
+
+/** One identifier a source stated reaches this model. */
+export interface ModelAlias {
+  alias: string;
+  source: string;
+  observedAt?: string;
+}
+
+/** A route described under cmd2. Every cmd1 field, unchanged in meaning, plus lifecycle and aliases. */
+export interface ModelDescriptionV2 extends Omit<ModelDescription, 'schema'> {
+  schema: typeof MODEL_DESCRIPTION_SCHEMA_V2;
+  /** The id this model is filed under. Its own `modelID` unless an alias statement says otherwise. */
+  canonicalModelID: string;
+  /** `provider:canonicalModelID`. The dedup key. */
+  canonicalRouteKey: string;
+  /** Every other identifier a source stated reaches this model. Sorted, never containing the canonical id. */
+  aliases: ModelAlias[];
+  lifecycle: Known<LifecycleState>;
+}
+
+export const CMD1_HAS_NO_LIFECYCLE = 'a cmd1 description carries no lifecycle, and no source has stated one';
+export const NO_LIFECYCLE_SOURCE = 'no source has published a lifecycle state for this model';
+
+/**
+ * A source's statement that `alias` and `canonicalModelID` are the same model at one provider.
+ *
+ * The source is required: an alias with no one behind it is a guess, and a guess about identity is
+ * how a benchmark of one model gets filed under another.
+ */
+export interface AliasStatement {
+  provider: ProviderID;
+  alias: string;
+  canonicalModelID: string;
+  source: string;
+  observedAt?: string;
+}
+
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** A cmd1 description as cmd2: no lifecycle, no aliases, its own id as canonical. Pure. */
+export function upgradeToCmd2(description: ModelDescription): ModelDescriptionV2 {
+  const { schema: _schema, ...rest } = description;
+  return {
+    ...rest,
+    provenance: [...description.provenance],
+    schema: MODEL_DESCRIPTION_SCHEMA_V2,
+    canonicalModelID: description.modelID,
+    canonicalRouteKey: description.routeKey,
+    aliases: [],
+    lifecycle: unknown(CMD1_HAS_NO_LIFECYCLE),
+  };
+}
+
+/**
+ * Read a stored description of either schema. A cmd1 document is upgraded; anything else is refused
+ * with the reason, never coerced.
+ */
+export function readModelDescription(document: unknown):
+  { ok: true; readFrom: 'cmd1' | 'cmd2'; description: ModelDescriptionV2 } | { ok: false; reason: string } {
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    return { ok: false, reason: 'a model description is a JSON object' };
+  }
+  const record = document as Record<string, unknown>;
+  for (const field of ['routeKey', 'provider', 'modelID'] as const) {
+    if (typeof record[field] !== 'string' || (record[field] as string).length === 0) {
+      return { ok: false, reason: `${field} is missing or empty` };
+    }
+  }
+  if (record.schema === MODEL_DESCRIPTION_SCHEMA) {
+    return { ok: true, readFrom: 'cmd1', description: upgradeToCmd2(record as unknown as ModelDescription) };
+  }
+  if (record.schema !== MODEL_DESCRIPTION_SCHEMA_V2) {
+    return { ok: false, reason: `schema is '${String(record.schema)}', not ${MODEL_DESCRIPTION_SCHEMA} or ${MODEL_DESCRIPTION_SCHEMA_V2}` };
+  }
+  const lifecycle = record.lifecycle as Known<unknown> | undefined;
+  if (lifecycle === undefined || (lifecycle.state !== 'known' && lifecycle.state !== 'unknown')) {
+    return { ok: false, reason: 'a cmd2 description must carry lifecycle as a known value or an unknown with its reason' };
+  }
+  if (lifecycle.state === 'known' && !LIFECYCLE_STATES.includes(lifecycle.value as LifecycleState)) {
+    return { ok: false, reason: `lifecycle '${String(lifecycle.value)}' is not one of ${LIFECYCLE_STATES.join(', ')}` };
+  }
+  if (!Array.isArray(record.aliases) || typeof record.canonicalModelID !== 'string' || typeof record.canonicalRouteKey !== 'string') {
+    return { ok: false, reason: 'a cmd2 description must carry canonicalModelID, canonicalRouteKey and aliases' };
+  }
+  return { ok: true, readFrom: 'cmd2', description: record as unknown as ModelDescriptionV2 };
+}
+
+/**
+ * Read a lifecycle state from a source's STRUCTURED field. Only the exact words are accepted; any other
+ * value leaves the lifecycle unknown and says what was seen, because "sunsetting" or "legacy" might mean
+ * either deprecated or retired and this is not the place to decide which.
+ */
+export function lifecycleFromField(value: unknown, source: string, observedAt?: string): Known<LifecycleState> {
+  if (typeof value === 'string' && LIFECYCLE_STATES.includes(value as LifecycleState)) {
+    return known(value as LifecycleState, source, observedAt);
+  }
+  return unknown(value === undefined ? `${source} published no lifecycle field`
+    : `${source} published lifecycle ${JSON.stringify(value)}, which is not one of ${LIFECYCLE_STATES.join(', ')}`);
+}
+
+/** Record a source's lifecycle statement on a description. */
+export function withLifecycle(description: ModelDescriptionV2, state: LifecycleState, source: string, observedAt?: string): ModelDescriptionV2 {
+  return {
+    ...description,
+    lifecycle: known(state, source, observedAt),
+    provenance: [...description.provenance, `lifecycle ${state}: ${source}${observedAt === undefined ? '' : ` at ${observedAt}`}`],
+  };
+}
+
+/** Record a source's statement that other identifiers reach this model. */
+export function withAliases(description: ModelDescriptionV2, aliases: ModelAlias[]): ModelDescriptionV2 {
+  const byAlias = new Map(description.aliases.map((entry) => [entry.alias, entry]));
+  for (const entry of aliases) {
+    if (entry.alias === description.canonicalModelID || byAlias.has(entry.alias)) continue;
+    byAlias.set(entry.alias, entry);
+  }
+  return { ...description, aliases: [...byAlias.values()].sort((a, b) => compareText(a.alias, b.alias)) };
+}
+
+export class AliasResolutionError extends Error {
+  constructor(readonly code: 'missingSource' | 'selfAlias', message: string) {
+    super(message);
+    this.name = 'AliasResolutionError';
+  }
+}
+
+/** What an identifier resolves to. Every state carries its reason. */
+export type AliasResolution =
+  | { state: 'canonical'; canonicalRouteKey: string; reason: string }
+  | { state: 'alias'; canonicalRouteKey: string; via: string[]; reason: string }
+  /** Two sources disagree about what this identifier reaches, or the statements form a cycle. */
+  | { state: 'ambiguous'; candidates: string[]; reason: string };
+
+export interface AliasConflict {
+  routeKey: string;
+  reason: string;
+  sources: string[];
+}
+
+/** Every alias statement, indexed. Built once; resolution is a lookup. */
+export interface AliasTable {
+  /** `provider:alias` → every statement about it. */
+  statements: Map<string, AliasStatement[]>;
+  conflicts: AliasConflict[];
+}
+
+/**
+ * Index alias statements. A statement with no source, or that names a model its own alias, is refused
+ * by throwing: it is a defect in whatever produced it, not a fact to route around.
+ */
+export function buildAliasTable(statements: AliasStatement[]): AliasTable {
+  const table = new Map<string, AliasStatement[]>();
+  for (const statement of statements) {
+    if (typeof statement.source !== 'string' || statement.source.trim().length === 0) {
+      throw new AliasResolutionError('missingSource', `the alias ${statement.provider}:${statement.alias} → `
+        + `${statement.canonicalModelID} names no source. An alias nobody stated is a guess about identity, and is refused.`);
+    }
+    if (statement.alias === statement.canonicalModelID) {
+      throw new AliasResolutionError('selfAlias', `${statement.provider}:${statement.alias} is stated as an alias of itself`);
+    }
+    const key = `${statement.provider}:${statement.alias}`;
+    table.set(key, [...(table.get(key) ?? []), statement]);
+  }
+  const conflicts: AliasConflict[] = [];
+  for (const [routeKey, entries] of [...table.entries()].sort((a, b) => compareText(a[0], b[0]))) {
+    const targets = [...new Set(entries.map((entry) => entry.canonicalModelID))].sort(compareText);
+    if (targets.length > 1) {
+      conflicts.push({
+        routeKey, reason: `sources disagree: ${routeKey} is stated to reach ${targets.join(' and ')}`,
+        sources: entries.map((entry) => entry.source).sort(compareText),
+      });
+    }
+  }
+  return { statements: table, conflicts };
+}
+
+/**
+ * Resolve an identifier to its one canonical route key, following alias statements to the end.
+ *
+ * An identifier no statement names is its own canonical id: that is the absence of an alias, not a
+ * claim about one. Disagreeing statements and cycles are `ambiguous`, never resolved by picking one.
+ */
+export function resolveAlias(table: AliasTable, provider: ProviderID, modelID: string): AliasResolution {
+  const via: string[] = [];
+  let current = modelID;
+  const seen = new Set<string>();
+  for (;;) {
+    const key = `${provider}:${current}`;
+    if (seen.has(key)) {
+      return { state: 'ambiguous', candidates: [...seen].sort(compareText), reason: `the alias statements form a cycle through ${[...seen].join(' → ')}` };
+    }
+    seen.add(key);
+    const entries = table.statements.get(key) ?? [];
+    const targets = [...new Set(entries.map((entry) => entry.canonicalModelID))].sort(compareText);
+    if (targets.length > 1) {
+      return { state: 'ambiguous', candidates: targets.map((target) => `${provider}:${target}`),
+        reason: `sources disagree about what ${key} reaches: ${targets.join(', ')}` };
+    }
+    if (targets.length === 0) {
+      return via.length === 0
+        ? { state: 'canonical', canonicalRouteKey: key, reason: `no source states that ${key} is an alias` }
+        : { state: 'alias', canonicalRouteKey: key, via,
+          reason: `${provider}:${modelID} is an alias of ${key} (${via.join('; ')})` };
+    }
+    via.push(`${key} → ${targets[0]} per ${entries.map((entry) => entry.source).sort(compareText).join(', ')}`);
+    current = targets[0];
+  }
+}
+
+/** What dedup did: which descriptions it folded together, and what it could not reconcile. */
+export interface DedupOutcome {
+  descriptions: ModelDescriptionV2[];
+  merged: { canonicalRouteKey: string; fromRouteKeys: string[] }[];
+  /** Identifiers left as their own model because their resolution was ambiguous. */
+  unresolved: { routeKey: string; reason: string }[];
+  /** Lifecycle statements that disagreed within one canonical model. */
+  lifecycleConflicts: AliasConflict[];
+}
+
+/**
+ * One description per canonical id.
+ *
+ * The description filed under the canonical id itself is kept when there is one; otherwise the first by
+ * route key. Every other identifier becomes an alias, with the statement's source. A lifecycle stated by
+ * any member is carried; two members stating DIFFERENT lifecycles leave it unknown, with both named —
+ * which one is current is a question for the sources, not for a merge.
+ */
+export function dedupByCanonicalID(descriptions: (ModelDescription | ModelDescriptionV2)[], statements: AliasStatement[] = []): DedupOutcome {
+  const table = buildAliasTable(statements);
+  const groups = new Map<string, ModelDescriptionV2[]>();
+  const unresolved: DedupOutcome['unresolved'] = [];
+  const upgraded = descriptions.map((entry) => (entry.schema === MODEL_DESCRIPTION_SCHEMA ? upgradeToCmd2(entry as ModelDescription) : entry as ModelDescriptionV2))
+    .sort((a, b) => compareText(a.routeKey, b.routeKey));
+  for (const description of upgraded) {
+    const resolution = resolveAlias(table, description.provider, description.modelID);
+    let canonical: string;
+    if (resolution.state === 'ambiguous') {
+      unresolved.push({ routeKey: description.routeKey, reason: resolution.reason });
+      canonical = description.routeKey;
+    } else {
+      canonical = resolution.canonicalRouteKey;
+    }
+    groups.set(canonical, [...(groups.get(canonical) ?? []), description]);
+  }
+
+  const out: ModelDescriptionV2[] = [];
+  const merged: DedupOutcome['merged'] = [];
+  const lifecycleConflicts: AliasConflict[] = [];
+  for (const [canonicalRouteKey, members] of [...groups.entries()].sort((a, b) => compareText(a[0], b[0]))) {
+    const canonicalModelID = canonicalRouteKey.slice(canonicalRouteKey.indexOf(':') + 1);
+    const primary = members.find((entry) => entry.modelID === canonicalModelID) ?? members[0];
+    let result: ModelDescriptionV2 = { ...primary, canonicalModelID, canonicalRouteKey, provenance: [...primary.provenance] };
+    const aliases: ModelAlias[] = [...primary.aliases];
+    for (const member of members) {
+      aliases.push(...member.aliases);
+      if (member.modelID !== canonicalModelID) {
+        const stated = table.statements.get(member.routeKey) ?? [];
+        aliases.push({ alias: member.modelID, source: stated.map((entry) => entry.source).sort(compareText).join(', ') || 'alias statement',
+          ...(stated[0]?.observedAt === undefined ? {} : { observedAt: stated[0].observedAt }) });
+      }
+    }
+    for (const [key, entries] of table.statements) {
+      if (!key.startsWith(`${primary.provider}:`)) continue;
+      const resolution = resolveAlias(table, primary.provider, key.slice(key.indexOf(':') + 1));
+      if (resolution.state === 'alias' && resolution.canonicalRouteKey === canonicalRouteKey) {
+        aliases.push({ alias: key.slice(key.indexOf(':') + 1), source: entries.map((entry) => entry.source).sort(compareText).join(', '),
+          ...(entries[0].observedAt === undefined ? {} : { observedAt: entries[0].observedAt }) });
+      }
+    }
+    result = withAliases({ ...result, aliases: [] }, aliases);
+
+    const stated = members.filter((entry) => entry.lifecycle.state === 'known')
+      .map((entry) => ({ routeKey: entry.routeKey, lifecycle: entry.lifecycle as Extract<Known<LifecycleState>, { state: 'known' }> }));
+    const states = [...new Set(stated.map((entry) => entry.lifecycle.value))].sort(compareText);
+    if (states.length === 1) {
+      result.lifecycle = stated[0].lifecycle;
+    } else if (states.length > 1) {
+      const reason = `sources disagree about the lifecycle of ${canonicalRouteKey}: `
+        + stated.map((entry) => `${entry.routeKey} ${entry.lifecycle.value} per ${entry.lifecycle.source}`).join('; ');
+      result.lifecycle = unknown(reason);
+      lifecycleConflicts.push({ routeKey: canonicalRouteKey, reason, sources: stated.map((entry) => entry.lifecycle.source).sort(compareText) });
+    }
+    if (members.length > 1) {
+      merged.push({ canonicalRouteKey, fromRouteKeys: members.map((entry) => entry.routeKey) });
+      result.provenance = [...new Set(members.flatMap((entry) => entry.provenance))];
+    }
+    out.push(result);
+  }
+  return { descriptions: out, merged, unresolved, lifecycleConflicts };
+}

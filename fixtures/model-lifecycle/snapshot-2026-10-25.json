@@ -1,0 +1,21 @@
+{
+  "schema": "cds1",
+  "machineKey": "cmk1:model-lifecycle-fixture",
+  "takenAt": "2026-10-25T00:00:00Z",
+  "providerAllowlist": "cpa1",
+  "providers": [
+    { "provider": "claudeCLI", "refreshed": true, "detail": "fixture: the listing answered" },
+    { "provider": "codexCLI", "refreshed": true, "detail": "fixture: the listing answered" },
+    { "provider": "opencodeCLI", "refreshed": false, "detail": "fixture: the probe did not answer" }
+  ],
+  "routes": [
+    { "routeKey": "claudeCLI:claude-haiku-4-5", "provider": "claudeCLI", "modelID": "claude-haiku-4-5", "listed": true, "availability": "unproven", "runtimeVersion": "2.0.10", "observedAt": "2026-10-25T00:00:00Z" },
+    { "routeKey": "claudeCLI:claude-opus-4-1", "provider": "claudeCLI", "modelID": "claude-opus-4-1", "listed": false, "availability": "proven", "runtimeVersion": "2.0.10", "observedAt": "2026-10-20T00:00:00Z" },
+    { "routeKey": "claudeCLI:claude-opus-5", "provider": "claudeCLI", "modelID": "claude-opus-5", "listed": true, "availability": "unproven", "runtimeVersion": "2.0.10", "observedAt": "2026-10-25T00:00:00Z" },
+    { "routeKey": "claudeCLI:claude-sonnet-4-5", "provider": "claudeCLI", "modelID": "claude-sonnet-4-5", "listed": true, "availability": "proven", "runtimeVersion": "2.0.10", "observedAt": "2026-10-25T00:00:00Z" },
+    { "routeKey": "claudeCLI:sonnet", "provider": "claudeCLI", "modelID": "sonnet", "listed": true, "availability": "unproven", "runtimeVersion": "2.0.10", "observedAt": "2026-10-25T00:00:00Z" },
+    { "routeKey": "codexCLI:gpt-5-codex", "provider": "codexCLI", "modelID": "gpt-5-codex", "listed": true, "availability": "unproven", "runtimeVersion": "0.41.0", "observedAt": "2026-10-25T00:00:00Z" },
+    { "routeKey": "codexCLI:gpt-5.1-codex", "provider": "codexCLI", "modelID": "gpt-5.1-codex", "listed": true, "availability": "unproven", "runtimeVersion": "0.41.0", "observedAt": "2026-10-25T00:00:00Z" },
+    { "routeKey": "opencodeCLI:opencode/big-pickle", "provider": "opencodeCLI", "modelID": "opencode/big-pickle", "listed": true, "availability": "unproven", "priceFingerprint": "in:0/out:0", "publishedFree": true, "observedAt": "2026-10-20T00:00:00Z" }
+  ]
+}
