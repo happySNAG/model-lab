@@ -300,7 +300,10 @@ such as Ordra could use. None of these contacts a model or provider, and none pi
 
 Debugging and instruction-compliance coverage (ccm1, `src/engine/capability-coverage.ts`) is engine
 code only: no command reads it yet. See
-[docs/ordra-lane/capability-coverage.md](docs/ordra-lane/capability-coverage.md). [docs/ordra-lane/block-2-summary.md](docs/ordra-lane/block-2-summary.md) lists the
+[docs/ordra-lane/capability-coverage.md](docs/ordra-lane/capability-coverage.md). Qualification policy
+cqp2 (`src/engine/route-qualification.ts`) is cqp1 plus scored runs from 2 separate sessions or UTC
+days. It is engine code only, used when a caller passes it explicitly; cqp1 stays the default. See
+[docs/ordra-lane/qualification-policy-cqp2.md](docs/ordra-lane/qualification-policy-cqp2.md). [docs/ordra-lane/block-2-summary.md](docs/ordra-lane/block-2-summary.md) lists the
 commits that added all of this.
 
 Catalogue discovery for Claude and Codex (ccd1, `src/engine/catalogue-discovery.ts`) is also engine code only. It

@@ -28,7 +28,14 @@
 // exercising the capability, a success rate at or above R, and no case that never passed. The numbers
 // are in `V1_QUALIFICATION_POLICY`, carried on every record, and a caller may pass a stricter one. A
 // capability with too few runs is `insufficientEvidence` — never `notQualified`, which is a finding.
+//
+// cqp2 IS cqp1 PLUS INDEPENDENCE, AND NEVER THE DEFAULT. `V2_QUALIFICATION_POLICY` keeps every cqp1 number,
+// the 90% threshold included, and adds one requirement: the scored runs behind a capability come from at
+// least 2 separate sessions or 2 separate UTC calendar days. A capability that meets every cqp1
+// requirement from one session on one day is `insufficientEvidence` under cqp2, with that blocker named.
+// cqp2 is chosen only by passing it; an absent policy is cqp1, as it always was.
 
+import * as path from 'node:path';
 import { DevelopmentCandidateReport } from './development-report';
 import { DiscoveryEvidence, isEvidenceExpired } from './discovery-store';
 import { DiscoverySnapshot, QualificationStalenessReason, RouteFreshness, qualificationStaleness, routeFreshness } from './discovery-refresh';
@@ -69,6 +76,12 @@ export interface QualificationPolicy {
   allowCaseNeverPassed: boolean;
   /** How long a qualification stays current before it is re-established. */
   maximumAgeMilliseconds: number;
+  /**
+   * The scored runs behind a capability must come from at least this many separate sessions OR this many
+   * separate UTC calendar days. Absent on cqp1, which asks nothing about independence, so a cqp1 record is
+   * byte-identical to the one it always was.
+   */
+  minimumSeparateSessionsOrUtcDays?: number;
 }
 
 export const V1_QUALIFICATION_POLICY: QualificationPolicy = {
@@ -78,6 +91,63 @@ export const V1_QUALIFICATION_POLICY: QualificationPolicy = {
   allowCaseNeverPassed: false,
   maximumAgeMilliseconds: 30 * 24 * 60 * 60 * 1_000,
 };
+
+/** cqp2 (owner decision D-C5, 2026-10-25): every cqp1 requirement, plus 2 separate sessions or UTC days. */
+export const V2_QUALIFICATION_POLICY: QualificationPolicy = {
+  ...V1_QUALIFICATION_POLICY,
+  policyID: 'cqp2',
+  minimumSeparateSessionsOrUtcDays: 2,
+};
+
+/** The policy used when none is passed. cqp1, and only an explicit argument chooses another. */
+export const DEFAULT_QUALIFICATION_POLICY: QualificationPolicy = V1_QUALIFICATION_POLICY;
+
+export type QualificationPolicyID = 'cqp1' | 'cqp2';
+export const QUALIFICATION_POLICY_IDS: readonly QualificationPolicyID[] = ['cqp1', 'cqp2'];
+
+/** A policy by its id. An id this build does not know is refused, never mapped to a neighbour. */
+export function qualificationPolicy(policyID: string): QualificationPolicy {
+  if (policyID === 'cqp1') return V1_QUALIFICATION_POLICY;
+  if (policyID === 'cqp2') return V2_QUALIFICATION_POLICY;
+  throw new Error(`unknown qualification policy '${policyID}'; this build knows ${QUALIFICATION_POLICY_IDS.join(', ')}`);
+}
+
+/**
+ * Where a capability's scored runs came from, for the independence requirement.
+ *
+ * A SESSION is the row's own `sessionID` when it carries one, and otherwise the evidence root the record
+ * was sealed into (the directory holding the record) — two roots are two sessions, and two matrices
+ * written into one root count as one, which can only under-count. A DAY is the UTC calendar date of the
+ * row's `recordedAt`; a row whose `recordedAt` is not a time contributes no day.
+ */
+export interface RunIndependence {
+  sessions: string[];
+  utcDays: string[];
+}
+
+export function runIndependence(runs: WorkspaceRunRow[]): RunIndependence {
+  const sessions = new Set<string>();
+  const utcDays = new Set<string>();
+  for (const { recordRoot, row } of runs) {
+    sessions.add(typeof row.sessionID === 'string' && row.sessionID !== '' ? `session:${row.sessionID}` : `root:${path.dirname(recordRoot)}`);
+    const at = typeof row.recordedAt === 'string' ? Date.parse(row.recordedAt) : Number.NaN;
+    if (Number.isFinite(at)) utcDays.add(new Date(at).toISOString().slice(0, 10));
+  }
+  return { sessions: [...sessions].sort(), utcDays: [...utcDays].sort() };
+}
+
+/** Undefined when the policy's independence requirement is met or absent; otherwise the blocker, in words. */
+export function independenceShortfall(policy: QualificationPolicy, independence: RunIndependence | undefined): string | undefined {
+  const required = policy.minimumSeparateSessionsOrUtcDays;
+  if (required === undefined) return undefined;
+  if (independence === undefined) {
+    return `${policy.policyID} asks for scored runs from at least ${required} separate sessions or UTC calendar days, `
+      + 'and this evidence does not say which session or day its runs came from';
+  }
+  if (independence.sessions.length >= required || independence.utcDays.length >= required) return undefined;
+  return `${policy.policyID} asks for scored runs from at least ${required} separate sessions or UTC calendar days; `
+    + `these came from ${independence.sessions.length} session(s) on ${independence.utcDays.length} UTC day(s)`;
+}
 
 export type CapabilityVerdict = 'qualified' | 'notQualified' | 'insufficientEvidence' | 'notExercised';
 
@@ -185,7 +255,17 @@ function latest(rows: Record<string, unknown>[]): Record<string, unknown> | unde
   return [...rows].sort((a, b) => String(a.recordedAt ?? '').localeCompare(String(b.recordedAt ?? ''))).pop();
 }
 
-function verdictFor(policy: QualificationPolicy, scored: number, successes: number, casesNeverPassed: number, exercised: boolean):
+/** cqp1's verdict, then — only for a capability cqp1 qualifies — the policy's independence requirement. */
+function verdictFor(policy: QualificationPolicy, scored: number, successes: number, casesNeverPassed: number, exercised: boolean,
+                    independence: RunIndependence | undefined): { verdict: CapabilityVerdict; reason: string; shortfall?: string } {
+  const decided = cqp1VerdictFor(policy, scored, successes, casesNeverPassed, exercised);
+  if (decided.verdict !== 'qualified') return decided;
+  const shortfall = independenceShortfall(policy, independence);
+  return shortfall === undefined ? decided
+    : { verdict: 'insufficientEvidence', reason: `${decided.reason}, but ${shortfall}. This is an absence of evidence, not a failure.`, shortfall };
+}
+
+function cqp1VerdictFor(policy: QualificationPolicy, scored: number, successes: number, casesNeverPassed: number, exercised: boolean):
   { verdict: CapabilityVerdict; reason: string } {
   if (!exercised) return { verdict: 'notExercised', reason: 'the runs behind this capability never exercised it' };
   if (scored < policy.minimumScoredRuns) {
@@ -261,12 +341,31 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
 
   // ---- capabilities --------------------------------------------------------------------------------
   const capabilities: CapabilityQualification[] = [];
+  // THE SCORED RUNS OF THE GIVEN CASES, for the independence requirement. Read only when a policy asks.
+  const scoredRuns = runs.filter(({ row }) => !STATUSES_THAT_MEASURED_NO_WORK.includes(String(row.status)));
+  const independenceOfCases = (caseIDs: string[]): RunIndependence | undefined =>
+    (policy.minimumSeparateSessionsOrUtcDays === undefined ? undefined
+      : runIndependence(scoredRuns.filter(({ row }) => caseIDs.includes(String(row.caseID)))));
+  // A development or prose verdict arrives decided, with no session or day per run. Under a policy that
+  // asks for independence, a qualified role whose report cannot show it is held back, with the reason.
+  const reportVerdict = (qualified: boolean, reason: string): { verdict: CapabilityVerdict; reason: string; shortfall?: string } => {
+    if (!qualified) return { verdict: 'notQualified', reason };
+    const shortfall = independenceShortfall(policy, undefined);
+    return shortfall === undefined ? { verdict: 'qualified', reason }
+      : { verdict: 'insufficientEvidence', reason: `${reason}, but ${shortfall}`, shortfall };
+  };
+  // Capabilities that met every cqp1 requirement and were held back ONLY by the independence requirement.
+  const heldBack: { capability: string; shortfall: string }[] = [];
+  const holdBack = (capability: string, decided: { shortfall?: string }): void => {
+    if (decided.shortfall !== undefined) heldBack.push({ capability, shortfall: decided.shortfall });
+  };
   if (runs.length > 0 && inputs.workspaceCases !== undefined) {
     const cells = aggregateWorkspaceRuns(runs);
     for (const entry of workspaceCapabilityEvidence(cells, inputs.workspaceCases, inputs.difficultyProfiles ?? [])) {
       const decided = verdictFor(policy, entry.exercise.requiresRetry ? entry.exercise.exercisedRunCount : entry.scoredRunCount,
         entry.exercise.requiresRetry ? (entry.exercise.recovery?.recoveredCount ?? 0) : entry.successCount,
-        entry.casesNeverPassed, entry.exercise.measured);
+        entry.casesNeverPassed, entry.exercise.measured, independenceOfCases(entry.caseIDs));
+      holdBack(`workspace:${entry.dimension}`, decided);
       capabilities.push({
         capability: `workspace:${entry.dimension}`, source: 'workspace', verdict: decided.verdict,
         scoredRunCount: entry.scoredRunCount, successCount: entry.successCount, successRateMilli: entry.successRateMilli,
@@ -274,7 +373,9 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
       });
     }
     for (const tier of workspaceTierEvidence(cells, inputs.difficultyProfiles ?? [])) {
-      const decided = verdictFor(policy, tier.scoredRunCount, tier.successCount, tier.casesNeverPassed, tier.scoredRunCount > 0);
+      const decided = verdictFor(policy, tier.scoredRunCount, tier.successCount, tier.casesNeverPassed, tier.scoredRunCount > 0,
+        independenceOfCases(tier.perCase.map((entry) => entry.caseID)));
+      holdBack(`workspace-tier:${tier.tier}`, decided);
       capabilities.push({
         capability: `workspace-tier:${tier.tier}`, source: 'workspace', verdict: decided.verdict,
         scoredRunCount: tier.scoredRunCount, successCount: tier.successCount, successRateMilli: tier.successRateMilli,
@@ -286,12 +387,14 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
     && report.modelID === inputs.modelID && (inputs.effort === undefined || report.effort === inputs.effort));
   for (const report of developmentReports) {
     for (const role of report.roles) {
+      const decided = reportVerdict(role.qualified, role.reason);
+      holdBack(`development:${role.role}`, decided);
       capabilities.push({
-        capability: `development:${role.role}`, source: 'development', verdict: role.qualified ? 'qualified' : 'notQualified',
+        capability: `development:${role.role}`, source: 'development', verdict: decided.verdict,
         scoredRunCount: report.terminalAttempts, successCount: report.statusCounts.pass,
         successRateMilli: report.terminalAttempts === 0 ? unavailableQuantity('no terminal attempts')
           : measuredQuantity(Math.round((report.statusCounts.pass * 1000) / report.terminalAttempts)),
-        evidenceRefs: [report.candidate], reason: role.reason,
+        evidenceRefs: [report.candidate], reason: decided.reason,
       });
     }
   }
@@ -300,11 +403,13 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
   const proseRankings = inputs.proseRankings ?? [];
   for (const ranking of proseRankings) {
     for (const role of ranking.roles) {
+      const decided = reportVerdict(role.qualified, role.reason);
+      holdBack(`prose:${role.role}`, decided);
       capabilities.push({
-        capability: `prose:${role.role}`, source: 'prose', verdict: role.qualified ? 'qualified' : 'notQualified',
+        capability: `prose:${role.role}`, source: 'prose', verdict: decided.verdict,
         scoredRunCount: ranking.scoredCount, successCount: 0,
         successRateMilli: 'measured' in ranking.overallPassRateMilli ? measuredQuantity(ranking.overallPassRateMilli.measured)
-          : unavailableQuantity(ranking.overallPassRateMilli.unavailableReason), evidenceRefs: [ranking.candidate], reason: role.reason,
+          : unavailableQuantity(ranking.overallPassRateMilli.unavailableReason), evidenceRefs: [ranking.candidate], reason: decided.reason,
       });
     }
   }
@@ -358,9 +463,13 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
 
   const qualifiedCapabilities = capabilities.filter((entry) => entry.verdict === 'qualified').map((entry) => entry.capability);
   if (qualifiedCapabilities.length === 0) {
+    // NAMED, NOT FOLDED IN: a route cqp1 would qualify and cqp2 does not says which requirement held it back.
     block('qualification', rows.length === 0 && developmentReports.length === 0 && proseRankings.length === 0
       ? 'no benchmark evidence exists for this route — it EXISTS and is not QUALIFIED'
-      : 'no capability reached the policy on the evidence that exists');
+      : heldBack.length > 0
+        ? `no capability reached ${policy.policyID}: ${heldBack.map((entry) => entry.capability).join(', ')} met every `
+          + `${V1_QUALIFICATION_POLICY.policyID} requirement, but ${heldBack[0].shortfall}`
+        : 'no capability reached the policy on the evidence that exists');
   }
   const notRoutableBecause = blockers.map((entry) => `${entry.kind}: ${entry.reason}`);
   const safeToRoute = blockers.length === 0 && qualifiedCapabilities.length > 0;
