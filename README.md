@@ -307,6 +307,12 @@ records the Codex catalogue as listed and unproven, records that the Claude CLI 
 Anthropic API listing only behind an already-configured credential. See
 [docs/ordra-lane/catalogue-discovery.md](docs/ordra-lane/catalogue-discovery.md).
 
+The discovery cadence (cds2, `generateDiscoveryCadence` in `src/engine/discovery-schedule.ts`) is engine code only:
+`cernum discovery-schedule` still prints cds1. It generates, and never installs, two launchd jobs: a light provider
+listing every 6 hours and a nightly full reconciliation in the quiet-hours window, with the 6 GiB floor, a
+memory-pressure guard and a capped exponential rate-limit backoff. See
+[docs/ordra-lane/discovery-cadence.md](docs/ordra-lane/discovery-cadence.md).
+
 ## Where your data lives
 
 | | macOS | Windows |

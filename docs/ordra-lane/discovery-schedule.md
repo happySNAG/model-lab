@@ -13,6 +13,10 @@ never writes under `~/Library/LaunchAgents` (or `/Library/LaunchAgents`, `/Libra
 `/System/Library/LaunchAgents`, `/System/Library/LaunchDaemons`), and says so in its output and in
 both files. Installing the schedule is a separate human act.
 
+This page describes schema cds1. Schema cds2, a cadence of two jobs (a light listing every 6 hours and
+a nightly full reconciliation, with a rate-limit backoff), is described in
+[discovery-cadence.md](discovery-cadence.md). cds1's output is unchanged by it.
+
 ## Usage
 
 ```
