@@ -69,11 +69,15 @@ export type ObservationKind =
   /** A reading of the account's own billing for one route. Never a price list. */
   | 'billingObservation'
   /** That a qualification stopped describing the route that exists, and why. */
-  | 'qualificationStaleness';
+  | 'qualificationStaleness'
+  /** What one Ordra attempt on a route did, ingested from exported route telemetry (cro1). Never a verdict. */
+  | 'routeOutcome'
+  /** A route-telemetry line that could not be ingested, kept with its text and reason (cro1). */
+  | 'routeOutcomeQuarantine';
 
 export const OBSERVATION_KINDS: ObservationKind[] = [
   'machine', 'discoverySnapshot', 'discoveryDelta', 'providerAvailability', 'routeAvailability',
-  'localModelAvailability', 'billingObservation', 'qualificationStaleness',
+  'localModelAvailability', 'billingObservation', 'qualificationStaleness', 'routeOutcome', 'routeOutcomeQuarantine',
 ];
 
 /**

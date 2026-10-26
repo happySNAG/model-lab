@@ -110,6 +110,8 @@ import {
   deriveFallbackChain, throttleEvidenceFromRecords,
   // An advisory per-task ranking of the qualified routes, by rule crr1. Never a selection.
   availabilityFromStore, recommendRoutes,
+  // Ordra route telemetry ingested as sealed outcomes (cro1): rollup input only, never a verdict.
+  RouteOutcomeIngestError, ingestRouteOutcomeFile, routeOutcomeRunRows,
   // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
   availabilityLimitInEffect, availabilityLimitsFrom, describeAvailabilityLimit, describeLimitEvidence, limitObservationsFromSessionStatus, limitObservationsFromThrottleSignal,
   recordLimitEvidence,
@@ -3505,7 +3507,10 @@ async function commandCandidates(positional: string[], options: Options): Promis
   if (options.fallback === true) {
     const fallback = deriveFallbackChain(set, {
       now,
-      metrics: deriveMetricsRollup({ workspaceRows, workspaceCases: cases, difficultyProfiles: profiles }),
+      // Ingested Ordra outcomes (cro1) join the ROLLUP here and nowhere else: the records above were derived
+      // from the sealed runs alone, so an outcome can move an order but never a verdict.
+      metrics: deriveMetricsRollup({ workspaceRows: [...workspaceRows, ...routeOutcomeRunRows(contents)],
+        workspaceCases: cases, difficultyProfiles: profiles }),
       throttles: throttleEvidenceFromRecords(derived.map((entry) => entry.record)),
     });
     if (options.json === true) {
@@ -3624,7 +3629,8 @@ async function commandRecommend(positional: string[], options: Options): Promise
     now,
     routes: records.map((record) => ({ record,
       availability: availabilityFromStore(contents, record.routeKey, machine, now) })),
-    metrics: deriveMetricsRollup({ workspaceRows, workspaceCases: cases, difficultyProfiles: profiles }),
+    metrics: deriveMetricsRollup({ workspaceRows: [...workspaceRows, ...routeOutcomeRunRows(contents)],
+      workspaceCases: cases, difficultyProfiles: profiles }),
     throttles: throttleEvidenceFromRecords(records),
     routingPolicyVersion: policyAsked,
   });
@@ -3798,7 +3804,8 @@ async function commandHistory(positional: string[], options: Options): Promise<v
  */
 function commandHistoryMetrics(routeKey: string, root: string, options: Options): void {
   const rollup = deriveMetricsRollup({
-    workspaceRows: workspaceRowsFromEvidenceRoots('history', root, options), routeKey,
+    workspaceRows: [...workspaceRowsFromEvidenceRoots('history', root, options), ...routeOutcomeRunRows(readObservationStore(root))],
+    routeKey,
     workspaceCases: allWorkspaceCases(), difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
   });
   const route = rollup.routes[0];
@@ -3815,7 +3822,7 @@ function commandHistoryMetrics(routeKey: string, root: string, options: Options)
   const dollars = (quantity: { value?: number; provenance: string }): string =>
     (quantity.provenance === 'unavailable' || quantity.value === undefined ? 'unknown'
       : `$${(quantity.value / 1_000_000).toFixed(6)} (${quantity.provenance})`);
-  say(`Metrics of ${route.routeKey} · effort ${rollup.effort} · from sealed runs only`);
+  say(`Metrics of ${route.routeKey} · effort ${rollup.effort} · from sealed runs and ingested Ordra outcomes`);
   for (const entry of [route.route, ...route.capabilities]) {
     say('');
     say(`  ${entry.capability}`);
@@ -4161,6 +4168,48 @@ function smokeResultsFromOptions(command: string, options: Options): Qualificati
     }
   }
   return list as QualificationSmokeResult[];
+}
+
+/**
+ * `ingest-outcomes <file>`: an exported Ordra route-telemetry file, appended to the observation store as sealed
+ * outcomes (cro1). Idempotent; a malformed or duplicate line is quarantined with its reason, never dropped. The
+ * outcomes feed the metrics rollup and no qualification verdict. Reads one local file and contacts nothing.
+ */
+async function commandIngestOutcomes(positional: string[], options: Options): Promise<void> {
+  if (positional.length !== 1) {
+    fail(`ingest-outcomes: name exactly one exported route-telemetry file. ${TERMINAL_COMMAND} ingest-outcomes outcomes.jsonl --json. `
+      + 'Nothing was ingested.', 2);
+  }
+  const root = String(options.root ?? defaultCampaignRoot());
+  const here = thisMachine();
+  const machine = machineFromOptions(options);
+  let result;
+  try {
+    result = ingestRouteOutcomeFile(root, positional[0]!, {
+      machineKey: machine, machineLabel: machine === here.key ? here.fingerprint.hostname : machine, now: new Date(),
+    });
+  } catch (error) {
+    if (error instanceof RouteOutcomeIngestError) fail(`ingest-outcomes: ${error.message}`, 2);
+    throw error;
+  }
+  if (options.json === true) { say(JSON.stringify({ file: positional[0], ...result }, null, 2)); return; }
+
+  say(`Outcome ingest ${result.schema} · ${positional[0]} · sha256 ${result.sourceDigest.slice(0, 16)}… · machine ${machine}`);
+  say(`  lines          ${result.lineCount} (${result.blankLines} blank)`);
+  say(`  ingested       ${result.ingested.length}`);
+  say(`  already held   ${result.alreadyPresent.length} (nothing written)`);
+  say(`  substitutions  ${result.substitutions.length}`);
+  for (const entry of result.substitutions) {
+    say(`    line ${entry.line}: ${entry.pass} attempt ${entry.attempt} requested ${entry.requestedModel}, reported ${entry.actualModel}`);
+  }
+  say(`  quarantined    ${result.quarantined.length}`);
+  for (const entry of result.quarantined) {
+    const [first, ...rest] = wrap(`line ${entry.line} (${entry.reasonCode}${entry.written ? '' : ', already quarantined'}): ${entry.reason}`, 70);
+    say(`    ${first}`);
+    for (const line of rest) say(`      ${line}`);
+  }
+  say('');
+  for (const line of wrap(result.disclosure, 76)) say(line);
 }
 
 /**
@@ -5167,6 +5216,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'discovery-delta': return commandDiscoveryDelta(positional, options);
     case 'release-report': return commandReleaseReport(positional, options);
     case 'plan-qualification': return commandPlanQualification(positional, options);
+    case 'ingest-outcomes': return commandIngestOutcomes(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();

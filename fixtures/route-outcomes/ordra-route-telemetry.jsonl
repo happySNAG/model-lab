@@ -1,0 +1,10 @@
+{"pass":"P-9001","attempt":1,"provider":"claudeCLI","requestedModel":"claude-haiku-4-5","actualModel":"claude-haiku-4-5","verification":"passed","tokens":1200,"durationMilliseconds":42000,"recordedAt":"2026-10-20T10:00:00Z"}
+{"pass":"P-9001","attempt":2,"provider":"claudeCLI","requestedModel":"claude-sonnet-5","actualModel":"claude-haiku-4-5","verification":"failed","tokens":900,"durationMilliseconds":30000,"recordedAt":"2026-10-20T11:00:00Z"}
+{"pass":"P-9002","attempt":1,"provider":"codexCLI","requestedModel":"gpt-5-codex","actualModel":null,"verification":"passed","tokens":null,"durationMilliseconds":61000,"recordedAt":"2026-10-21T09:00:00Z"}
+{"pass":"P-9002","attempt":2,"provider":"codexCLI",
+{"pass":"P-9001","attempt":1,"provider":"claudeCLI","requestedModel":"claude-haiku-4-5","actualModel":"claude-haiku-4-5","verification":"passed","tokens":1200,"durationMilliseconds":42000,"recordedAt":"2026-10-20T10:00:00Z"}
+
+{"pass":"P-9001","attempt":2,"provider":"claudeCLI","requestedModel":"claude-sonnet-5","actualModel":"claude-sonnet-5","verification":"passed","tokens":900,"durationMilliseconds":30000,"recordedAt":"2026-10-20T11:00:00Z"}
+{"pass":"P-9003","attempt":1,"requestedModel":"claude-haiku-4-5","actualModel":"claude-haiku-4-5","verification":"passed","recordedAt":"2026-10-22T09:00:00Z"}
+{"pass":"P-9003","attempt":2,"provider":"claudeCLI","requestedModel":"claude-haiku-4-5","actualModel":"claude-haiku-4-5","verification":"failed","tokens":2400,"durationMilliseconds":90000,"recordedAt":"2026-10-22T10:00:00Z"}
+{"pass":"P-9003","attempt":3,"provider":"claudeCLI","requestedModel":"claude-haiku-4-5","actualModel":"claude-haiku-4-5","verification":"notRun","tokens":300,"durationMilliseconds":5000,"recordedAt":"2026-10-22T11:00:00Z"}
