@@ -138,6 +138,7 @@ export * from './percentile';
 export * from './metrics-rollup';
 export * from './task-taxonomy';
 export * from './fallback-chain';
+export * from './route-recommendation';
 export * from './limit-evidence';
 export * from './regression-detector';
 export * from './status-export';

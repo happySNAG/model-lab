@@ -108,6 +108,8 @@ import {
   TASK_TAXONOMY_VERSION, TaskQueryAnswer, routeQueryForTask,
   // The candidate set in advisory fallback order, by rule cfc1. Never a selection.
   deriveFallbackChain, throttleEvidenceFromRecords,
+  // An advisory per-task ranking of the qualified routes, by rule crr1. Never a selection.
+  availabilityFromStore, recommendRoutes,
   // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
   availabilityLimitInEffect, availabilityLimitsFrom, describeAvailabilityLimit, describeLimitEvidence, limitObservationsFromSessionStatus, limitObservationsFromThrottleSignal,
   recordLimitEvidence,
@@ -3575,6 +3577,90 @@ async function commandCandidates(positional: string[], options: Options): Promis
 }
 
 /**
+ * `recommend <task-type> [--tier <n>] [--context <tokens>]`: the advisory per-task ranking crr1. READ-ONLY:
+ * the records are derived from the store and the sealed runs exactly as `candidates` derives them, nothing
+ * is written, nothing is selected and nothing is launched. A refusal from task taxonomy ctt1 exits 2.
+ */
+async function commandRecommend(positional: string[], options: Options): Promise<void> {
+  if (positional.length !== 1) {
+    fail(`recommend: name exactly one task type. ${TERMINAL_COMMAND} recommend implement --tier 2 --context 32000. Nothing was read.`, 2);
+  }
+  for (const name of ['tier', 'context']) {
+    if (options[name] === true) fail(`recommend: --${name} needs a value; nothing is defaulted. Nothing was read.`, 2);
+  }
+  const policyAsked = options.policy === undefined ? CURRENT_ROUTING_POLICY_VERSION : String(options.policy);
+  if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
+    fail(`recommend: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
+  }
+  const machine = machineFromOptions(options);
+  const request = { machineKey: machine, taskType: positional[0]!,
+    ...(options.tier === undefined ? {} : { tier: String(options.tier) }),
+    ...(options.context === undefined ? {} : { contextTokens: String(options.context) }) };
+  // ctt1 is asked once BEFORE anything is read, so a refused task reads no evidence.
+  const refused = recommendRoutes(request, { now: new Date(), routes: [] });
+  if (!refused.ok) fail(`recommend: refused by task taxonomy ${refused.taxonomyVersion}: ${refused.refusals.join('; ')}. Nothing was read.`, 2);
+
+  const root = String(options.root ?? defaultCampaignRoot());
+  const contents = readObservationStore(root);
+  const now = new Date();
+  const snapshot = latestDiscoverySnapshot(contents, machine);
+  const availability = observationsForRouting(contents);
+  const workspaceRows = workspaceRowsFromEvidenceRoots('recommend', root, options);
+  const cases = allWorkspaceCases();
+  const profiles = registeredWorkspaceDifficultyProfiles();
+  const routeKeys = [...new Set(availability.filter((entry) => entry.machineKey === machine).map((entry) => entry.routeKey))].sort();
+  const records = routeKeys.map((routeKey) => {
+    const [provider, ...rest] = routeKey.split(':');
+    const modelID = rest.join(':');
+    return deriveRouteQualification({
+      provider: provider as ProviderID, modelID, machineKey: machine,
+      ...(snapshot === undefined ? {} : { snapshot }), availability,
+      workspaceRows, workspaceCases: cases, difficultyProfiles: profiles,
+      spend: routeSpendPosture({ provider: provider as ProviderID, modelID, now }),
+      routingPolicyVersion: policyAsked, now,
+    });
+  });
+  const answer = recommendRoutes(request, {
+    now,
+    routes: records.map((record) => ({ record,
+      availability: availabilityFromStore(contents, record.routeKey, machine, now) })),
+    metrics: deriveMetricsRollup({ workspaceRows, workspaceCases: cases, difficultyProfiles: profiles }),
+    throttles: throttleEvidenceFromRecords(records),
+    routingPolicyVersion: policyAsked,
+  });
+  if (!answer.ok) fail(`recommend: refused by task taxonomy ${answer.taxonomyVersion}: ${answer.refusals.join('; ')}.`, 2);
+  if (options.json === true) {
+    say(JSON.stringify(answer, null, 2));
+    return;
+  }
+  say(`Recommendation ${answer.schema} · task taxonomy ${answer.taxonomyVersion} · routing contract ${answer.contract} · `
+    + `routing policy ${answer.routingPolicyVersion} · machine ${machine}`);
+  say(`Task: ${answer.task.taskType} → ${answer.query.capability}${answer.task.tier === undefined ? '' : ` at ${answer.task.tier}`}`
+    + `${answer.task.contextTokens === undefined ? '' : ` · at least ${answer.task.contextTokens} context tokens`}`);
+  say('');
+  if (answer.ranking.length === 0) say('No route qualifies for this task, so nothing is ranked.');
+  for (const entry of answer.ranking) {
+    say(`  ${String(entry.rank).padStart(2)}. ${entry.routeKey}  [${entry.rankedBy.group}]`);
+    for (const reason of entry.reasons) for (const line of wrap(reason, 70)) say(`      ${line}`);
+  }
+  if (answer.excluded.length > 0) {
+    say('');
+    say(`${answer.excluded.length} route(s) excluded, each with every reason:`);
+    for (const entry of answer.excluded) {
+      say(`  ${entry.routeKey}`);
+      for (const reason of entry.reasons) for (const line of wrap(reason, 70)) say(`    ${line}`);
+    }
+  }
+  say('');
+  say(`Fallback order (${answer.fallback.schema}): ${answer.fallback.chain.length === 0 ? 'none' : answer.fallback.chain.join(' → ')}`);
+  say('');
+  for (const reason of answer.reasons) for (const line of wrap(`- ${reason}`, 76)) say(line);
+  say('');
+  for (const line of wrap(answer.orderingRule, 76)) say(line);
+  for (const line of wrap(answer.disclosure, 76)) say(line);
+}
+
+/**
  * The routing decision log, oldest first. READ-ONLY: every record is verified, by digest, by name and
  * by its link to the answer before it, and a record that fails is listed and never shown as an answer.
  */
@@ -5073,6 +5159,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'discovery-run': return commandDiscoveryRun(positional, options);
     case 'discovery-schedule': return commandDiscoverySchedule(positional, options);
     case 'candidates': return commandCandidates(positional, options);
+    case 'recommend': return commandRecommend(positional, options);
     case 'history': return commandHistory(positional, options);
     case 'decision-log': return commandDecisionLog(positional, options);
     case 'regressions': return commandRegressions(positional, options);

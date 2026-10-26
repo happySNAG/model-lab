@@ -427,7 +427,7 @@ describe('the text benchmark path is unchanged', () => {
     // their own suites. The point of this test is that an addition must be DECLARED to be allowed,
     // whichever line it came from; it is not that there are only two lines.
     const FLEET = ['observations', 'observations-export', 'observations-import', 'availability',
-      'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates', 'history', 'decision-log', 'regressions',
+      'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates', 'recommend', 'history', 'decision-log', 'regressions',
       'status-export', 'discovery-delta', 'release-report', 'plan-qualification'];
     const isAddition = (name: string) => name.startsWith('develop') || name.startsWith('workspace')
       || FLEET.includes(name);
@@ -439,7 +439,9 @@ describe('the text benchmark path is unchanged', () => {
       ['availability', 'readOnly'], ['discovery-refresh', 'invokesLocalTool'], ['discovery-run', 'invokesLocalTool'],
       // `candidates` writes the routing decision log under --log, so it is declared by its most
       // consequential effect; without --log it still writes nothing (routing-decision-log.test.ts).
-      ['discovery-schedule', 'writesLocal'], ['candidates', 'writesLocal'], ['history', 'readOnly'], ['decision-log', 'readOnly'],
+      ['discovery-schedule', 'writesLocal'], ['candidates', 'writesLocal'],
+      // `recommend` ranks and writes nothing, ever (recommend-crr1.test.ts).
+      ['recommend', 'readOnly'], ['history', 'readOnly'], ['decision-log', 'readOnly'],
       ['regressions', 'readOnly'], ['status-export', 'readOnly'], ['discovery-delta', 'readOnly'],
       // `release-report` appends to the release ledger under --record, declared like `candidates`;
       // without --record it writes nothing (release-report.test.ts).
