@@ -295,7 +295,7 @@ such as Ordra could use. None of these contacts a model or provider, and none pi
 | `cernum regressions [<route>] [--json]` | Each route's latest qualification evidence against its own history under thresholds crt1, beside stale qualifications. Detection only; writes nothing. See [docs/ordra-lane/regression-detector.md](docs/ordra-lane/regression-detector.md). |
 | `cernum status-export [--json] [--context <tokens>]` | One read-only document, schema cse1 version 1, for Ordra Office. See [docs/ordra-lane/status-export.md](docs/ordra-lane/status-export.md). |
 | `cernum discovery-delta [--json] [--before <file> --after <file>]` | Which models are new, changed or disappeared between two discovery snapshots (cdd1), by canonical id, with each changed field. Writes nothing. See [docs/ordra-lane/model-lifecycle.md](docs/ordra-lane/model-lifecycle.md). |
-| `cernum release-report [--json] [--record]` | The models the newest snapshot lists that no earlier report recorded (crl1); `--record` appends them to a sealed, append-only ledger so each is reported once. Writes nothing without `--record`. |
+| `cernum release-report [--json] [--record]` | The models the newest snapshot lists that no earlier report recorded (crl1); `--record` appends them to a sealed, append-only ledger so each is reported once. Writes nothing without `--record`. See [docs/ordra-lane/model-lifecycle.md](docs/ordra-lane/model-lifecycle.md). |
 
 Debugging and instruction-compliance coverage (ccm1, `src/engine/capability-coverage.ts`) is engine
 code only: no command reads it yet. See
