@@ -121,6 +121,9 @@ import {
   // Recurring discovery, generated and never installed.
   DISCOVERY_SCHEDULE_NOT_INSTALLED, DiscoveryScheduleError, discoveryRunDirectory, generateDiscoverySchedule,
   writeDiscoverySchedule,
+  // Bounded qualification requests, smoke then discriminator, charged against an explicit budget (cqn1). Never run.
+  QualificationPlanError, QualificationSmokeResult, deriveQualificationPlan, describeQualificationPlan,
+  qualificationRequestDirectory, readRequestBudgetLedger, stateRequestBudget, writeQualificationPlan,
 } from '../engine/index';
 import { CAMPAIGN_DIRECTORY_NAME, PRODUCT, TERMINAL_COMMAND, environmentOverride } from '../shared/product';
 import { displaySuiteTitle } from '../shared/ipc';
@@ -4049,6 +4052,139 @@ async function commandReleaseReport(positional: string[], options: Options): Pro
   }
 }
 
+/** Recorded identity smoke results from `--smoke-results <file>`: a JSON list, or `{ smokeResults: [...] }`. */
+function smokeResultsFromOptions(command: string, options: Options): QualificationSmokeResult[] {
+  if (options['smoke-results'] === undefined) return [];
+  const file = String(options['smoke-results']);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+  } catch (error) {
+    fail(`${command}: --smoke-results ${file} could not be read as JSON: ${error instanceof Error ? error.message : String(error)}. Nothing was read.`, 2);
+  }
+  const list = Array.isArray(parsed) ? parsed
+    : parsed !== null && typeof parsed === 'object' && Array.isArray((parsed as { smokeResults?: unknown }).smokeResults)
+      ? (parsed as { smokeResults: unknown[] }).smokeResults : undefined;
+  if (list === undefined) fail(`${command}: --smoke-results ${file} holds no list of smoke results. Nothing was read.`, 2);
+  for (const entry of list) {
+    const result = entry as Partial<QualificationSmokeResult>;
+    if (typeof result?.routeKey !== 'string' || !['passed', 'failed', 'refused'].includes(String(result.outcome))
+        || typeof result.observedAt !== 'string' || Number.isNaN(Date.parse(result.observedAt)) || typeof result.source !== 'string') {
+      fail(`${command}: --smoke-results ${file}: every result needs a routeKey, an outcome of passed, failed or refused, an `
+        + 'observedAt instant and a source. Nothing was read.', 2);
+    }
+  }
+  return list as QualificationSmokeResult[];
+}
+
+/**
+ * Which routes are due a qualification request, smoke first and then the discriminator matrix, each charged
+ * against the explicit request budget (cqn1). Writes request files and ledger charges only under `--write`.
+ * NEVER RUNS ANYTHING: no model, provider or network is contacted, and no runner is started.
+ */
+async function commandPlanQualification(positional: string[], options: Options): Promise<void> {
+  if (positional.length > 0) fail('plan-qualification: takes no positional argument. Nothing was read.', 2);
+  const root = String(options.root ?? defaultCampaignRoot());
+  const policyAsked = options.policy === undefined ? CURRENT_ROUTING_POLICY_VERSION : String(options.policy);
+  if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
+    fail(`plan-qualification: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
+  }
+  let budgetAsked: number | undefined;
+  if (options.budget !== undefined) {
+    const asked = String(options.budget).trim();
+    budgetAsked = /^[0-9]+$/.test(asked) ? Number(asked) : Number.NaN;
+    if (!Number.isSafeInteger(budgetAsked)) {
+      fail(`plan-qualification: --budget must be a whole number of runs, not '${String(options.budget)}'. Nothing was read.`, 2);
+    }
+  }
+  const aliases = aliasesFromOptions('plan-qualification', options);
+  const smokeResults = smokeResultsFromOptions('plan-qualification', options);
+  const machine = machineFromOptions(options);
+  const found = discoverySnapshotsOn(root, machine);
+  const snapshot = found.snapshots[found.snapshots.length - 1];
+  if (snapshot === undefined) {
+    fail(`plan-qualification: no discovery snapshot was recorded on ${machine}. Run \`${TERMINAL_COMMAND} discovery-refresh\` first. `
+      + 'Nothing was read.', 2);
+  }
+  const before = found.snapshots.length > 1 ? found.snapshots[found.snapshots.length - 2] : undefined;
+  let delta;
+  try {
+    delta = deriveDiscoveryDelta(before, snapshot, { aliases });
+  } catch (error) {
+    if (error instanceof DiscoveryDeltaError) fail(`plan-qualification: ${error.message}`, 2);
+    throw error;
+  }
+  const releaseReport = deriveReleaseReport({ snapshot, ledger: readReleaseLedger(root), aliases });
+
+  // EVERY LISTED ROUTE'S HISTORY, re-derived, so an expiring qualification is seen whether or not it changed.
+  const contents = readObservationStore(root);
+  const workspaceRows = workspaceRowsFromEvidenceRoots('plan-qualification', root, options);
+  const histories = [];
+  for (const routeKey of [...new Set(snapshot.routes.filter((route) => route.listed).map((route) => route.routeKey))].sort()) {
+    const { provider, modelID } = parseRouteKey(routeKey);
+    try {
+      histories.push(deriveQualificationHistory({
+        routeKey, machineKey: machine, contents, workspaceRows,
+        workspaceCases: allWorkspaceCases(), difficultyProfiles: registeredWorkspaceDifficultyProfiles(),
+        spendAt: (at) => routeSpendPosture({ provider, modelID, now: at }),
+        routingPolicyVersion: policyAsked,
+      }));
+    } catch (error) {
+      if (!(error instanceof QualificationHistoryError)) throw error;
+    }
+  }
+
+  let ledger = readRequestBudgetLedger(root);
+  if (ledger.corrupt.length > 0) {
+    for (const entry of ledger.corrupt) say(`  line ${entry.line}: ${entry.reason}`);
+    fail(`plan-qualification: ${ledger.corrupt.length} line(s) of ${ledger.filePath} did not verify. A budget charged against `
+      + 'a ledger nobody can trust could hide spending, so nothing was planned or written.', 4);
+  }
+  if (budgetAsked === undefined && ledger.budget === undefined) {
+    fail(`plan-qualification: ${ledger.filePath} states no budget. Name one with --budget <runs>; nothing is charged against an `
+      + 'unstated budget. Nothing was planned.', 2);
+  }
+  if (budgetAsked !== undefined && budgetAsked !== ledger.budget) {
+    if (options.write === true) {
+      stateRequestBudget(root, { budget: budgetAsked, statedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        statedBy: 'plan-qualification --budget', reason: `budget stated as ${budgetAsked} run(s) on the command line` });
+      ledger = readRequestBudgetLedger(root);
+    } else {
+      ledger = { ...ledger, budget: budgetAsked };
+    }
+  }
+
+  const plan = deriveQualificationPlan({
+    now: new Date(), machineKey: machine, releaseReport, delta, snapshot, histories, ledger, smokeResults,
+  });
+  let written: ReturnType<typeof writeQualificationPlan> | undefined;
+  if (options.write === true) {
+    try {
+      written = writeQualificationPlan(root, plan);
+    } catch (error) {
+      if (error instanceof QualificationPlanError) fail(`plan-qualification: ${error.message}`, 4);
+      throw error;
+    }
+  }
+  if (options.json === true) {
+    say(JSON.stringify({ ...plan, ...(written === undefined ? {} : { written: { files: written.files,
+      chargedRecordIDs: written.charged.map((record) => record.recordID) } }) }, null, 2));
+  } else {
+    sayLines(describeQualificationPlan(plan));
+    say('');
+    if (options.write !== true) say(`Nothing was written. With --write each request is a file under ${qualificationRequestDirectory(root)}.`);
+    else if (written === undefined || written.files.length === 0) say('Nothing to write; the ledger is unchanged.');
+    else say(`Wrote ${written.files.length} request file(s) and charged them on ${ledger.filePath}. Nothing was run.`);
+    for (const line of wrap(plan.disclosure, 76)) say(line);
+  }
+  if (found.corrupt.length > 0) {
+    say('');
+    for (const entry of found.corrupt) say(`  ${entry.filePath}: ${entry.reason}`);
+    fail(`${found.corrupt.length} observation file(s) did not verify and were not read, so the plan may be missing evidence. `
+      + 'Nothing else was changed.', 2);
+  }
+}
+
 // MARK: - The installed command
 
 function renderTerminalCommandStatus(): void {
@@ -4943,6 +5079,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'status-export': return commandStatusExport(positional, options);
     case 'discovery-delta': return commandDiscoveryDelta(positional, options);
     case 'release-report': return commandReleaseReport(positional, options);
+    case 'plan-qualification': return commandPlanQualification(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();

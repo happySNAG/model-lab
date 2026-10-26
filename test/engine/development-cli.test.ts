@@ -428,7 +428,7 @@ describe('the text benchmark path is unchanged', () => {
     // whichever line it came from; it is not that there are only two lines.
     const FLEET = ['observations', 'observations-export', 'observations-import', 'availability',
       'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates', 'history', 'decision-log', 'regressions',
-      'status-export', 'discovery-delta', 'release-report'];
+      'status-export', 'discovery-delta', 'release-report', 'plan-qualification'];
     const isAddition = (name: string) => name.startsWith('develop') || name.startsWith('workspace')
       || FLEET.includes(name);
     expect(current.filter(([name]) => !isAddition(name))).toEqual(PRE_PASS_D_COMMANDS);
@@ -444,6 +444,9 @@ describe('the text benchmark path is unchanged', () => {
       // `release-report` appends to the release ledger under --record, declared like `candidates`;
       // without --record it writes nothing (release-report.test.ts).
       ['release-report', 'writesLocal'],
+      // `plan-qualification` writes request files and budget charges under --write, and runs nothing;
+      // without --write it writes nothing (qualification-planner.test.ts).
+      ['plan-qualification', 'writesLocal'],
     ]);
     expect(current.filter(([name]) => name.startsWith('develop')).map(([name, effect]) => [name, effect])).toEqual([
       ['develop', 'spendsAllowance'], ['develop-resume', 'spendsAllowance'], ['develop-status', 'readOnly'],
