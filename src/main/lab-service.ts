@@ -18,7 +18,7 @@ import { policyCatalog, registeredSuites, suiteByID, caseByID, allGovernedSuites
 import { OllamaLiveAdapter, ThinkingMode, probeCandidate } from '../core/ollama';
 import { LiveExecutionAuthorization, OllamaHTTPTransport } from '../core/ollama-http';
 import { buildProfile, CapabilityProfile } from '../core/profile';
-import { deriveRecommendation, OwnerRecommendationRecord, standardRecommendationPolicy } from '../core/recommendation';
+import { deriveRecommendation, LEGACY_RECOMMENDER_ROUTING, OwnerRecommendationRecord, standardRecommendationPolicy } from '../core/recommendation';
 import { runOverviews } from '../core/history';
 import { compareEvaluations, ComparabilityReason } from '../core/comparability';
 import { isoSeconds, compareCodePoints } from '../core/digest';
@@ -452,12 +452,13 @@ export class LabService extends EventEmitter {
       const record = deriveRecommendation(m.profile, 0, standardRecommendationPolicy, sequence, now);
       const recorded = existing.some((r) => r.outcome === record.outcome && r.totalEvaluationsConsidered === record.totalEvaluationsConsidered
         && JSON.stringify(r.dimensionEvidence) === JSON.stringify(record.dimensionEvidence));
-      return { candidateID: m.candidate.id.raw, modelName: m.modelName, record, recorded, index };
+      return { candidateID: m.candidate.id.raw, modelName: m.modelName, record, recorded, routing: LEGACY_RECOMMENDER_ROUTING, index };
     });
 
     const suiteTitles = session.suiteIDs.map((id) => displaySuiteTitle(suiteByID(id)?.title ?? id));
     return {
       session, models, dimensions, cases, recommendation: recommendation.map(({ index: _i, ...rest }) => rest), recommendationPolicy: standardRecommendationPolicy,
+      recommendationRouting: LEGACY_RECOMMENDER_ROUTING,
       workloadSummary: `${suiteTitles.length} suite${suiteTitles.length === 1 ? '' : 's'} (${suiteTitles.join(', ')}) · ${attempts.length} attempts across ${models.length} model${models.length === 1 ? '' : 's'}`,
       runSummaries,
     };

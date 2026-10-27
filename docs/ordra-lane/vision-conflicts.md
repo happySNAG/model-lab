@@ -30,13 +30,31 @@ adds a new version beside the old one, it does not edit the old one.
 
 - **Vision.** Section 7: preserve the current 90% qualification threshold and cqp1 as the active policy.
 - **Existing behaviour.**
-  - `src/core/recommendation.ts:17` — the legacy prose recommender's `standardRecommendationPolicy`
+  - `src/core/recommendation.ts:25` — the legacy prose recommender's `standardRecommendationPolicy`
     uses `recommendQualityThresholdMilli: 800` (80%).
   - `src/engine/route-qualification.ts:90` — cqp1 (`V1_QUALIFICATION_POLICY`) uses
     `minimumSuccessRateMilli: 900` (90%).
 - **Conflict.** Two thresholds could both be read as "the" bar a model must clear.
 - **Resolution.** B4-2. Owner decision: the legacy recommender is labelled non-routing; cqp1's 90% stays
   the only routing threshold. cqp1 and its 90% are not changed.
+- **Change (B4-2, done).**
+  - `src/core/recommendation.ts:29` — `LEGACY_RECOMMENDER_ROUTING` is the typed label `routing: 'none'`
+    (`LegacyRecommenderRouting`); the module's doc comment says it informs prose campaigns only.
+  - `src/main/lab-service.ts:455` — every legacy recommendation the app presents carries
+    `routing: 'none'`, and `SessionResults.recommendationRouting` is `'none'` (`src/shared/ipc.ts`).
+  - The Results view's recommendation tab says, beside the 80% policy, that it informs prose campaigns
+    only, is not a routing threshold, and that routing uses cqp1 at 90%.
+  - The 80% policy, its four outcomes and the sealed `OwnerRecommendationRecord` bytes are unchanged
+    (the parity corpus digests them), so the label sits beside the record, not inside it.
+  - `src/engine/route-qualification.ts:103` — `DEFAULT_QUALIFICATION_POLICY` stays cqp1 at 900/1000.
+  - `src/core/store.ts:11` — the result store's import of the `OwnerRecommendationRecord` shape is now
+    explicitly `import type` (it was already erased at runtime; behaviour unchanged).
+  - Guard: `test/engine/legacy-recommender-non-routing.test.ts` asserts the label, statically checks that
+    no routing path (routing-contract, fallback-chain, route-recommendation, status-export, the
+    `candidates` and `recommend` commands in `src/cli/cernum.ts`, and everything they load at runtime,
+    dynamic imports included) imports or calls the legacy recommender, that no routing module names it
+    even as a type, that the only type-only references reached are the record shape in
+    `src/shared/ipc.ts` and `src/core/store.ts`, and that cqp1's 90% is the only routing threshold.
 
 ## K3 — launcher integration ownership
 

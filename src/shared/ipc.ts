@@ -4,7 +4,7 @@
 import type { AttemptRecord, RunPlan, RunSummary, EnvironmentRecord, DerivedScoreRecord } from '../core/run';
 import type { EvaluationRecord, CapabilityDimension } from '../core/evaluation';
 import type { CandidateDescriptor, Measurement } from '../core/candidate';
-import type { OwnerRecommendationRecord, RecommendationPolicy } from '../core/recommendation';
+import type { LegacyRecommenderRouting, OwnerRecommendationRecord, RecommendationPolicy } from '../core/recommendation';
 import type { CapabilityProfile } from '../core/profile';
 import type { RunOverview } from '../core/history';
 import type { ThinkingMode, OllamaInstalledModel } from '../core/ollama';
@@ -204,8 +204,10 @@ export interface SessionResults {
   models: ModelResult[];
   dimensions: CapabilityDimension[];
   cases: CaseResultRow[];
-  recommendation: { candidateID: string; modelName: string; record: OwnerRecommendationRecord; recorded: boolean }[];
+  /** The legacy prose recommender: it informs prose campaigns only and never routes (vision conflict K2). */
+  recommendation: { candidateID: string; modelName: string; record: OwnerRecommendationRecord; recorded: boolean; routing: LegacyRecommenderRouting }[];
   recommendationPolicy: RecommendationPolicy;
+  recommendationRouting: LegacyRecommenderRouting;
   workloadSummary: string;
   runSummaries: RunSummary[];
 }

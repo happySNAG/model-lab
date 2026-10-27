@@ -255,6 +255,9 @@ function Recommendation({ results, onRecord }: { results: SessionResults; onReco
         at least {policy.minimumSamplesPerDimension} judged answers in each of at least {policy.minimumDimensionsWithEvidence} capabilities, every covered capability at {Math.round(policy.recommendQualityThresholdMilli / 10)}% or better, and no crossed hard boundary.
         A short benchmark usually yields "insufficient evidence"; the full lab gives every capability enough cases. A recommendation is evidence for your decision; it changes nothing by itself.
       </div>
+      <div className="note small" data-testid="recommendation-non-routing">
+        <strong>Non-routing.</strong> This recommendation informs prose campaigns only: it is not a routing threshold, and no Ordra route is chosen from it. Routing uses cqp1 qualification at 90%.
+      </div>
       {results.recommendation.map((r) => (
         <Card key={r.candidateID} title={r.modelName} actions={
           <div className="row">

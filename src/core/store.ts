@@ -8,7 +8,7 @@ import { BenchmarkCaseID } from './benchmark';
 import { AttemptRecord, DerivedScoreRecord, RunPlan, RunSummary, attemptOrderAscending } from './run';
 import { EvaluationRecord } from './evaluation';
 import { HumanReviewRecord } from './human-review';
-import { OwnerRecommendationRecord } from './recommendation';
+import type { OwnerRecommendationRecord } from './recommendation';
 
 export type StoreErrorCode =
   | 'duplicateRun' | 'duplicateAttempt' | 'duplicateScore' | 'duplicateEvaluation' | 'duplicateHumanReview'

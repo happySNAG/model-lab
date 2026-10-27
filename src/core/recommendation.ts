@@ -1,5 +1,13 @@
 // Cernum core · the explicit recommendation workflow (port of `ModelLabRecommendation`).
 // Four outcomes, no approval case anywhere; every record carries its evidence and the boundary statement.
+//
+// NON-ROUTING (vision conflict K2, owner decision B4-2). This legacy prose recommender and its 80%
+// `recommendation.policy.v1` inform prose campaigns in the desktop app's Results view only. No routing
+// path (candidates crc2/crc3, recommend crr1, the cfc1 fallback chain, status-export) imports or calls
+// it; cqp1's 90% (`src/engine/route-qualification.ts`) is the only routing threshold. Its output is
+// labelled `routing: 'none'` where the app presents it (`SessionResults` in src/shared/ipc.ts). The
+// sealed `OwnerRecommendationRecord` itself is unchanged, because the parity corpus digests its bytes.
+// Policy: docs/ordra-lane/vision-conflicts.md K2. Guard: test/engine/legacy-recommender-non-routing.test.ts.
 
 import { seal, isoSeconds, compareCodePoints } from './digest';
 import { CandidateID, Measurement } from './candidate';
@@ -15,6 +23,12 @@ export interface RecommendationPolicy {
 }
 export const RECOMMENDATION_POLICY_VERSION = 'recommendation.policy.v1';
 export const standardRecommendationPolicy: RecommendationPolicy = { minimumSamplesPerDimension: 3, minimumDimensionsWithEvidence: 6, recommendQualityThresholdMilli: 800 };
+
+/** This recommender never routes: no Ordra route is chosen, ranked or qualified from its output. */
+export type LegacyRecommenderRouting = 'none';
+export const LEGACY_RECOMMENDER_ROUTING: LegacyRecommenderRouting = 'none';
+export const LEGACY_RECOMMENDER_SCOPE =
+  'Informs prose campaigns only: it is not a routing threshold. Routing uses cqp1 qualification at 90%.';
 
 export function recommendationPolicyDigest(policy: RecommendationPolicy): string {
   return seal(policy, 'mlrp1:');
