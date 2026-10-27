@@ -26,6 +26,7 @@
 import { compareCodePoints } from './canonical';
 import { ObservationStoreContents } from './observation-store';
 import { EFFORT_LEVELS, EffortLevel, ProviderID } from './provider';
+import { routeQuarantineStatus } from './route-quarantine';
 import {
   ROUTING_CONTRACT_VERSION, RouteCandidate, RouteCandidateQuery, RouteForQuery, availabilityFromStore, qualifiedRouteCandidates,
 } from './routing-contract';
@@ -252,5 +253,6 @@ export function effortKeyedRouteCandidatesFromStore(query: RouteCandidateQuery, 
   return effortKeyedRouteCandidates(query, routes.map((route) => ({
     ...route,
     availability: availabilityFromStore(contents, route.record.routeKey, query.machineKey, now, query.maximumAvailabilityAgeMilliseconds),
+    quarantine: routeQuarantineStatus(contents, route.record.routeKey),
   })), unkeyed);
 }

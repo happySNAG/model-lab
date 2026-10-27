@@ -116,6 +116,9 @@ import {
   effortKeyedRouteCandidatesFromStore, routeEffortKeys, runsAtEffortKey,
   // Ordra route telemetry ingested as sealed outcomes (cro1): rollup input only, never a verdict.
   RouteOutcomeIngestError, ingestRouteOutcomeFile, routeOutcomeRunRows,
+  // Substitution quarantine (csq1): a recorded identity substitution holds a route out of routing until released.
+  RouteQuarantineError, listRouteQuarantine, recordOutcomeSubstitutionQuarantines, recordRouteQuarantineRelease,
+  recordSmokeSubstitutionQuarantines, routeQuarantineStatus,
   // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
   availabilityLimitInEffect, availabilityLimitsFrom, describeAvailabilityLimit, describeLimitEvidence, limitObservationsFromSessionStatus, limitObservationsFromThrottleSignal,
   recordLimitEvidence,
@@ -915,6 +918,16 @@ async function commandSmoke(positional: string[], options: Options): Promise<voi
   const kept = readDiscovered(root).filter((model) => !fresh.some(
     (entry) => entry.provider === model.provider && entry.modelID === model.modelID));
   writeDiscovered(root, [...kept, ...fresh]);
+
+  // A SUBSTITUTED SMOKE QUARANTINES ITS ROUTE (csq1), sealed in the observation store with the smoke as evidence.
+  const here = thisMachine();
+  const quarantined = recordSmokeSubstitutionQuarantines(root, results, {
+    machineKey: here.key, machineLabel: here.fingerprint.hostname, receivedAt: new Date().toISOString(),
+  });
+  for (const entry of quarantined) {
+    say(`QUARANTINED ${entry.routeKey}: the smoke recorded a substitution${entry.written ? '' : ' (already in quarantine for this smoke)'}.`);
+    say(`  It is excluded from candidates, recommend and fallback until ${TERMINAL_COMMAND} quarantine release ${entry.routeKey} --reason <text>.`);
+  }
 
   // The full evidence, on request, somewhere the caller names.
   //
@@ -3706,7 +3719,8 @@ async function commandRecommend(positional: string[], options: Options): Promise
   const answer = recommendRoutes(request, {
     now,
     routes: records.map((record) => ({ record,
-      availability: availabilityFromStore(contents, record.routeKey, machine, now) })),
+      availability: availabilityFromStore(contents, record.routeKey, machine, now),
+      quarantine: routeQuarantineStatus(contents, record.routeKey) })),
     metrics: deriveMetricsRollup({ workspaceRows: [...workspaceRows, ...routeOutcomeRunRows(contents)],
       workspaceCases: cases, difficultyProfiles: profiles }),
     throttles: throttleEvidenceFromRecords(records),
@@ -3793,7 +3807,8 @@ async function commandRecommendCrr2(taskType: string, options: Options, policyAs
   }
   const answer = recommendRoutesCrr2(request, {
     now,
-    routes: records.map((record) => ({ record, availability: availabilityFromStore(contents, record.routeKey, machine, now) })),
+    routes: records.map((record) => ({ record, availability: availabilityFromStore(contents, record.routeKey, machine, now),
+      quarantine: routeQuarantineStatus(contents, record.routeKey) })),
     metrics: deriveMetricsRollup({ workspaceRows: [...workspaceRows, ...outcomeRows], workspaceCases: cases, difficultyProfiles: profiles }),
     keyedMetrics,
     throttles: throttleEvidenceFromRecords(records),
@@ -4361,7 +4376,9 @@ async function commandIngestOutcomes(positional: string[], options: Options): Pr
     if (error instanceof RouteOutcomeIngestError) fail(`ingest-outcomes: ${error.message}`, 2);
     throw error;
   }
-  if (options.json === true) { say(JSON.stringify({ file: positional[0], ...result }, null, 2)); return; }
+  // EVERY SUBSTITUTION FINDING IN THE STORE QUARANTINES ITS ROUTE (csq1), this file's and any held before it.
+  const routeQuarantine = recordOutcomeSubstitutionQuarantines(root, readObservationStore(root), { receivedAt: new Date().toISOString() });
+  if (options.json === true) { say(JSON.stringify({ file: positional[0], ...result, routeQuarantine }, null, 2)); return; }
 
   say(`Outcome ingest ${result.schema} · ${positional[0]} · sha256 ${result.sourceDigest.slice(0, 16)}… · machine ${machine}`);
   say(`  lines          ${result.lineCount} (${result.blankLines} blank)`);
@@ -4377,8 +4394,63 @@ async function commandIngestOutcomes(positional: string[], options: Options): Pr
     say(`    ${first}`);
     for (const line of rest) say(`      ${line}`);
   }
+  say(`  quarantine     ${routeQuarantine.filter((entry) => entry.written).length} new route quarantine entr(ies), `
+    + `${routeQuarantine.filter((entry) => !entry.written).length} already held (csq1)`);
+  for (const route of [...new Set(routeQuarantine.map((entry) => entry.routeKey))]) {
+    say(`    ${route}: excluded with reason 'quarantined' until ${TERMINAL_COMMAND} quarantine release ${route} --reason <text>`);
+  }
   say('');
   for (const line of wrap(result.disclosure, 76)) say(line);
+}
+
+/**
+ * `quarantine list [--json]` and `quarantine release <route> --reason <text>` (csq1). `list` reads only. `release`
+ * appends one sealed release record naming every entry in force; it never deletes, and is refused (exit 2) for a
+ * route with nothing in force or with no reason.
+ */
+async function commandQuarantine(positional: string[], options: Options): Promise<void> {
+  const [action, ...rest] = positional;
+  const root = String(options.root ?? defaultCampaignRoot());
+  if (action === 'list') {
+    if (rest.length > 0 || options.reason !== undefined) fail('quarantine list: takes no route and no --reason. Nothing was read.', 2);
+    const list = listRouteQuarantine(readObservationStore(root));
+    if (options.json === true) { say(JSON.stringify(list, null, 2)); return; }
+    say(`Route quarantine ${list.schema} · ${list.quarantined.length} route(s) quarantined · ${list.routes.length} with any entry`);
+    say('');
+    if (list.routes.length === 0) say('No route has ever been quarantined.');
+    for (const route of list.routes) {
+      say(`  ${route.routeKey}  ${route.state.toUpperCase()}`);
+      for (const entry of route.entries) {
+        say(`    ${entry.quarantinedAt} ${entry.cause} ${entry.recordID.slice(0, 16)}…`
+          + `${entry.releasedBy === null ? '  IN FORCE' : `  released ${entry.releasedBy.releasedAt}: ${entry.releasedBy.reason}`}`);
+        for (const item of entry.evidence) for (const line of wrap(`${item.reference} — ${item.detail}`, 68)) say(`      ${line}`);
+      }
+    }
+    say('');
+    for (const line of wrap(list.disclosure, 76)) say(line);
+    return;
+  }
+  if (action === 'release') {
+    if (rest.length !== 1) fail(`quarantine release: name exactly one route. ${TERMINAL_COMMAND} quarantine release claudeCLI:claude-sonnet-5 --reason "<why>". Nothing was released.`, 2);
+    if (typeof options.reason !== 'string') fail('quarantine release: --reason <text> is required: why this route may be routed again. Nothing was released.', 2);
+    const here = thisMachine();
+    const machine = machineFromOptions(options);
+    let released;
+    try {
+      released = recordRouteQuarantineRelease(root, readObservationStore(root), rest[0]!, options.reason, {
+        machineKey: machine, machineLabel: machine === here.key ? here.fingerprint.hostname : machine, now: new Date(),
+      });
+    } catch (error) {
+      if (error instanceof RouteQuarantineError) fail(`quarantine release: ${error.message}`, 2);
+      throw error;
+    }
+    if (options.json === true) { say(JSON.stringify(released, null, 2)); return; }
+    say(`Released ${released.routeKey} from substitution quarantine: ${released.releases.length} entr(ies), recorded as ${released.recordID}.`);
+    say(`  reason: ${released.reason}`);
+    say('  Nothing was deleted: the entries and this release stay in the observation store.');
+    return;
+  }
+  fail(`quarantine: name 'list' or 'release'. ${TERMINAL_COMMAND} quarantine list --json. Nothing was read.`, 2);
 }
 
 /**
@@ -5386,6 +5458,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'release-report': return commandReleaseReport(positional, options);
     case 'plan-qualification': return commandPlanQualification(positional, options);
     case 'ingest-outcomes': return commandIngestOutcomes(positional, options);
+    case 'quarantine': return commandQuarantine(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();

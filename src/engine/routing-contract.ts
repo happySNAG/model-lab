@@ -27,6 +27,7 @@ import {
 import {
   ObservationStoreContents, StoredObservation, availabilityLimitsFrom, availabilityObservationsFrom,
 } from './observation-store';
+import { RouteQuarantineState, routeQuarantineStatus } from './route-quarantine';
 import { RouteSpendPosture } from './route-spend-posture';
 import {
   CURRENT_ROUTING_POLICY_VERSION, ROUTABLE_CONDITION_DESCRIPTIONS, RoutingPolicyVersion, identityPermitsRouting,
@@ -166,6 +167,11 @@ export interface RouteForQuery {
   /** Resolved availability for the QUERIED machine. Absent falls back to the record's own. */
   availability?: RouteAvailabilitySource;
   spendPosture?: RouteSpendPosture;
+  /**
+   * The route's substitution quarantine (csq1). While `quarantined`, the route is excluded with the reason
+   * `quarantined: …` beside every other reason. Absent: no quarantine was resolved, and nothing is added.
+   */
+  quarantine?: RouteQuarantineState;
 }
 
 /** Answer one query. PURE over the records given; reads nothing, writes nothing, picks nothing. */
@@ -175,8 +181,11 @@ export function qualifiedRouteCandidates(query: RouteCandidateQuery, routes: Rou
   const policyVersion = query.routingPolicyVersion ?? CURRENT_ROUTING_POLICY_VERSION;
   const policy = routingPolicy(policyVersion);
 
-  for (const { record, description, availability: resolved, spendPosture } of routes) {
+  for (const { record, description, availability: resolved, spendPosture, quarantine } of routes) {
     const reasons: string[] = [];
+
+    // ---- substitution quarantine: a recorded identity substitution holds the route out until released (csq1) --
+    if (quarantine?.state === 'quarantined' && quarantine.reason !== undefined) reasons.push(quarantine.reason);
 
     // ---- identity, decided by the POLICY and by the QUERY, separately ---------------------------
     //
@@ -378,6 +387,7 @@ export function qualifiedRouteCandidatesFromStore(query: RouteCandidateQuery, co
     ...route,
     availability: availabilityFromStore(contents, route.record.routeKey, query.machineKey, now,
       query.maximumAvailabilityAgeMilliseconds),
+    quarantine: routeQuarantineStatus(contents, route.record.routeKey),
   })));
 }
 

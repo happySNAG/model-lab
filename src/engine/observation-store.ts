@@ -73,11 +73,16 @@ export type ObservationKind =
   /** What one Ordra attempt on a route did, ingested from exported route telemetry (cro1). Never a verdict. */
   | 'routeOutcome'
   /** A route-telemetry line that could not be ingested, kept with its text and reason (cro1). */
-  | 'routeOutcomeQuarantine';
+  | 'routeOutcomeQuarantine'
+  /** A route put in substitution quarantine by a recorded identity substitution, with its evidence (csq1). */
+  | 'routeQuarantine'
+  /** A person's recorded release of a route's quarantine entries, with the reason (csq1). */
+  | 'routeQuarantineRelease';
 
 export const OBSERVATION_KINDS: ObservationKind[] = [
   'machine', 'discoverySnapshot', 'discoveryDelta', 'providerAvailability', 'routeAvailability',
   'localModelAvailability', 'billingObservation', 'qualificationStaleness', 'routeOutcome', 'routeOutcomeQuarantine',
+  'routeQuarantine', 'routeQuarantineRelease',
 ];
 
 /**
