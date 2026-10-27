@@ -1,0 +1,13 @@
+{
+  "display_number": "B4-X5",
+  "objective": "Plan the next block.",
+  "scope": [],
+  "verification": [],
+  "worker_authority": {
+    "commands_permitted": [],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": []
+  }
+}

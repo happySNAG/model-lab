@@ -1,0 +1,13 @@
+{
+  "display_number": "B4-8",
+  "objective": "Document the pass classifier's rules and weights in docs/ordra-lane/pass-classifier.md and add its row to the README command table.",
+  "scope": ["docs/ordra-lane/pass-classifier.md", "README.md"],
+  "verification": ["npm test -- test/engine/naming-guard.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["docs", "README.md"]
+  }
+}

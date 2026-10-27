@@ -1,0 +1,13 @@
+{
+  "display_number": "B2-7",
+  "objective": "Stabilise the flaky test test/engine/lock.test.ts that times out under load on the external volume.",
+  "scope": ["test/engine/lock.test.ts", "src/engine/lock.ts"],
+  "verification": ["npm test -- test/engine/lock.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["test", "src/engine/lock.ts"]
+  }
+}

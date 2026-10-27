@@ -1,0 +1,13 @@
+{
+  "display_number": "B4-X1",
+  "objective": "Tidy up the ordra-lane folder.",
+  "scope": ["docs/ordra-lane"],
+  "verification": ["npm test -- test/engine/naming-guard.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["docs"]
+  }
+}

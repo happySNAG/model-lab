@@ -1,0 +1,13 @@
+{
+  "display_number": "B3-5",
+  "objective": "Fix the regression where cernum candidates --task refuses the valid tier name tier2 since 21eaa28; the failing check is test/engine/task-taxonomy.test.ts.",
+  "scope": ["src/engine/task-taxonomy.ts", "src/cli/cernum.ts", "test/engine/task-taxonomy.test.ts"],
+  "verification": ["npm run typecheck", "npm test -- test/engine/task-taxonomy.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm run typecheck", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["src", "test"]
+  }
+}

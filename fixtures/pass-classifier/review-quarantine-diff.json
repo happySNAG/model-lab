@@ -1,0 +1,13 @@
+{
+  "display_number": "B4-5R",
+  "objective": "Review the diff of 131d630 for substitution quarantine: check that no path deletes a quarantine entry and that crc2 stays byte-compatible.",
+  "scope": ["src/engine/route-quarantine.ts", "src/engine/routing-contract.ts", "src/engine/observation-store.ts"],
+  "verification": ["git show 131d630", "npm test -- test/engine/route-quarantine.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": []
+  }
+}

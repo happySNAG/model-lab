@@ -1,0 +1,5 @@
+{
+  "display_number": "B4-X4",
+  "objective": "Add a quarantine expiry.",
+  "scope": "src/engine/route-quarantine.ts"
+}

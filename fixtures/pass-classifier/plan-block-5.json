@@ -1,0 +1,13 @@
+{
+  "display_number": "B5-0",
+  "objective": "Plan Block 5: survey the Ordra outcome export and propose the passes that aggregate outcomes into per-route reliability, without changing code.",
+  "scope": ["docs/ordra-lane", "src/engine/route-outcome-ingest.ts", "src/engine/metrics-rollup.ts"],
+  "verification": ["test -f docs/ordra-lane/block-5-plan.md"],
+  "worker_authority": {
+    "commands_permitted": ["git"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["docs/ordra-lane/block-5-plan.md"]
+  }
+}

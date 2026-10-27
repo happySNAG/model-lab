@@ -1,0 +1,13 @@
+{
+  "display_number": "B4-X3",
+  "objective": "Effort parsing: fix it and simplify it.",
+  "scope": ["src/engine/workspace-effort-evidence.ts"],
+  "verification": ["npm run typecheck", "npm test -- test/engine/effort-keyed-routes.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm run typecheck", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["src"]
+  }
+}

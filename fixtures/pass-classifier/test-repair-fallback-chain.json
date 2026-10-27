@@ -1,0 +1,13 @@
+{
+  "display_number": "B2-4",
+  "objective": "Repair the failing test in test/engine/fallback-chain.test.ts: it asserts the old cfc1 order after the throttle change; bring it back to green without touching src.",
+  "scope": ["test/engine/fallback-chain.test.ts"],
+  "verification": ["npm test -- test/engine/fallback-chain.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["test"]
+  }
+}

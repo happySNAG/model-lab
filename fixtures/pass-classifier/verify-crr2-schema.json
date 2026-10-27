@@ -1,0 +1,13 @@
+{
+  "display_number": "B4-7",
+  "objective": "Verify that cernum recommend --contract crr2 --json validates against docs/ordra-lane/recommend-crr2.schema.json on the recorded fixtures; verification-only, no file is changed.",
+  "scope": ["test/engine/recommend-crr2.test.ts", "docs/ordra-lane/recommend-crr2.schema.json"],
+  "verification": ["npm test -- test/engine/recommend-crr2.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": []
+  }
+}

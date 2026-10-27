@@ -1,0 +1,18 @@
+{
+  "display_number": "B4-9",
+  "objective": "Re-run the four verification commands of B4-6 on head 131d630 and report each exit code.",
+  "scope": [],
+  "verification": [
+    { "command": "npm run typecheck" },
+    { "command": "npm test -- test/engine/pass-classifier.test.ts" },
+    { "command": "npm test -- test/engine/task-taxonomy.test.ts" },
+    { "command": "npm test -- test/engine/naming-guard.test.ts" }
+  ],
+  "worker_authority": {
+    "commands_permitted": ["npm run typecheck", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": []
+  }
+}

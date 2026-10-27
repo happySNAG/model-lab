@@ -1,0 +1,13 @@
+{
+  "display_number": "B3-10",
+  "objective": "Update the README command table with the recommend, discovery-delta and release-report rows and link each to its docs page.",
+  "scope": ["README.md"],
+  "verification": ["npm test -- test/engine/naming-guard.test.ts"],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["README.md"]
+  }
+}

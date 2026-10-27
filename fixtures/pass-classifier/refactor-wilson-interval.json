@@ -1,0 +1,17 @@
+{
+  "display_number": "B1-6",
+  "objective": "Extract the Wilson interval arithmetic from route-recommendation-crr2.ts into percentile.ts without changing behaviour; every existing test stays green.",
+  "scope": ["src/engine/route-recommendation-crr2.ts", "src/engine/percentile.ts"],
+  "verification": [
+    "npm run typecheck",
+    "npm test -- test/engine/recommend-crr2.test.ts",
+    "npm test -- test/engine/metrics-rollup.test.ts"
+  ],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm run typecheck", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["src"]
+  }
+}

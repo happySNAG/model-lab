@@ -119,6 +119,8 @@ import {
   // Substitution quarantine (csq1): a recorded identity substitution holds a route out of routing until released.
   RouteQuarantineError, listRouteQuarantine, recordOutcomeSubstitutionQuarantines, recordRouteQuarantineRelease,
   recordSmokeSubstitutionQuarantines, routeQuarantineStatus,
+  // An exported Ordra pass record classified to its ctt1 task type and tier (cpc1), by rule. Refused, never defaulted.
+  classifyPassFile,
   // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
   availabilityLimitInEffect, availabilityLimitsFrom, describeAvailabilityLimit, describeLimitEvidence, limitObservationsFromSessionStatus, limitObservationsFromThrottleSignal,
   recordLimitEvidence,
@@ -4404,6 +4406,47 @@ async function commandIngestOutcomes(positional: string[], options: Options): Pr
 }
 
 /**
+ * `classify-pass <file> [--json]` (cpc1): one exported Ordra pass record mapped to its ctt1 task type and tier, with
+ * the evidence for each, a confidence and the query for `recommend`. Reads only the file. A record no rule
+ * classifies is printed with its reasons and exits 2; nothing is defaulted.
+ */
+async function commandClassifyPass(positional: string[], options: Options): Promise<void> {
+  if (positional.length !== 1) fail(`classify-pass: name exactly one pass record file. ${TERMINAL_COMMAND} classify-pass pass.json --json. Nothing was read.`, 2);
+  const file = positional[0]!;
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) fail(`classify-pass: '${file}' is not a readable file. Nothing was classified.`, 2);
+  const answer = classifyPassFile(file);
+  if (options.json === true) {
+    say(JSON.stringify({ file, ...answer }, null, 2));
+    if (!answer.ok) process.exitCode = 2;
+    return;
+  }
+  if (!answer.ok) {
+    say(`Pass classifier ${answer.schema} · ${file} · REFUSED${answer.displayNumber === null ? '' : ` · pass ${answer.displayNumber}`}`);
+    for (const reason of answer.refusals) {
+      const [first, ...rest] = wrap(reason, 72);
+      say(`  - ${first}`);
+      for (const line of rest) say(`    ${line}`);
+    }
+    say('');
+    for (const line of wrap(answer.disclosure, 76)) say(line);
+    process.exitCode = 2;
+    return;
+  }
+  say(`Pass classifier ${answer.schema} · ${file} · pass ${answer.displayNumber} · taxonomy ${answer.taxonomyVersion}`);
+  say(`  task type   ${answer.taskType} (score ${answer.evidence.scores[answer.taskType]})`);
+  for (const item of answer.evidence.taskType) say(`    +${item.weight} ${item.rule}: ${item.detail}`);
+  say(`  tier        ${answer.tier}`);
+  for (const item of answer.evidence.tier) say(`    ${item.tier} ${item.rule}: ${item.detail}`);
+  for (const item of answer.evidence.exclusions) say(`  ruled out   ${item.taskType} by ${item.rule}`);
+  say(`  confidence  ${answer.confidence.value} ${answer.confidence.level} (type share ${answer.confidence.typeShare}, `
+    + `tier agreement ${answer.confidence.tierAgreement}, ${answer.confidence.sourcesAgreeing} source(s) agreeing)`);
+  say(`  query       ${TERMINAL_COMMAND} ${answer.query.arguments.join(' ')}`);
+  say(`              ${answer.query.contextReason}`);
+  say('');
+  for (const line of wrap(answer.disclosure, 76)) say(line);
+}
+
+/**
  * `quarantine list [--json]` and `quarantine release <route> --reason <text>` (csq1). `list` reads only. `release`
  * appends one sealed release record naming every entry in force; it never deletes, and is refused (exit 2) for a
  * route with nothing in force or with no reason.
@@ -5459,6 +5502,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'plan-qualification': return commandPlanQualification(positional, options);
     case 'ingest-outcomes': return commandIngestOutcomes(positional, options);
     case 'quarantine': return commandQuarantine(positional, options);
+    case 'classify-pass': return commandClassifyPass(positional, options);
     case 'where': return commandWhere();
     case 'install-command': return commandInstallCommand();
     case 'uninstall-command': return commandUninstallCommand();

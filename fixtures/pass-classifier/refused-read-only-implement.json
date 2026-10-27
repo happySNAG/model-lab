@@ -1,0 +1,13 @@
+{
+  "display_number": "B4-X2",
+  "objective": "Implement the crr3 contract beside crr2.",
+  "scope": ["src/engine/route-recommendation-crr2.ts"],
+  "verification": ["npm run typecheck"],
+  "worker_authority": {
+    "commands_permitted": ["npm run typecheck"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": []
+  }
+}

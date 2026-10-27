@@ -1,0 +1,33 @@
+{
+  "display_number": "B2-1",
+  "objective": "Introduce machine keys (cmk1) across every surface that records evidence: discovery, smoke, qualification, candidates and the status export, carrying stored records forward without rewriting them.",
+  "scope": {
+    "paths": [
+      "src/engine/machine.ts",
+      "src/engine/observation-store.ts",
+      "src/engine/discovery-run.ts",
+      "src/engine/identity-smoke.ts",
+      "src/engine/route-qualification.ts",
+      "src/engine/routing-contract.ts",
+      "src/engine/status-export.ts",
+      "src/cli/cernum.ts",
+      "test/engine/route-metadata-discovery-machines.test.ts"
+    ],
+    "non_goals": ["changing crc1", "rewriting a sealed observation"]
+  },
+  "verification": [
+    "npm run typecheck",
+    "npm test -- test/engine/route-metadata-discovery-machines.test.ts",
+    "npm test -- test/engine/observation-store-persistence.test.ts",
+    "npm test -- test/engine/route-qualification-and-routing.test.ts",
+    "npm test -- test/engine/status-export.test.ts",
+    "npm test -- test/engine/naming-guard.test.ts"
+  ],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm run typecheck", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["src", "test", "fixtures", "docs", "README.md"]
+  }
+}

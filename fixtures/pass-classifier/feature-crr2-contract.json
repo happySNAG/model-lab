@@ -1,0 +1,26 @@
+{
+  "display_number": "B4-3",
+  "objective": "Add the recommendation contract crr2 beside an unchanged crr1 as cernum recommend <task-type> --contract crr2 --json, validated by a JSON schema, with docs and a test.",
+  "scope": [
+    "src/engine/route-recommendation-crr2.ts",
+    "src/cli/cernum.ts",
+    "src/cli/command-spec.ts",
+    "docs/ordra-lane/recommend-crr2.md",
+    "docs/ordra-lane/recommend-crr2.schema.json",
+    "test/engine/recommend-crr2.test.ts",
+    "README.md"
+  ],
+  "verification": [
+    "npm run typecheck",
+    "npm test -- test/engine/recommend-crr2.test.ts",
+    "npm test -- test/engine/recommend-crr1.test.ts",
+    "npm test -- test/engine/naming-guard.test.ts"
+  ],
+  "worker_authority": {
+    "commands_permitted": ["git", "npm run typecheck", "npm test"],
+    "destructive_operations": [],
+    "may_leave_machine": false,
+    "may_merge_default_branch": false,
+    "paths_writable": ["src", "test", "fixtures", "scripts", "docs", "README.md"]
+  }
+}
