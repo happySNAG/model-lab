@@ -110,8 +110,10 @@ import {
   deriveFallbackChain, throttleEvidenceFromRecords,
   // An advisory per-task ranking of the qualified routes, by rule crr1. Never a selection.
   availabilityFromStore, recommendRoutes,
+  // The recommendation contract crr2, beside crr1: reliability, then zero marginal cost, then latency. Advisory.
+  Crr2Recommendation, recommendRoutesCrr2,
   // Evidence keyed by the effort it was gathered at (cek1), beside crc2 and never in place of it.
-  effortKeyedRouteCandidatesFromStore, routeEffortKeys,
+  effortKeyedRouteCandidatesFromStore, routeEffortKeys, runsAtEffortKey,
   // Ordra route telemetry ingested as sealed outcomes (cro1): rollup input only, never a verdict.
   RouteOutcomeIngestError, ingestRouteOutcomeFile, routeOutcomeRunRows,
   // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
@@ -3661,6 +3663,18 @@ async function commandRecommend(positional: string[], options: Options): Promise
   if (policyAsked !== 'crp1' && policyAsked !== 'crp2') {
     fail(`recommend: --policy must be 'crp1' or 'crp2', not '${policyAsked}'. Nothing was read.`, 2);
   }
+  const contract = options.contract === undefined ? 'crr1' : String(options.contract);
+  if (options.contract === true || (contract !== 'crr1' && contract !== 'crr2')) {
+    fail(`recommend: --contract must be 'crr1' or 'crr2'${options.contract === true ? '' : `, not '${contract}'`}. Nothing was read.`, 2);
+  }
+  if (options['allow-metered'] !== undefined && contract !== 'crr2') {
+    fail('recommend: --allow-metered belongs to --contract crr2; crr1 answers under the task taxonomy\'s own cost policy. '
+      + 'Nothing was read.', 2);
+  }
+  if (contract === 'crr2') {
+    await commandRecommendCrr2(positional[0]!, options, policyAsked);
+    return;
+  }
   const machine = machineFromOptions(options);
   const request = { machineKey: machine, taskType: positional[0]!,
     ...(options.tier === undefined ? {} : { tier: String(options.tier) }),
@@ -3728,6 +3742,97 @@ async function commandRecommend(positional: string[], options: Options): Promise
   say('');
   for (const line of wrap(answer.orderingRule, 76)) say(line);
   for (const line of wrap(answer.disclosure, 76)) say(line);
+}
+
+/**
+ * `recommend <task-type> --contract crr2 [--allow-metered]`: the recommendation contract crr2. READ-ONLY,
+ * exactly as crr1: nothing is written, selected or launched. Each route is derived once per effort key its
+ * runs fall under (cek1), as `candidates --by-effort` derives them, and each key's reliability and duration
+ * are read from the rollup of that key's runs alone; a route no run measured at any effort is derived pooled
+ * so that its exclusion is still stated.
+ */
+async function commandRecommendCrr2(taskType: string, options: Options, policyAsked: 'crp1' | 'crp2'): Promise<void> {
+  const machine = machineFromOptions(options);
+  const request = { machineKey: machine, taskType, allowMetered: options['allow-metered'] === true,
+    ...(options.tier === undefined ? {} : { tier: String(options.tier) }),
+    ...(options.context === undefined ? {} : { contextTokens: String(options.context) }) };
+  const refused = recommendRoutesCrr2(request, { now: new Date(), routes: [] });
+  if (!refused.ok) fail(`recommend: refused by task taxonomy ${refused.taxonomyVersion}: ${refused.refusals.join('; ')}. Nothing was read.`, 2);
+
+  const root = String(options.root ?? defaultCampaignRoot());
+  const contents = readObservationStore(root);
+  const now = new Date();
+  const snapshot = latestDiscoverySnapshot(contents, machine);
+  const availability = observationsForRouting(contents);
+  const workspaceRows = workspaceRowsFromEvidenceRoots('recommend', root, options);
+  const outcomeRows = routeOutcomeRunRows(contents);
+  const cases = allWorkspaceCases();
+  const profiles = registeredWorkspaceDifficultyProfiles();
+  const routeKeys = [...new Set(availability.filter((entry) => entry.machineKey === machine).map((entry) => entry.routeKey))].sort();
+  const records: ReturnType<typeof deriveRouteQualification>[] = [];
+  const keyedMetrics: Record<string, ReturnType<typeof deriveMetricsRollup>> = {};
+  for (const routeKey of routeKeys) {
+    const [provider, ...rest] = routeKey.split(':');
+    const modelID = rest.join(':');
+    const derive = (effortKey?: Parameters<typeof runsAtEffortKey>[3]) => deriveRouteQualification({
+      provider: provider as ProviderID, modelID, machineKey: machine, ...(effortKey === undefined ? {} : { effortKey }),
+      ...(snapshot === undefined ? {} : { snapshot }), availability,
+      workspaceRows, workspaceCases: cases, difficultyProfiles: profiles,
+      spend: routeSpendPosture({ provider: provider as ProviderID, modelID, now }),
+      routingPolicyVersion: policyAsked, now,
+    });
+    const keys = routeEffortKeys(workspaceRows, provider as ProviderID, modelID);
+    if (keys.length === 0) { records.push(derive()); continue; }
+    for (const effortKey of keys) {
+      const record = derive(effortKey);
+      records.push(record);
+      if (record.evidenceEffort === undefined) continue;
+      keyedMetrics[record.evidenceEffort.effortRouteKey] = deriveMetricsRollup({ workspaceCases: cases, difficultyProfiles: profiles,
+        workspaceRows: runsAtEffortKey([...workspaceRows, ...outcomeRows], provider as ProviderID, modelID, effortKey) });
+    }
+  }
+  const answer = recommendRoutesCrr2(request, {
+    now,
+    routes: records.map((record) => ({ record, availability: availabilityFromStore(contents, record.routeKey, machine, now) })),
+    metrics: deriveMetricsRollup({ workspaceRows: [...workspaceRows, ...outcomeRows], workspaceCases: cases, difficultyProfiles: profiles }),
+    keyedMetrics,
+    throttles: throttleEvidenceFromRecords(records),
+    routingPolicyVersion: policyAsked,
+  });
+  if (!answer.ok) fail(`recommend: refused by task taxonomy ${answer.taxonomyVersion}: ${answer.refusals.join('; ')}.`, 2);
+  const crr2: Crr2Recommendation = answer;
+  if (options.json === true) {
+    say(JSON.stringify(crr2, null, 2));
+    return;
+  }
+  say(`Recommendation ${crr2.contract} v${crr2.contractVersion} · task taxonomy ${crr2.taxonomyVersion} · routing contract `
+    + `${crr2.routingContract} · routing policy ${crr2.routingPolicyVersion} · machine ${machine}`);
+  say(`Task: ${crr2.query.taskType} → ${crr2.query.capability}${crr2.query.tier === undefined ? '' : ` at ${crr2.query.tier}`}`
+    + `${crr2.query.contextTokens === undefined ? '' : ` · at least ${crr2.query.contextTokens} context tokens`}`
+    + ` · ${crr2.query.allowMetered ? 'metered allowed' : 'subscription-only'}`);
+  say('');
+  if (crr2.ranking.length === 0) say('No route qualifies for this task, so nothing is ranked.');
+  for (const entry of crr2.ranking) {
+    say(`  ${String(entry.rank).padStart(2)}. ${entry.key}  [${entry.resourcePosture.posture}]`);
+    for (const reason of entry.reasons) for (const line of wrap(reason, 70)) say(`      ${line}`);
+  }
+  if (crr2.exclusions.length > 0) {
+    say('');
+    say(`${crr2.exclusions.length} route(s) excluded, each with every reason:`);
+    for (const entry of crr2.exclusions) {
+      say(`  ${entry.key}`);
+      for (const reason of entry.reasons) for (const line of wrap(reason, 70)) say(`    ${line}`);
+    }
+  }
+  say('');
+  say(`Fallback order (${crr2.fallback.schema}): ${crr2.fallback.chain.length === 0 ? 'none' : crr2.fallback.chain.join(' → ')}`);
+  say(`Confidence: ${crr2.confidence.level}`);
+  for (const entry of crr2.uncertainties) for (const line of wrap(`- ${entry.code}: ${entry.detail}`, 74)) say(`  ${line}`);
+  say('');
+  for (const reason of crr2.reasons) for (const line of wrap(`- ${reason}`, 76)) say(line);
+  say('');
+  for (const line of wrap(crr2.orderingRule, 76)) say(line);
+  for (const line of wrap(crr2.disclosure, 76)) say(line);
 }
 
 /**

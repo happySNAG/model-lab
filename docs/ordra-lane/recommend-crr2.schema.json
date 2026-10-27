@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cernum:recommendation:crr2:1",
+  "title": "Cernum recommendation contract crr2, version 1",
+  "description": "The advisory document `cernum recommend <task-type> --contract crr2 --json` prints; see docs/ordra-lane/recommend-crr2.md. Ordering everywhere is reliability (Wilson 95% lower bound), then zero marginal cost, then latency (p90, then median), then the key. `selected`, `expectedReliability`, `expectedDuration`, `resourcePosture` and `qualification.selected` are present exactly when something is ranked. `candidate` and `query.routeQuery` carry the crc2 objects they came from and admit their fields. Advisory only: isSelection and launches are always false.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract", "contractVersion", "jsonSchema", "ok", "taxonomyVersion", "routingContract", "routingPolicyVersion",
+    "answeredAt", "query", "orderingRule", "ranking", "order", "fallback", "qualification", "confidence",
+    "uncertainties", "exclusions", "reasons", "advisory", "isSelection", "launches", "disclosure"
+  ],
+  "properties": {
+    "contract": { "const": "crr2" },
+    "contractVersion": { "const": 1 },
+    "jsonSchema": { "const": "docs/ordra-lane/recommend-crr2.schema.json" },
+    "ok": { "const": true },
+    "taxonomyVersion": { "const": "ctt1" },
+    "routingContract": { "const": "crc2" },
+    "routingPolicyVersion": { "enum": ["crp1", "crp2"] },
+    "answeredAt": { "$ref": "#/$defs/instant" },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskType", "machineKey", "capability", "allowMetered", "costPolicy", "routeQuery"],
+      "properties": {
+        "taskType": { "enum": ["implement", "fix", "test-repair", "refactor", "docs", "verify", "plan", "review"] },
+        "tier": { "enum": ["tier1", "tier2", "tier3"] },
+        "contextTokens": { "type": "integer", "minimum": 1 },
+        "machineKey": { "type": "string", "pattern": "^cmk1:" },
+        "capability": { "type": "string", "pattern": "^workspace:" },
+        "allowMetered": { "type": "boolean" },
+        "costPolicy": { "enum": ["zeroMarginalCostOnly", "allowMeteredWithAuthorization"] },
+        "routeQuery": {
+          "type": "object",
+          "required": ["machineKey", "capability", "costPolicy", "requireVerifiedIdentity", "requireFreshQualification", "routingPolicyVersion"],
+          "properties": {
+            "requireVerifiedIdentity": { "const": true },
+            "requireFreshQualification": { "const": true },
+            "costPolicy": { "enum": ["zeroMarginalCostOnly", "allowMeteredWithAuthorization"] }
+          }
+        }
+      }
+    },
+    "orderingRule": { "type": "string", "minLength": 1 },
+    "metricsSchema": { "const": "cmr1" },
+    "selected": { "$ref": "#/$defs/configuration" },
+    "ranking": { "type": "array", "items": { "$ref": "#/$defs/rankedRoute" } },
+    "order": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "basedOn", "orderingRule", "chain", "entries", "cfc1"],
+      "properties": {
+        "schema": { "const": "cfc2" },
+        "basedOn": { "const": "cfc1" },
+        "orderingRule": { "type": "string", "minLength": 1 },
+        "chain": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/fallbackEntry" } },
+        "cfc1": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "orderingRule", "chain"],
+          "properties": {
+            "schema": { "const": "cfc1" },
+            "orderingRule": { "type": "string", "minLength": 1 },
+            "chain": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "expectedReliability": { "$ref": "#/$defs/reliability" },
+    "expectedDuration": { "$ref": "#/$defs/duration" },
+    "resourcePosture": { "$ref": "#/$defs/resourcePosture" },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaultPolicyID"],
+      "properties": {
+        "defaultPolicyID": { "const": "cqp1" },
+        "selected": { "$ref": "#/$defs/qualification" }
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "basis"],
+      "properties": {
+        "level": { "enum": ["high", "medium", "low", "none"] },
+        "basis": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "uncertainties": { "type": "array", "items": { "$ref": "#/$defs/uncertainty" } },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "routeKey", "effort", "reasons"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "routeKey": { "$ref": "#/$defs/routeKey" },
+          "effort": { "$ref": "#/$defs/effort" },
+          "reasons": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+        }
+      }
+    },
+    "reasons": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "advisory": { "const": true },
+    "isSelection": { "const": false },
+    "launches": { "const": false },
+    "disclosure": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "instant": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$" },
+    "routeKey": { "type": "string", "pattern": "^[A-Za-z]+:.+" },
+    "quantity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provenance"],
+      "properties": {
+        "provenance": { "enum": ["measured", "providerReported", "estimated", "unavailable"] },
+        "value": { "type": "number" },
+        "note": { "type": "string" }
+      }
+    },
+    "effort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "pooled", "requestedEfforts", "basis"],
+      "properties": {
+        "state": { "enum": ["observed", "unobservable"] },
+        "effort": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+        "effortRouteKey": { "type": "string", "pattern": "^[A-Za-z]+:.+@.+$" },
+        "pooled": { "type": "boolean" },
+        "requestedEfforts": {
+          "type": "array",
+          "items": { "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "unrecorded"] }
+        },
+        "basis": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "routeKey", "provider", "modelID", "effort", "machineKey"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "routeKey": { "$ref": "#/$defs/routeKey" },
+        "provider": { "type": "string", "minLength": 1 },
+        "modelID": { "type": "string", "minLength": 1 },
+        "effort": { "$ref": "#/$defs/effort" },
+        "machineKey": { "type": "string", "pattern": "^cmk1:" }
+      }
+    },
+    "reliability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "sampleSize", "passCount", "successRateMilli", "interval95", "source"],
+      "properties": {
+        "capability": { "type": "string", "minLength": 1 },
+        "sampleSize": { "type": "integer", "minimum": 0 },
+        "passCount": { "type": "integer", "minimum": 0 },
+        "successRateMilli": { "$ref": "#/$defs/quantity" },
+        "interval95": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "z", "lowerMilli", "upperMilli"],
+          "properties": {
+            "method": { "const": "wilson" },
+            "z": { "const": 1.96 },
+            "lowerMilli": { "$ref": "#/$defs/quantity" },
+            "upperMilli": { "$ref": "#/$defs/quantity" }
+          }
+        },
+        "source": { "type": "string", "minLength": 1 }
+      }
+    },
+    "duration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "sampleSize", "medianMilliseconds", "p90Milliseconds"],
+      "properties": {
+        "capability": { "type": "string", "minLength": 1 },
+        "sampleSize": { "type": "integer", "minimum": 0 },
+        "medianMilliseconds": { "$ref": "#/$defs/quantity" },
+        "p90Milliseconds": { "$ref": "#/$defs/quantity" }
+      }
+    },
+    "resourcePosture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["posture", "group", "requiresSpendingAuthorization", "eligibility", "reasons"],
+      "properties": {
+        "posture": { "enum": ["zeroMarginalCost", "metered"] },
+        "group": { "enum": ["zeroMarginalCost", "meteredRequiresAuthorization"] },
+        "requiresSpendingAuthorization": { "type": "boolean" },
+        "eligibility": { "type": "string", "minLength": 1 },
+        "reasons": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyID", "defaultPolicyID", "capabilityVerdict", "maxAgeMilliseconds", "current", "detail"],
+      "properties": {
+        "policyID": { "type": "string", "minLength": 1 },
+        "defaultPolicyID": { "const": "cqp1" },
+        "capabilityVerdict": { "type": "string", "minLength": 1 },
+        "tierVerdict": { "type": "string", "minLength": 1 },
+        "qualifiedAt": { "type": "string", "minLength": 1 },
+        "expiresAt": { "$ref": "#/$defs/instant" },
+        "maxAgeMilliseconds": { "type": "integer", "minimum": 1 },
+        "remainingMilliseconds": { "type": "integer" },
+        "current": { "type": "boolean" },
+        "detail": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail"],
+      "properties": {
+        "code": {
+          "enum": ["nothingRanked", "noMetrics", "reliabilityUnknown", "smallSample", "wideInterval", "effortUnobservable",
+            "durationUnknown", "fallsThroughNow", "noFallback"]
+        },
+        "key": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string", "minLength": 1 }
+      }
+    },
+    "fallbackEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "cfc1Position", "key", "routeKey", "standing", "fallsThroughBecause"],
+      "properties": {
+        "position": { "type": "integer", "minimum": 1 },
+        "cfc1Position": { "type": "integer", "minimum": 1 },
+        "key": { "type": "string", "minLength": 1 },
+        "routeKey": { "$ref": "#/$defs/routeKey" },
+        "standing": { "enum": ["inChain", "fallsThrough"] },
+        "fallsThroughBecause": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "rankedRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rank", "key", "routeKey", "provider", "modelID", "effort", "machineKey", "reliability", "duration",
+        "resourcePosture", "qualification", "availability", "fallback", "reasons", "uncertainties", "candidate"
+      ],
+      "properties": {
+        "rank": { "type": "integer", "minimum": 1 },
+        "key": { "type": "string", "minLength": 1 },
+        "routeKey": { "$ref": "#/$defs/routeKey" },
+        "provider": { "type": "string", "minLength": 1 },
+        "modelID": { "type": "string", "minLength": 1 },
+        "effort": { "$ref": "#/$defs/effort" },
+        "machineKey": { "type": "string", "pattern": "^cmk1:" },
+        "reliability": { "$ref": "#/$defs/reliability" },
+        "duration": { "$ref": "#/$defs/duration" },
+        "resourcePosture": { "$ref": "#/$defs/resourcePosture" },
+        "qualification": { "$ref": "#/$defs/qualification" },
+        "availability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "observedOnMachine", "reason"],
+          "properties": {
+            "state": { "type": "string", "minLength": 1 },
+            "observedOnMachine": { "type": "string", "minLength": 1 },
+            "observedAt": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        },
+        "fallback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["position", "cfc1Position", "standing", "fallsThroughBecause"],
+          "properties": {
+            "position": { "type": "integer", "minimum": 1 },
+            "cfc1Position": { "type": "integer", "minimum": 1 },
+            "standing": { "enum": ["inChain", "fallsThrough"] },
+            "fallsThroughBecause": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "reasons": { "type": "array", "minItems": 3, "items": { "type": "string", "minLength": 1 } },
+        "uncertainties": { "type": "array", "items": { "$ref": "#/$defs/uncertainty" } },
+        "candidate": {
+          "type": "object",
+          "required": ["routeKey", "group", "identityConfidence", "record"],
+          "properties": {
+            "routeKey": { "$ref": "#/$defs/routeKey" },
+            "group": { "enum": ["zeroMarginalCost", "meteredRequiresAuthorization"] }
+          }
+        }
+      }
+    }
+  }
+}
