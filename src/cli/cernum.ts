@@ -116,6 +116,8 @@ import {
   effortKeyedRouteCandidatesFromStore, routeEffortKeys, runsAtEffortKey,
   // Ordra route telemetry ingested as sealed outcomes (cro1): rollup input only, never a verdict.
   RouteOutcomeIngestError, ingestRouteOutcomeFile, routeOutcomeRunRows,
+  // Those outcomes aggregated per model, effort, task type and machine (col1): operational evidence, never a verdict.
+  DEFAULT_OUTCOME_MINIMUM_SAMPLE, OrdraTaskType, OutcomeLearningError, deriveOutcomeLearning,
   // Substitution quarantine (csq1): a recorded identity substitution holds a route out of routing until released.
   RouteQuarantineError, listRouteQuarantine, recordOutcomeSubstitutionQuarantines, recordRouteQuarantineRelease,
   recordSmokeSubstitutionQuarantines, routeQuarantineStatus,
@@ -4406,6 +4408,60 @@ async function commandIngestOutcomes(positional: string[], options: Options): Pr
 }
 
 /**
+ * `outcomes [--task <type>] [--machine <key>] [--minimum-sample <n>] [--json]` (col1): the ingested Ordra outcomes
+ * aggregated per model, effort, task type and machine key, as ordra_operational evidence. READ-ONLY. Every
+ * machine unless --machine is given. A cell below the minimum sample is insufficient and influences nothing.
+ */
+async function commandOutcomes(positional: string[], options: Options): Promise<void> {
+  if (positional.length > 0) fail(`outcomes: takes no positional argument. ${TERMINAL_COMMAND} outcomes --task fix --json. Nothing was read.`, 2);
+  const root = String(options.root ?? defaultCampaignRoot());
+  const asked = (name: string): string | undefined => {
+    const value = options[name];
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || value.trim().length === 0) fail(`outcomes: --${name} needs a value. Nothing was read.`, 2);
+    return String(value).trim();
+  };
+  const minimum = asked('minimum-sample');
+  if (minimum !== undefined && !/^[1-9]\d*$/.test(minimum)) {
+    fail(`outcomes: --minimum-sample must be a whole number from 1, not '${minimum}'. Nothing was read.`, 2);
+  }
+  let learning;
+  try {
+    learning = deriveOutcomeLearning(readObservationStore(root), {
+      // Validated by the engine: an unknown task type is refused with the ctt1 list, never mapped.
+      taskType: asked('task') as OrdraTaskType | undefined,
+      machineKey: asked('machine'),
+      minimumSampleSize: minimum === undefined ? DEFAULT_OUTCOME_MINIMUM_SAMPLE : Number(minimum),
+    });
+  } catch (error) {
+    if (error instanceof OutcomeLearningError) fail(`outcomes: ${error.message} Nothing was read.`, 2);
+    throw error;
+  }
+  if (options.json === true) { say(JSON.stringify(learning, null, 2)); return; }
+
+  const shown = (quantity: { value?: number }): string => (quantity.value === undefined ? '—' : String(quantity.value));
+  say(`Outcome learning ${learning.schema} · evidence class ${learning.evidenceClass} · taxonomy ${learning.taxonomyVersion}`);
+  say(`  task ${learning.query.taskType} · machine ${learning.query.machineKey} · minimum sample ${learning.minimumSampleSize} `
+    + `· ${learning.outcomesRead} outcome(s) read · ${learning.cells.length} cell(s) · ${learning.excluded.length} excluded`);
+  say('');
+  if (learning.cells.length === 0) say('No ingested outcome falls in any cell for this query.');
+  for (const cell of learning.cells) {
+    say(`  ${cell.effort.effortRouteKey}  ${cell.taskType}  ${cell.machineKey}  ${cell.status.toUpperCase()} (n=${cell.sampleSize})`);
+    say(`    passed ${cell.counts.passed} · failed ${cell.counts.failed} · not run ${cell.counts.notRun} · retries ${cell.counts.retries}`);
+    if (cell.status === 'sufficient') {
+      say(`    success ${shown(cell.successRateMilli)}‰ (Wilson 95% ${shown(cell.interval95.lowerMilli)}–${shown(cell.interval95.upperMilli)}‰)`
+        + ` · verification pass ${shown(cell.verificationPassRateMilli)}‰ · duration median ${shown(cell.durationMilliseconds.median)} ms`
+        + `, p90 ${shown(cell.durationMilliseconds.p90)} ms`);
+    } else {
+      say(`    fewer than ${cell.minimumSampleSize} outcomes: nothing derived, influences nothing`);
+    }
+  }
+  for (const entry of learning.excluded) say(`  excluded ${entry.pass} attempt ${entry.attempt} ${entry.routeKey} (${entry.reasonCode}): ${entry.reason}`);
+  say('');
+  for (const line of wrap(learning.disclosure, 76)) say(line);
+}
+
+/**
  * `classify-pass <file> [--json]` (cpc1): one exported Ordra pass record mapped to its ctt1 task type and tier, with
  * the evidence for each, a confidence and the query for `recommend`. Reads only the file. A record no rule
  * classifies is printed with its reasons and exits 2; nothing is defaulted.
@@ -5501,6 +5557,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'release-report': return commandReleaseReport(positional, options);
     case 'plan-qualification': return commandPlanQualification(positional, options);
     case 'ingest-outcomes': return commandIngestOutcomes(positional, options);
+    case 'outcomes': return commandOutcomes(positional, options);
     case 'quarantine': return commandQuarantine(positional, options);
     case 'classify-pass': return commandClassifyPass(positional, options);
     case 'where': return commandWhere();

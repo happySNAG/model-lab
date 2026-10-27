@@ -142,6 +142,7 @@ export * from './fallback-chain';
 export * from './route-recommendation';
 export * from './route-recommendation-crr2';
 export * from './route-outcome-ingest';
+export * from './outcome-learning';
 export * from './route-quarantine';
 export * from './pass-classifier';
 export * from './limit-evidence';

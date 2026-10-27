@@ -19,6 +19,10 @@
 //   already seen, is QUARANTINED: sealed as a `routeOutcomeQuarantine` observation carrying the line's own text,
 //   its line number, the file's digest and the reason. Only lines holding nothing but whitespace are skipped,
 //   and they are counted.
+//   OPTIONAL CONTEXT, ONLY WHEN SENT. A line may name the pass's ctt1 `taskType`, the `requestedEffort` and the
+//   `appliedEffort` the session's own telemetry reported. Each is read only when the line carries it, and only then
+//   does the outcome's body hold it, so a line without them seals to exactly the record it always did. They feed
+//   outcome learning (`outcome-learning.ts`), never a verdict. An effort is never read from a model name.
 //   FEEDS THE ROLLUP, NEVER A VERDICT. `routeOutcomeRunRows` hands outcomes to `deriveMetricsRollup` as run rows.
 //   Nothing here is read by `deriveRouteQualification`, and an outcome record carries no record-level `routeKey`,
 //   so neither availability, discovery nor the qualification timeline ever sees one.
@@ -28,7 +32,8 @@ import { CanonicalValue, canonicalJSON, compareCodePoints, sha256Bytes } from '.
 import {
   ObservationRecord, ObservationStoreContents, StoredObservation, appendObservations, readObservationStore, sealObservation,
 } from './observation-store';
-import { PROVIDER_IDS, ProviderID } from './provider';
+import { EFFORT_LEVELS, EffortLevel, PROVIDER_IDS, ProviderID } from './provider';
+import { ALL_ORDRA_TASK_TYPES, OrdraTaskType } from './task-taxonomy';
 import { WorkspaceRunRow } from './workspace-aggregate';
 
 export const ROUTE_OUTCOME_INGEST_RULE = 'cro1';
@@ -62,6 +67,12 @@ export interface RouteTelemetryLine {
   durationMilliseconds?: number | null;
   /** When the attempt was recorded, as an ISO-8601 instant. The observation's `observedAt`. */
   recordedAt: string;
+  /** The pass's ctt1 task type. Absent: not sent, and never guessed. */
+  taskType?: OrdraTaskType;
+  /** The effort Ordra asked for. Absent: not sent. */
+  requestedEffort?: EffortLevel;
+  /** The effort the session's own telemetry reported it applied. `null` or absent: not observed. */
+  appliedEffort?: EffortLevel | null;
 }
 
 /** `matched`: reported model is the requested one. `substituted`: it is not. `unreported`: the session named none. */
@@ -88,6 +99,12 @@ export interface RouteOutcome {
   durationMilliseconds: number | null;
   recordedAt: string;
   findings: RouteOutcomeSubstitution[];
+  /** Present only when the line named it. */
+  taskType?: OrdraTaskType;
+  /** Present only when the line named it. */
+  requestedEffort?: EffortLevel;
+  /** Present only when the line carried the key; `null` is "sent, and not observed". */
+  appliedEffort?: EffortLevel | null;
 }
 
 export type RouteOutcomeQuarantineReason = 'malformed' | 'duplicate';
@@ -168,6 +185,15 @@ export function parseRouteTelemetryLine(text: string): { ok: true; outcome: Rout
   const duration = optionalCount(object, 'durationMilliseconds', 'milliseconds');
   if (!duration.ok) reasons.push(duration.reason);
   if (!isInstant(object.recordedAt)) reasons.push(`recordedAt is ${JSON.stringify(object.recordedAt)}, not an ISO-8601 instant`);
+  if (object.taskType !== undefined && !ALL_ORDRA_TASK_TYPES.includes(object.taskType as OrdraTaskType)) {
+    reasons.push(`taskType is ${JSON.stringify(object.taskType)}, not one of ${ALL_ORDRA_TASK_TYPES.join(', ')}`);
+  }
+  if (object.requestedEffort !== undefined && !EFFORT_LEVELS.includes(object.requestedEffort as EffortLevel)) {
+    reasons.push(`requestedEffort is ${JSON.stringify(object.requestedEffort)}, not one of ${EFFORT_LEVELS.join(', ')}`);
+  }
+  if (object.appliedEffort !== undefined && object.appliedEffort !== null && !EFFORT_LEVELS.includes(object.appliedEffort as EffortLevel)) {
+    reasons.push(`appliedEffort is ${JSON.stringify(object.appliedEffort)}, not one of ${EFFORT_LEVELS.join(', ')} or null`);
+  }
   if (reasons.length > 0) return { ok: false, reasons };
 
   const provider = object.provider as ProviderID;
@@ -190,6 +216,9 @@ export function parseRouteTelemetryLine(text: string): { ok: true; outcome: Rout
       durationMilliseconds: duration.ok ? duration.value : null,
       recordedAt: object.recordedAt as string,
       findings: identity === 'substituted' ? [{ kind: 'substitution', requestedModel, actualModel: actualModel as string }] : [],
+      ...(object.taskType === undefined ? {} : { taskType: object.taskType as OrdraTaskType }),
+      ...(object.requestedEffort === undefined ? {} : { requestedEffort: object.requestedEffort as EffortLevel }),
+      ...(object.appliedEffort === undefined ? {} : { appliedEffort: object.appliedEffort as EffortLevel | null }),
     },
   };
 }

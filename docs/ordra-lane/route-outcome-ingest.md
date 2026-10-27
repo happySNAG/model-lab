@@ -21,6 +21,14 @@ One JSON object per line (JSONL). Lines holding only whitespace are skipped and 
 | `tokens` | whole number ≥ 0, `null` or absent | total tokens the session reported; never estimated |
 | `durationMilliseconds` | whole number ≥ 0, `null` or absent | wall clock of the attempt |
 | `recordedAt` | ISO-8601 instant | when the attempt was recorded; becomes the observation's `observedAt` |
+| `taskType` | optional ctt1 task type | the pass's task type, for outcome learning; never guessed |
+| `requestedEffort` | optional effort level | the effort Ordra asked for |
+| `appliedEffort` | optional effort level or `null` | the effort the session's own telemetry reported it applied; `null` or absent: not observed |
+
+The three optional fields are read only when the line carries them, and only then does the sealed outcome hold
+them. A line without them seals to exactly the record it always did. A value outside ctt1 or the effort ladder
+makes the line malformed. They feed outcome learning ([outcome-learning.md](outcome-learning.md)) and never a
+verdict.
 
 Fields not listed are not read. Example: `fixtures/route-outcomes/ordra-route-telemetry.jsonl`.
 
