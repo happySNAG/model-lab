@@ -428,7 +428,8 @@ describe('the text benchmark path is unchanged', () => {
     // whichever line it came from; it is not that there are only two lines.
     const FLEET = ['observations', 'observations-export', 'observations-import', 'availability',
       'discovery-refresh', 'discovery-run', 'discovery-schedule', 'candidates', 'recommend', 'history', 'decision-log', 'regressions',
-      'status-export', 'discovery-delta', 'release-report', 'plan-qualification', 'ingest-outcomes'];
+      'status-export', 'discovery-delta', 'release-report', 'plan-qualification', 'ingest-outcomes',
+      'outcomes', 'quarantine', 'classify-pass'];
     const isAddition = (name: string) => name.startsWith('develop') || name.startsWith('workspace')
       || FLEET.includes(name);
     expect(current.filter(([name]) => !isAddition(name))).toEqual(PRE_PASS_D_COMMANDS);
@@ -452,6 +453,13 @@ describe('the text benchmark path is unchanged', () => {
       // `ingest-outcomes` appends sealed outcomes and quarantines to the observation store, and contacts
       // nothing (route-outcome-ingest.test.ts).
       ['ingest-outcomes', 'writesLocal'],
+      // `outcomes` aggregates the sealed outcomes and writes nothing (outcome-learning.test.ts).
+      ['outcomes', 'readOnly'],
+      // `quarantine release` appends a release record to the observation store; `quarantine list`
+      // writes nothing (route-quarantine.test.ts).
+      ['quarantine', 'writesLocal'],
+      // `classify-pass` reads only the pass record it is given (pass-classifier.test.ts).
+      ['classify-pass', 'readOnly'],
     ]);
     expect(current.filter(([name]) => name.startsWith('develop')).map(([name, effect]) => [name, effect])).toEqual([
       ['develop', 'spendsAllowance'], ['develop-resume', 'spendsAllowance'], ['develop-status', 'readOnly'],
