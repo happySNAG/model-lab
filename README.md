@@ -18,6 +18,8 @@ side, and pick the right model for each job with evidence instead of vibes.
 
 </div>
 
+> **Product direction:** the owner's Cernum Master Vision v1.0 is in [docs/VISION.md](docs/VISION.md); where it conflicts with existing behaviour, see [docs/ordra-lane/vision-conflicts.md](docs/ordra-lane/vision-conflicts.md).
+
 ![The Results screen: two models ranked within one benchmark, with quality, pass/partial/fail counts, reliability, median and p95 latency, tokens per second, and how many hard boundaries each model crossed.](docs/screenshots/cernum-results.png)
 
 ## What it is

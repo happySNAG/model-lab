@@ -1,5 +1,7 @@
 # Cernum architecture — the canonical map
 
+> Product direction: [VISION.md](VISION.md) (Cernum Master Vision v1.0); its conflicts with this map are recorded in [ordra-lane/vision-conflicts.md](ordra-lane/vision-conflicts.md).
+
 Cernum was developed on two lines at once: the **workspace qualification** line (MacBook) and the
 **V1 benchmark / development-runner** line (Mac mini, tagged `cernum-v1-benchmark-freeze`). They were
 consolidated into one engine. This page records where each concept lives **once**, which lifecycle
