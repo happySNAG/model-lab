@@ -110,6 +110,8 @@ import {
   deriveFallbackChain, throttleEvidenceFromRecords,
   // An advisory per-task ranking of the qualified routes, by rule crr1. Never a selection.
   availabilityFromStore, recommendRoutes,
+  // Evidence keyed by the effort it was gathered at (cek1), beside crc2 and never in place of it.
+  effortKeyedRouteCandidatesFromStore, routeEffortKeys,
   // Ordra route telemetry ingested as sealed outcomes (cro1): rollup input only, never a verdict.
   RouteOutcomeIngestError, ingestRouteOutcomeFile, routeOutcomeRunRows,
   // Usage-limit and rate-limit events, persisted as availability evidence that expires (cle1).
@@ -3399,6 +3401,10 @@ async function commandCandidates(positional: string[], options: Options): Promis
   if (options.context !== undefined && options.task === undefined) {
     fail('candidates: --context is the context requirement of a --task; without --task use --min-context. Nothing was read.', 2);
   }
+  if (options['by-effort'] === true && (options.fallback === true || options.log === true)) {
+    fail('candidates: --by-effort is its own read-only view (cek1); --fallback and --log answer crc2 and are refused beside it. '
+      + 'Nothing was read.', 2);
+  }
   const task = options.task === undefined ? undefined : taskQueryFromOptions(positional, options, machineFromOptions(options));
   const capability = task === undefined ? positional[0] : task.query.capability;
   if (capability === undefined) {
@@ -3470,6 +3476,64 @@ async function commandCandidates(positional: string[], options: Options): Promis
   const cases = allWorkspaceCases();
   const profiles = registeredWorkspaceDifficultyProfiles();
   const routes = [...new Set(availability.filter((entry) => entry.machineKey === machine).map((entry) => entry.routeKey))].sort();
+  // --by-effort: THE SAME ROUTES, one record per effort key (cek1), each answered by the crc2 rules on the
+  // runs under that key alone. Opt-in, read-only, and a separate document: the crc2 answer below is untouched.
+  if (options['by-effort'] === true) {
+    const keyed: Parameters<typeof effortKeyedRouteCandidatesFromStore>[2] = [];
+    const unkeyed: { routeKey: string; reason: string }[] = [];
+    for (const routeKey of routes) {
+      const [provider, ...rest] = routeKey.split(':');
+      const modelID = rest.join(':');
+      const keys = routeEffortKeys(workspaceRows, provider as ProviderID, modelID);
+      if (keys.length === 0) {
+        unkeyed.push({ routeKey, reason: 'no sealed workspace run of this route exists at any effort, so there is no evidence to key' });
+        continue;
+      }
+      for (const effortKey of keys) {
+        const record = deriveRouteQualification({
+          provider: provider as ProviderID, modelID, machineKey: machine, effortKey,
+          ...(snapshot === undefined ? {} : { snapshot }), availability,
+          workspaceRows, workspaceCases: cases, difficultyProfiles: profiles,
+          spend: routeSpendPosture({ provider: provider as ProviderID, modelID, now }),
+          routingPolicyVersion: policyAsked, now,
+        });
+        if (record.evidenceEffort !== undefined) keyed.push({ record: { ...record, evidenceEffort: record.evidenceEffort } });
+      }
+    }
+    const byEffort = effortKeyedRouteCandidatesFromStore(query, contents, keyed, now, unkeyed);
+    if (options.json === true) {
+      say(JSON.stringify({ ...byEffort, ...(task === undefined ? {} : { task: { taxonomyVersion: task.taxonomyVersion,
+        taskType: task.taskType, row: task.row } }) }, null, 2));
+      return;
+    }
+    say(`Effort-keyed candidates ${byEffort.schema} over routing contract ${byEffort.contract} · routing policy `
+      + `${byEffort.routingPolicyVersion} · machine ${machine}`);
+    say(`Capability: ${capability}${tier === undefined ? '' : ` at ${tier}`}`);
+    say('');
+    if (byEffort.candidates.length === 0) say('No effort-keyed route qualifies for this query.');
+    for (const candidate of byEffort.candidates) {
+      say(`  ${candidate.effortRouteKey}  [${candidate.group}]  ${candidate.locality}`);
+      say(`    effort       ${candidate.evidenceEffort.state === 'observed' ? `observed at ${candidate.evidenceEffort.effort}`
+        : `UNOBSERVABLE (requested ${candidate.evidenceEffort.requestedEfforts.join(', ')})`} · ${candidate.evidenceEffort.runCount} run(s)`);
+      say(`    evidence     ${candidate.capabilityEvidence.reason}`);
+    }
+    if (byEffort.excluded.length > 0) {
+      say('');
+      say(`${byEffort.excluded.length} effort-keyed route(s) excluded, each with every reason:`);
+      for (const entry of byEffort.excluded) {
+        say(`  ${entry.effortRouteKey}`);
+        for (const reason of entry.reasons) for (const line of wrap(reason, 70)) say(`    ${line}`);
+      }
+    }
+    if (byEffort.unkeyed.length > 0) {
+      say('');
+      say(`${byEffort.unkeyed.length} route(s) with no run at any effort: ${byEffort.unkeyed.map((entry) => entry.routeKey).join(', ')}`);
+    }
+    say('');
+    say(`Ordering: ${byEffort.ordering}`);
+    for (const line of wrap(byEffort.effortDisclosure, 76)) say(line);
+    return;
+  }
   const derived = routes.map((routeKey) => {
     const [provider, ...rest] = routeKey.split(':');
     const modelID = rest.join(':');

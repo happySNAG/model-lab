@@ -133,6 +133,7 @@ export * from './route-spend-posture';
 export * from './route-qualification';
 export * from './routing-contract';
 export * from './qualification-history';
+export * from './effort-keyed-routes';
 export * from './routing-decision-log';
 export * from './percentile';
 export * from './metrics-rollup';

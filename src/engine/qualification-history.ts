@@ -18,6 +18,7 @@
 //   stood then. The policy id and routing policy version are on every entry so nobody has to assume.
 
 import { compareCodePoints } from './canonical';
+import { EFFORT_UNOBSERVABLE, EffortKey, effortRouteKey, runsAtEffortKey } from './effort-keyed-routes';
 import { ObservationStoreContents, StoredObservation, latestDiscoverySnapshot } from './observation-store';
 import { EffortLevel, ProviderID } from './provider';
 import {
@@ -50,6 +51,11 @@ export interface QualificationHistoryInputs {
   /** The `cmk1:` key availability and discovery are answered for. */
   machineKey: string;
   effort?: EffortLevel;
+  /**
+   * The timeline of ONE effort key (`effort-keyed-routes.ts`): only the runs under that key move or inform it,
+   * and every entry is a record derived for that key. Absent, the history is byte-identical to what it was.
+   */
+  effortKey?: EffortKey;
   contents: ObservationStoreContents;
   /** Workspace run rows, from any number of roots. Read, never written. */
   workspaceRows: WorkspaceRunRow[];
@@ -92,7 +98,9 @@ export interface QualificationHistory {
   routeKey: string;
   provider: ProviderID;
   modelID: string;
-  effort: EffortLevel | 'any';
+  effort: EffortLevel | 'any' | typeof EFFORT_UNOBSERVABLE;
+  /** Present exactly when derived for an effort key: `provider:model@effort` or `provider:model@unobservable:<requested>`. */
+  effortRouteKey?: string;
   machineKey: string;
   /** Oldest first. */
   entries: QualificationHistoryEntry[];
@@ -145,8 +153,12 @@ export function deriveQualificationHistory(inputs: QualificationHistoryInputs): 
   const { provider, modelID } = parseRouteKey(inputs.routeKey);
   const routeKey = `${provider}:${modelID}`;
 
-  const routeRuns = inputs.workspaceRows.filter(({ row }) => row.provider === provider && row.requestedModelID === modelID
-    && (inputs.effort === undefined || row.effort === inputs.effort));
+  if (inputs.effortKey !== undefined && inputs.effort !== undefined) {
+    throw new Error('deriveQualificationHistory: give an effort or an effort key, not both — they select different runs');
+  }
+  const routeRuns = inputs.effortKey !== undefined ? runsAtEffortKey(inputs.workspaceRows, provider, modelID, inputs.effortKey)
+    : inputs.workspaceRows.filter(({ row }) => row.provider === provider && row.requestedModelID === modelID
+      && (inputs.effort === undefined || row.effort === inputs.effort));
   const routeObservations = inputs.contents.observations.filter((entry) => aboutRoute(entry, routeKey));
   if (routeRuns.length === 0 && routeObservations.length === 0) {
     throw new QualificationHistoryError('unknownRoute',
@@ -180,6 +192,7 @@ export function deriveQualificationHistory(inputs: QualificationHistoryInputs): 
     const record = deriveRouteQualification({
       provider, modelID, machineKey: inputs.machineKey, now,
       ...(inputs.effort === undefined ? {} : { effort: inputs.effort }),
+      ...(inputs.effortKey === undefined ? {} : { effortKey: inputs.effortKey }),
       ...(snapshot === undefined ? {} : { snapshot }),
       availability: observationsForRouting(asOf),
       workspaceRows: runs,
@@ -222,7 +235,9 @@ export function deriveQualificationHistory(inputs: QualificationHistoryInputs): 
   return {
     schema: QUALIFICATION_HISTORY_SCHEMA,
     routeKey, provider, modelID,
-    effort: inputs.effort ?? 'any',
+    effort: inputs.effortKey === undefined ? inputs.effort ?? 'any'
+      : inputs.effortKey.state === 'observed' ? inputs.effortKey.effort : EFFORT_UNOBSERVABLE,
+    ...(inputs.effortKey === undefined ? {} : { effortRouteKey: effortRouteKey(provider, modelID, inputs.effortKey) }),
     machineKey: inputs.machineKey,
     entries,
     undatedWorkspaceRuns,

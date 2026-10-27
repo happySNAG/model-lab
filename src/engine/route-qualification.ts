@@ -49,6 +49,7 @@ import {
   availabilityOnMachine, qualificationAppliesOn, qualificationScopeFor,
 } from './machine-availability';
 import { IdentityConfidence, ModelDescription } from './model-description';
+import { EFFORT_UNOBSERVABLE, EffortKey, EvidenceEffort, evidenceEffortOf, runsAtEffortKey } from './effort-keyed-routes';
 import { EffortLevel, ProviderID } from './provider';
 import { nearestRankMedian } from './percentile';
 import { CandidateRanking } from './ranking';
@@ -170,6 +171,12 @@ export interface RouteQualificationInputs {
   modelID: string;
   /** Absent means every effort's rows are read, and the record says so. */
   effort?: EffortLevel;
+  /**
+   * Derive the record for ONE effort key (`effort-keyed-routes.ts`): only runs whose effort was observed at
+   * that level, or only runs whose effort was unobservable under that request. The record then carries
+   * `evidenceEffort`. Absent, the record is byte-identical to what it always was. Never given with `effort`.
+   */
+  effortKey?: EffortKey;
   /** THIS machine, as a `cmk1:` key. The machine the question is being asked from. */
   machineKey: string;
   discovery?: DiscoveryEvidence;
@@ -202,7 +209,10 @@ export interface RouteQualificationRecord {
   routeKey: string;
   provider: ProviderID;
   modelID: string;
-  effort: EffortLevel | 'any';
+  /** `unobservable` only on a record derived for an unobservable effort key. */
+  effort: EffortLevel | 'any' | typeof EFFORT_UNOBSERVABLE;
+  /** Present exactly when derived with an `effortKey`: the effort the evidence was gathered at, and how that is known. */
+  evidenceEffort?: EvidenceEffort;
   policy: QualificationPolicy;
   qualificationScope: QualificationScope;
 
@@ -289,8 +299,15 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
   const block = (kind: RouteBlockerKind, reason: string): void => { blockers.push({ kind, reason }); };
 
   // ---- the rows for THIS route -------------------------------------------------------------------
-  const runs = (inputs.workspaceRows ?? []).filter(({ row }) => row.provider === inputs.provider
-    && row.requestedModelID === inputs.modelID && (inputs.effort === undefined || row.effort === inputs.effort));
+  // KEYED BY EFFORT when an effort key is given: the runs observed at that level, or the runs whose effort
+  // was unobservable under that request — never both, and never a row matched on `effort` alone.
+  const { effortKey } = inputs;
+  if (effortKey !== undefined && inputs.effort !== undefined) {
+    throw new Error('deriveRouteQualification: give an effort or an effort key, not both — they select different runs');
+  }
+  const runs = effortKey !== undefined ? runsAtEffortKey(inputs.workspaceRows ?? [], inputs.provider, inputs.modelID, effortKey)
+    : (inputs.workspaceRows ?? []).filter(({ row }) => row.provider === inputs.provider
+      && row.requestedModelID === inputs.modelID && (inputs.effort === undefined || row.effort === inputs.effort));
   const rows = runs.map((run) => run.row);
   const scoredRows = rows.filter((row) => !STATUSES_THAT_MEASURED_NO_WORK.includes(String(row.status)));
 
@@ -383,8 +400,12 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
       });
     }
   }
+  // A development report measures no applied effort, so under an effort key it is evidence only for the
+  // unobservable key of the effort it asked for — never for an observed level.
   const developmentReports = (inputs.developmentReports ?? []).filter((report) => report.provider === inputs.provider
-    && report.modelID === inputs.modelID && (inputs.effort === undefined || report.effort === inputs.effort));
+    && report.modelID === inputs.modelID && (effortKey !== undefined
+      ? effortKey.state === 'unobservable' && report.effort === effortKey.requestedEffort
+      : inputs.effort === undefined || report.effort === inputs.effort));
   for (const report of developmentReports) {
     for (const role of report.roles) {
       const decided = reportVerdict(role.qualified, role.reason);
@@ -400,7 +421,8 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
   }
   // PASSED IN ALREADY BOUND TO THIS ROUTE. A prose candidate's name is an operator's label, and matching it
   // to a route by substring would be matching on a name — the one thing this view refuses to do.
-  const proseRankings = inputs.proseRankings ?? [];
+  // A prose ranking carries no effort at all, so a keyed record leaves it out and says so in `evidenceEffort`.
+  const proseRankings = effortKey !== undefined ? [] : inputs.proseRankings ?? [];
   for (const ranking of proseRankings) {
     for (const role of ranking.roles) {
       const decided = reportVerdict(role.qualified, role.reason);
@@ -474,12 +496,22 @@ export function deriveRouteQualification(inputs: RouteQualificationInputs): Rout
   const notRoutableBecause = blockers.map((entry) => `${entry.kind}: ${entry.reason}`);
   const safeToRoute = blockers.length === 0 && qualifiedCapabilities.length > 0;
 
+  let evidenceEffort: EvidenceEffort | undefined;
+  if (effortKey !== undefined) {
+    evidenceEffort = evidenceEffortOf(inputs.provider, inputs.modelID, effortKey, runs);
+    const leftOut = (inputs.proseRankings ?? []).length;
+    if (leftOut > 0) {
+      evidenceEffort.notKeyed.push(`${leftOut} prose ranking(s) for this route carry no effort and are in no effort-keyed record`);
+    }
+  }
+
   return {
     schema: ROUTE_QUALIFICATION_SCHEMA,
     routeKey,
     provider: inputs.provider,
     modelID: inputs.modelID,
-    effort: inputs.effort ?? 'any',
+    effort: effortKey === undefined ? inputs.effort ?? 'any' : effortKey.state === 'observed' ? effortKey.effort : EFFORT_UNOBSERVABLE,
+    ...(evidenceEffort === undefined ? {} : { evidenceEffort }),
     policy,
     qualificationScope: scope,
     discovered,
