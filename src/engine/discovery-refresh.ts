@@ -64,6 +64,11 @@ export interface ProviderRefreshOutcome {
   detail: string;
   /** Present when the provider allowlist refused it: the list's version. Its probe was never called. */
   refusedByAllowlist?: string;
+  /**
+   * Present only when this refresh was ROUTE-SCOPED for this provider: the route keys it re-observed.
+   * Every other route of the provider was not looked at, and is carried forward untouched.
+   */
+  routeScope?: string[];
 }
 
 export interface DiscoverySnapshot {
@@ -90,7 +95,7 @@ export type DiscoveryDeltaKind =
   | 'runtimeDigestChanged'
   | 'runtimeVersionChanged'
   | 'availabilityChanged'
-  /** The provider did not answer this refresh; nothing about its routes was re-observed. */
+  /** The provider did not answer this refresh, or answered a refresh scoped to other routes; nothing about this route was re-observed. */
   | 'notRefreshed'
   | 'noMaterialChange';
 
@@ -124,6 +129,8 @@ export function diffDiscoverySnapshots(previous: DiscoverySnapshot | undefined, 
   const unrefreshed = new Set(next.providers.filter((entry) => !entry.refreshed).map((entry) => entry.provider));
   const refusedBy = new Map(next.providers.filter((entry) => entry.refusedByAllowlist !== undefined)
     .map((entry) => [entry.provider, entry.refusedByAllowlist!]));
+  const scopedTo = new Map(next.providers.filter((entry) => entry.routeScope !== undefined)
+    .map((entry) => [entry.provider, entry.routeScope!]));
   const keys = [...new Set([...before.keys(), ...after.keys()])].sort();
 
   return keys.map((routeKey) => {
@@ -139,6 +146,15 @@ export function diffDiscoverySnapshots(previous: DiscoverySnapshot | undefined, 
         ? `${provider} is not on provider allowlist ${refusedBy.get(provider)} and was not contacted, so ${routeKey} was not `
           + 're-observed; its last observation stands'
         : `${provider} did not answer this refresh, so ${routeKey} was not re-observed; its last observation stands`);
+      return { routeKey, kinds, before: was, after: now, detail, qualificationNowStale: false };
+    }
+    // OUTSIDE A ROUTE SCOPE IS THE SAME SILENCE AS A PROVIDER THAT DID NOT ANSWER: the route was not
+    // looked at, so it is never reported as gone, returned or changed.
+    const scope = scopedTo.get(provider);
+    if (scope !== undefined && !scope.includes(routeKey)) {
+      kinds.push('notRefreshed');
+      detail.push(`${provider} answered a refresh scoped to route ${scope.join(', ')}, so ${routeKey} was not re-observed; `
+        + 'its last observation stands');
       return { routeKey, kinds, before: was, after: now, detail, qualificationNowStale: false };
     }
 
@@ -354,6 +370,14 @@ export type DiscoveryProbe = () => Promise<{ refreshed: boolean; detail: string;
  *   A provider the allowlist (cpa1 unless overridden) does not name is NOT CONTACTED: its probe is
  *   never called, it is recorded as refused with the list's version, and its previous routes are
  *   carried forward untouched exactly as for a provider that did not answer — nothing was looked at.
+ *
+ * ROUTE SCOPE (`routeScope`, optional) narrows WHICH of a provider's routes this refresh re-observes,
+ * never what an observation says. The provider's probe runs exactly as it would unscoped; from its
+ * answer only the scoped routes are taken, each recorded exactly as an unscoped refresh would record
+ * it (`listed: false` and `disappeared` only when the provider answered and did not name it). Every
+ * other route of that provider is carried forward UNTOUCHED, and its delta is `notRefreshed` naming the
+ * scope; a route the probe named outside the scope that was not already known is not recorded at all.
+ * Without `routeScope` nothing here differs from before.
  */
 export async function refreshDiscovery(options: {
   previous?: DiscoverySnapshot;
@@ -361,6 +385,7 @@ export async function refreshDiscovery(options: {
   machineKey: string;
   now: Date;
   allowlist?: ProviderAllowlist;
+  routeScope?: Partial<Record<ProviderID, string[]>>;
 }): Promise<{ snapshot: DiscoverySnapshot; deltas: DiscoveryDelta[] }> {
   const allowlist = options.allowlist ?? DEFAULT_PROVIDER_ALLOWLIST;
   const takenAt = options.now.toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -368,6 +393,8 @@ export async function refreshDiscovery(options: {
     throw new Error(`the previous snapshot was taken on ${options.previous.machineKey}, not ${options.machineKey}. A local `
       + 'route observed on one machine says nothing about another, so snapshots are never diffed across machines.');
   }
+  const scopeRefusals = routeScopeRefusals(options.routeScope, Object.keys(options.probes) as ProviderID[]);
+  if (scopeRefusals.length > 0) throw new Error(`the route scope was refused, and nothing was probed: ${scopeRefusals.join('; ')}`);
   const providers: ProviderRefreshOutcome[] = [];
   const routes: RouteObservation[] = [];
   const previousRoutes = options.previous?.routes ?? [];
@@ -387,9 +414,21 @@ export async function refreshDiscovery(options: {
     } catch (error) {
       outcome = { refreshed: false, detail: `the probe threw: ${error instanceof Error ? error.message : String(error)}`, routes: [] };
     }
-    providers.push({ provider, refreshed: outcome.refreshed, detail: outcome.detail });
+    const scope = options.routeScope?.[provider];
+    providers.push({
+      provider, refreshed: outcome.refreshed, detail: outcome.detail, ...(scope === undefined ? {} : { routeScope: [...scope].sort() }),
+    });
     const earlier = previousRoutes.filter((route) => route.provider === provider);
     if (!outcome.refreshed) { routes.push(...earlier); continue; }
+    if (scope !== undefined) {
+      // Outside the scope: not looked at, so carried forward exactly as it was.
+      routes.push(...earlier.filter((route) => !scope.includes(route.routeKey)));
+      const answered = outcome.routes.filter((route) => scope.includes(route.routeKey));
+      const named = new Set(answered.map((route) => route.routeKey));
+      routes.push(...answered);
+      for (const route of earlier) if (scope.includes(route.routeKey) && !named.has(route.routeKey)) routes.push({ ...route, listed: false });
+      continue;
+    }
     const named = new Set(outcome.routes.map((route) => route.routeKey));
     routes.push(...outcome.routes);
     for (const route of earlier) if (!named.has(route.routeKey)) routes.push({ ...route, listed: false });
@@ -406,4 +445,24 @@ export async function refreshDiscovery(options: {
     schema: DISCOVERY_SNAPSHOT_SCHEMA, machineKey: options.machineKey, takenAt, providerAllowlist: allowlist.version, providers, routes,
   };
   return { snapshot, deltas: diffDiscoverySnapshots(options.previous, snapshot) };
+}
+
+/**
+ * Every reason a route scope cannot be used, or none. A scoped provider must be one this refresh
+ * probes, its list must name at least one route, and each route key must be `<that provider>:<modelID>`.
+ * Checked before any probe, so a refused scope contacts nothing.
+ */
+export function routeScopeRefusals(routeScope: Partial<Record<ProviderID, string[]>> | undefined, probed: ProviderID[]): string[] {
+  const refusals: string[] = [];
+  for (const [provider, keys] of Object.entries(routeScope ?? {}) as [ProviderID, string[] | undefined][]) {
+    if (keys === undefined) continue;
+    if (!probed.includes(provider)) refusals.push(`${provider} is scoped but is not a provider this refresh probes`);
+    if (keys.length === 0) refusals.push(`the scope for ${provider} names no route`);
+    for (const key of keys) {
+      if (!key.startsWith(`${provider}:`) || key.length === provider.length + 1) {
+        refusals.push(`${key} is not a route key of ${provider} (expected ${provider}:<modelID>)`);
+      }
+    }
+  }
+  return refusals;
 }

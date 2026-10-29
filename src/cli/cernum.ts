@@ -206,11 +206,21 @@ function executionOf(configuration: CampaignConfiguration): ExecutionPolicy {
  *
  * Validation against a command's declared options happens in `validate`, after the command is known.
  */
-function parse(argv: string[]): { command: string; positional: string[]; options: Options; unknown: string[] } {
+function parse(argv: string[]): {
+  command: string; positional: string[]; options: Options; unknown: string[]; repeated: Record<string, string[]>;
+} {
   const [command = 'help', ...rest] = argv;
   const positional: string[] = [];
   const options: Options = {};
   const unknown: string[] = [];
+  // A REPEATABLE OPTION keeps every value here, in order. `options` still holds it for validation, and
+  // holds `true` once any occurrence was given no value, so that occurrence is refused, not dropped.
+  const repeated: Record<string, string[]> = {};
+  const set = (name: string, value: string | true): void => {
+    if (declared.get(name)?.repeatable !== true) { options[name] = value; return; }
+    if (typeof value === 'string') (repeated[name] ??= []).push(value);
+    if (options[name] !== true) options[name] = value;
+  };
   const spec = commandSpec(command);
   const declared = new Map((spec ? acceptedOptions(spec) : []).map((option) => [option.name, option]));
 
@@ -224,14 +234,14 @@ function parse(argv: string[]): { command: string; positional: string[]; options
     const name = rawName === 'h' ? 'help' : rawName;
 
     if (spec && !declared.has(name)) { unknown.push(token); continue; }
-    if (inline !== undefined) { options[name] = inline; continue; }
+    if (inline !== undefined) { set(name, inline); continue; }
     if (!declared.get(name)?.takesValue) { options[name] = true; continue; }
 
     const next = rest[i + 1];
-    if (next !== undefined && !next.startsWith('-')) { options[name] = next; i += 1; }
-    else options[name] = true;
+    if (next !== undefined && !next.startsWith('-')) { set(name, next); i += 1; }
+    else set(name, true);
   }
-  return { command, positional, options, unknown };
+  return { command, positional, options, unknown, repeated };
 }
 
 /**
@@ -3204,7 +3214,24 @@ async function commandAvailability(options: Options): Promise<void> {
  * check, and `discoverLocalModels` asks the local runtime for its own inventory. Both are the probes
  * `providers` and `models` already run.
  */
-async function commandDiscoveryRefresh(positional: string[], options: Options): Promise<void> {
+async function commandDiscoveryRefresh(positional: string[], options: Options, routes: string[] = []): Promise<void> {
+  // --route IS CHECKED BEFORE ANYTHING IS READ OR PROBED. A key must belong to a provider named on the
+  // command line; otherwise the refresh would either probe a provider nobody asked for or scope nothing.
+  const named = positional.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  const routeScope: Partial<Record<ProviderID, string[]>> = {};
+  const strays: string[] = [];
+  for (const routeKey of [...new Set(routes.map((entry) => entry.trim()))]) {
+    const provider = routeKey.split(':')[0];
+    if (!routeKey.includes(':') || routeKey.length === provider.length + 1 || !named.includes(provider)) { strays.push(routeKey); continue; }
+    (routeScope[provider as ProviderID] ??= []).push(routeKey);
+  }
+  if (strays.length > 0) {
+    fail(`discovery-refresh: --route ${strays.join(', ')} does not belong to a provider named on the command line `
+      + `(${named.length === 0 ? 'none was named' : named.join(', ')}). A route key is <provider>:<modelID> and its provider `
+      + 'must be named, as in `discovery-refresh claudeCLI --route claudeCLI:<modelID>`. Nothing was probed or persisted.', 2);
+  }
+  const scoped = Object.keys(routeScope).length > 0;
+
   const root = String(options.root ?? defaultCampaignRoot());
   const here = thisMachine();
   const now = new Date();
@@ -3214,7 +3241,9 @@ async function commandDiscoveryRefresh(positional: string[], options: Options): 
   const previous = latestDiscoverySnapshot(contents, here.key);
   const probes = discoveryProbes('discovery-refresh', positional, options, observedAt);
 
-  const { snapshot, deltas } = await refreshDiscovery({ previous, probes, machineKey: here.key, now });
+  const { snapshot, deltas } = await refreshDiscovery({
+    previous, probes, machineKey: here.key, now, ...(scoped ? { routeScope } : {}),
+  });
   if (options.json === true) { say(JSON.stringify({ snapshot, deltas }, null, 2)); return; }
 
   say(`Discovery refresh on ${here.key} (${here.fingerprint.hostname}) at ${snapshot.takenAt}`);
@@ -3224,6 +3253,9 @@ async function commandDiscoveryRefresh(positional: string[], options: Options): 
   for (const provider of snapshot.providers) {
     const state = provider.refreshed ? 'answered' : provider.refusedByAllowlist !== undefined ? 'REFUSED' : 'DID NOT ANSWER';
     say(`  ${provider.provider.padEnd(14)} ${state} — ${provider.detail}`);
+    if (provider.routeScope !== undefined) {
+      say(`  ${''.padEnd(14)} scoped to ${provider.routeScope.join(', ')}: its other routes were not re-observed`);
+    }
   }
   say('');
   say(`${snapshot.routes.length} route(s) in this snapshot; ${deltas.length} compared against the previous one`
@@ -5485,7 +5517,7 @@ export async function main(argv: string[]): Promise<void> {
   for (const stream of [process.stdout, process.stderr]) {
     stream.on('error', (error: NodeJS.ErrnoException) => { if (error.code === 'EPIPE') process.exit(0); });
   }
-  const { command, positional, options, unknown } = parse(argv);
+  const { command, positional, options, unknown, repeated } = parse(argv);
   const invocationLine = invocation(argv);
 
   // ------------------------------------------------------------------ the gate
@@ -5548,7 +5580,7 @@ export async function main(argv: string[]): Promise<void> {
     case 'observations-export': return commandObservationsExport(options);
     case 'observations-import': return commandObservationsImport(positional, options);
     case 'availability': return commandAvailability(options);
-    case 'discovery-refresh': return commandDiscoveryRefresh(positional, options);
+    case 'discovery-refresh': return commandDiscoveryRefresh(positional, options, repeated.route ?? []);
     case 'discovery-run': return commandDiscoveryRun(positional, options);
     case 'discovery-schedule': return commandDiscoverySchedule(positional, options);
     case 'candidates': return commandCandidates(positional, options);

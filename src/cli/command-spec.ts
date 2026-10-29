@@ -37,6 +37,8 @@ export interface OptionSpec {
   name: string;
   /** True when the option takes a value; false for a bare flag. */
   takesValue: boolean;
+  /** True when a value-taking option may be given more than once; every value is kept, in order. */
+  repeatable?: boolean;
   summary: string;
 }
 
@@ -537,6 +539,8 @@ export const COMMAND_SPECS: CommandSpec[] = [
     name: 'discovery-refresh', effect: 'invokesLocalTool', positional: '[<provider>…]',
     summary: 'observe what is available here now, persist the snapshot, and report what changed',
     options: [...ROOT,
+      { name: 'route', takesValue: true, repeatable: true,
+        summary: 're-observe only this route key (provider:modelID) of a named provider; repeatable' },
       { name: 'json', takesValue: false, summary: 'print the snapshot and deltas as JSON' }],
     supportsDryRun: true,
     detail: [
@@ -547,6 +551,11 @@ export const COMMAND_SPECS: CommandSpec[] = [
       'A provider whose probe FAILED contributes no disappearance. "The tool did not answer" is reported',
       'as notRefreshed and its routes are carried forward untouched — it is never read as "the model is',
       'gone", which would stale every qualification that route has.',
+      '',
+      '--route scopes the refresh of the provider it belongs to: the same probe runs, only the named',
+      'routes are re-observed and persisted, and every other route of that provider is carried forward',
+      'untouched as notRefreshed. Each key must belong to a provider named on the command line, or',
+      'nothing is probed or persisted and it exits 2.',
     ],
   },
   {

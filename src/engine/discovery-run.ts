@@ -70,7 +70,10 @@ export function discoveryRefreshRecords(snapshot: DiscoverySnapshot, deltas: Dis
   for (const route of snapshot.routes) {
     // A ROUTE A FAILED PROBE CARRIED FORWARD IS NOT RE-OBSERVED. Writing an availability record for it
     // would date somebody else's observation to now, which is the one thing a durable store must not do.
-    if (snapshot.providers.find((entry) => entry.provider === route.provider)?.refreshed !== true) continue;
+    const outcome = snapshot.providers.find((entry) => entry.provider === route.provider);
+    if (outcome?.refreshed !== true) continue;
+    // NOR IS A ROUTE OUTSIDE A ROUTE SCOPE: its provider answered, but this refresh did not look at it.
+    if (outcome.routeScope !== undefined && !outcome.routeScope.includes(route.routeKey)) continue;
     // WHEN THIS OBSERVATION WAS MADE IS NOW, NOT WHEN THE ROUTE WAS LAST SEEN.
     //
     // A route the provider ANSWERED about but did not name is carried into the snapshot as
