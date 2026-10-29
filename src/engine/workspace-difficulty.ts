@@ -433,29 +433,70 @@ export function validateWorkspaceDifficultyProfile(profile: WorkspaceDifficultyP
 
   validateWorkspaceStructuralDescriptors(profile.measured, profile.declared, c, refuse);
 
+  const [first] = workspaceTierBandRefusals(profile);
+  if (first !== undefined) refuse(first.code, first.message);
+}
+
+/**
+ * Every way a profile misses its own tier's band — floors, ceilings and the three-axes rule — in the order
+ * `validateWorkspaceDifficultyProfile` refuses them. Empty when the band holds. The ONE statement of the bands:
+ * validation refuses on the first of these, and `deriveWorkspaceStructuralTier` reads all of them.
+ */
+export function workspaceTierBandRefusals(profile: WorkspaceDifficultyProfile): { code: string; message: string }[] {
+  const found: { code: string; message: string }[] = [];
   const band = WORKSPACE_TIER_BANDS[profile.tier];
   for (const [axis, floor] of Object.entries(band.minimum)) {
     const value = axisValue(profile, axis as keyof WorkspaceDeclaredDifficulty);
     if (value === undefined || value < (floor as number)) {
-      refuse('belowTierFloor', `declares ${profile.tier} with ${axis} of ${String(value)}; ${profile.tier} asks for at `
-        + `least ${String(floor)}. ${WORKSPACE_TIER_DESCRIPTIONS[profile.tier]}`);
+      found.push({ code: 'belowTierFloor', message: `declares ${profile.tier} with ${axis} of ${String(value)}; ${profile.tier} asks for at `
+        + `least ${String(floor)}. ${WORKSPACE_TIER_DESCRIPTIONS[profile.tier]}` });
     }
   }
   for (const [axis, ceiling] of Object.entries(band.maximum)) {
     const value = axisValue(profile, axis as keyof WorkspaceDeclaredDifficulty);
     if (value !== undefined && value > (ceiling as number)) {
-      refuse('aboveTierCeiling', `declares ${profile.tier} with ${axis} of ${value}, above the ${ceiling} that tier `
+      found.push({ code: 'aboveTierCeiling', message: `declares ${profile.tier} with ${axis} of ${value}, above the ${ceiling} that tier `
         + 'allows. A case that demands more than its tier describes belongs in the tier above, where a reader '
-        + 'comparing two results at one tier can rely on them having asked for comparable work.');
+        + 'comparing two results at one tier can rely on them having asked for comparable work.' });
     }
   }
 
   const beyond = axesBeyondPreviousTier(profile);
   if (beyond.length < band.minimumAxesBeyondPreviousTier) {
-    refuse('notBeyondPreviousTier', `declares ${profile.tier} while going beyond every ${tierBelow(profile.tier)} case `
+    found.push({ code: 'notBeyondPreviousTier', message: `declares ${profile.tier} while going beyond every ${tierBelow(profile.tier)} case `
       + `on only ${beyond.length} axis/axes (${beyond.join(', ') || 'none'}); `
-      + `${band.minimumAxesBeyondPreviousTier} are required. A tier is not the tier below with more files in it.`);
+      + `${band.minimumAxesBeyondPreviousTier} are required. A tier is not the tier below with more files in it.` });
   }
+  return found;
+}
+
+/**
+ * The tier the bands DERIVE from a case's structural counts, or none, with every reason.
+ *
+ * NOTHING IS ASSIGNED. Each tier is tried in turn against `workspaceTierBandRefusals` — the same floors,
+ * ceilings and three-axes rule a declared profile must pass — and a tier is derived only when EXACTLY ONE
+ * band holds. A case no band holds has no tier; a case two bands held would have none either, because
+ * the rules would not have decided it (the bands as written are disjoint, so this is a guard, not a path).
+ * Never a nearest tier, never a default.
+ */
+export function deriveWorkspaceStructuralTier(
+  measured: WorkspaceMeasuredDifficulty, declared: WorkspaceDeclaredDifficulty,
+): { tier: WorkspaceDifficultyTier; reasons: string[] } | { tier: undefined; reasons: string[] } {
+  const trial = (tier: WorkspaceDifficultyTier): WorkspaceDifficultyProfile => ({
+    schemaVersion: WORKSPACE_DIFFICULTY_SCHEMA_VERSION, caseID: '', caseVersion: '', tier, rationale: '', measured, declared,
+  });
+  const held = ALL_WORKSPACE_DIFFICULTY_TIERS.filter((tier) => workspaceTierBandRefusals(trial(tier)).length === 0);
+  if (held.length === 1) {
+    const tier = held[0];
+    const beyond = axesBeyondPreviousTier(trial(tier));
+    return { tier, reasons: [`the ${tier} band holds: every floor and ceiling of WORKSPACE_TIER_BANDS.${tier} is met`
+      + `${tierBelow(tier) === undefined ? '' : `, and the case goes beyond every ${tierBelow(tier)} case on ${beyond.join(', ')}`}`] };
+  }
+  if (held.length > 1) {
+    return { tier: undefined, reasons: [`the bands of ${held.join(' and ')} all hold, so the rules do not decide one tier`] };
+  }
+  return { tier: undefined, reasons: ALL_WORKSPACE_DIFFICULTY_TIERS.flatMap((tier) =>
+    workspaceTierBandRefusals(trial(tier)).map((refusal) => `${tier}: ${refusal.code} — ${refusal.message}`)) };
 }
 
 /**

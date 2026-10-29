@@ -46,6 +46,7 @@ export * from './workspace-difficulty';
 export * from './workspace-difficulty-catalog';
 export * from './workspace-discriminator';
 export * from './workspace-discriminator-catalog';
+export * from './workspace-structural-tier';
 export * from './workspace-hidden-script';
 export * from './workspace-transcript';
 export * from './workspace-agent';

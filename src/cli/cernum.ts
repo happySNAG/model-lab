@@ -102,6 +102,8 @@ import {
   QualificationHistoryError, deriveQualificationHistory, parseRouteKey,
   // A route's latency, token, cost, retry and failure figures, from the sealed runs alone.
   deriveMetricsRollup,
+  // A routing tier for an untiered case, derived by the existing bands from its structural counts.
+  routingDifficultyProfiles,
   // The append-only log of what `candidates` answered, and why each answer moved.
   RoutingDecisionLogError, appendRoutingDecision, describeDecisionChange, readRoutingDecisionLog,
   // An Ordra pass's task type, tier and context, translated to the query `candidates` answers.
@@ -3785,7 +3787,9 @@ async function commandRecommendCrr2(taskType: string, options: Options, policyAs
   const workspaceRows = workspaceRowsFromEvidenceRoots('recommend', root, options);
   const outcomeRows = routeOutcomeRunRows(contents);
   const cases = allWorkspaceCases();
-  const profiles = registeredWorkspaceDifficultyProfiles();
+  // THE TIER ROWS crr2's --tier READS: every declared tier, plus the tier the bands DERIVE from an untiered
+  // case's structural counts where one does. Records, the pooled rollup and every keyed rollup share them.
+  const profiles = routingDifficultyProfiles(registeredWorkspaceDifficultyProfiles(), registeredWorkspaceStructuralProfiles());
   const routeKeys = [...new Set(availability.filter((entry) => entry.machineKey === machine).map((entry) => entry.routeKey))].sort();
   const records: ReturnType<typeof deriveRouteQualification>[] = [];
   const keyedMetrics: Record<string, ReturnType<typeof deriveMetricsRollup>> = {};
