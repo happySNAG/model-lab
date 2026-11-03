@@ -63,7 +63,7 @@ here (WC-13).
 | new pack `pack.cernum.workspace.forward-compat-one@1` (2 cases × 3 repeats) | yes: defined in `src/engine/workspace-catalog.ts` (`forwardCompatOnePack`), appended last to `registeredWorkspacePacks` |
 | case `ws.fc.agenda-file.reschedule`, sealed | yes: `workspace-catalog-forward-compat.ts:158-172`, `expectedTreeDigest: '8bac8b89191f293fb8bdfbed1ec928df3428699e716284fb124b745dc92eb80e'` |
 | case `ws.fc.member-roster.transfer`, sealed | yes: `workspace-catalog-forward-compat.ts:234-248`, `expectedTreeDigest: 'b9b48a54e2cdd4c378859623cb7a965c3502a35fcc3c038dd19d97275cc50381'` |
-| fixtures | yes: `fixtures/workspace/fc-agenda-file/` (17 files: `docs/FORMAT.md`, `examples/team.agenda`, `src/{components,decode,edit,encode,errors,index,lines,query,time}.js`, `test/{decode,edit,lines,time}.test.js`, `README.md`) and `fixtures/workspace/fc-member-roster/` (16 files: `docs/FORMAT.md`, `docs/ROLES.md`, `examples/platform.roster`, `src/{decode,edit,encode,errors,index,query,roles,table}.js`, `test/{decode,edit,query,table}.test.js`, `README.md`) |
+| fixtures | yes: `fixtures/workspace/fc-agenda-file/` (16 files: `docs/FORMAT.md`, `examples/team.agenda`, `src/{components,decode,edit,encode,errors,index,lines,query,time}.js`, `test/{decode,edit,lines,time}.test.js`, `README.md`) and `fixtures/workspace/fc-member-roster/` (16 files: `docs/FORMAT.md`, `docs/ROLES.md`, `examples/platform.roster`, `src/{decode,edit,encode,errors,index,query,roles,table}.js`, `test/{decode,edit,query,table}.test.js`, `README.md`) |
 | `forwardCompatibilityReasoning` and `preservationUnderTransformation` declared on each case | yes (asserted by the test at `workspace-forward-compat.test.ts:198`) |
 | two hidden checks per case, grounded in a document the fixture carries | yes: quoting `docs/FORMAT.md` (test at `:359`) |
 | untiered structural profiles in their own registry, outside routing | yes: `registeredWorkspaceForwardCompatProfiles` (`workspace-catalog-forward-compat.ts:376`), read only by `validateWorkspaceCatalog` and the `cernum workspace` preview (`src/cli/cernum.ts` hunk at old line 1852) |
@@ -131,7 +131,8 @@ All three report that `workspace/fc-agenda-file` digests to
   (`else if (parsed.name === 'END')`). So an item field written `END:2026-03-04T09:20` would be read as
   closing a block called `2026-03-04T09:20`. Renaming the field removes that collision.
 - The hidden checks in (c) were written against the renamed format: `AGENDA_FILE` and
-  `AGENDA_EDITS_COPY_OTHER_LINES_CHECK` (`workspace-catalog-forward-compat.ts:64-120`) use
+  `AGENDA_EDITS_COPY_OTHER_LINES_CHECK` (`workspace-catalog-forward-compat.ts:64-116`), and `AGENDA_CANCEL_REMOVES_ONE_ITEM_CHECK` (`:118`)
+  builds on the same `AGENDA_FILE`; use
   `'UNTIL:2026-03-04T09:45'` and `indexOf('UNTIL:…')`. The seal at `:207` was not updated with them.
   The digest 0aa021d8… that the test observed IS the tree at (c). So the sealed 105baa30… is the digest
   of some earlier agenda tree: either (b)'s, or an intermediate state between (b) and (c) that no ref
@@ -147,7 +148,7 @@ All three report that `workspace/fc-agenda-file` digests to
     with the seal directly. Those are failures 2 and 3.
 - The same cause should also fail other tests in (c)'s `workspace-forward-compat.test.ts` that rely on
   the agenda seal: the seal test (`:298-305`), the untouched-fixture, LOSSY and scope runs
-  (`:659-685`), and the `afterAll` seal check (`:709-715`). The record names one failure per file.
+  (`:658-698`), and the `afterAll` seal check (`:709-715`). The record names one failure per file.
   That matches "three failing test files" better than "three failing tests". If the record really
   means three tests, then this reading of the file and the record disagree, and the full report of
   EV-18099 would settle it.
@@ -197,7 +198,7 @@ Common to every pass:
 ### F1: re-apply (a) file for file, and measure it
 
 - **Scope (writes):**
-  - the 33 fixture files under `fixtures/workspace/fc-agenda-file/` and
+  - the 32 fixture files under `fixtures/workspace/fc-agenda-file/` and
     `fixtures/workspace/fc-member-roster/`
   - `src/engine/workspace-catalog-forward-compat.ts`, `src/engine/workspace-catalog.ts`,
     `src/engine/index.ts`, `src/cli/cernum.ts`
@@ -213,7 +214,7 @@ Common to every pass:
 - **First commit (≤ 15 min):** the 40 paths, as one commit.
 - **Verification:**
   1. `npm run typecheck`
-  2. `npx vitest run test/engine/workspace-forward-compat.test.ts test/engine/workspace-tier-packs.test.ts test/engine/workspace-pack.test.ts test/engine/workspace-discriminator.test.ts`
+  2. `npm test -- test/engine/workspace-forward-compat.test.ts test/engine/workspace-tier-packs.test.ts test/engine/workspace-pack.test.ts test/engine/workspace-discriminator.test.ts`
   3. `npm test`, run to its result, after the commit
 - **Optional diagnostic for the record (§3):** `git diff 2d4fab0 0aab72c --stat -- fixtures` only.
   Computing 105baa30's origin needs a node snapshot of (b)'s tree, which cannot be done without
@@ -243,7 +244,7 @@ Common to every pass:
   campaign's scope and is not touched, even though the engine test-file count it states moves by one.
 - **First commit (≤ 15 min):** the document correction.
 - **Verification:** `npm run typecheck`, and
-  `npx vitest run test/engine/workspace-forward-compat.test.ts`.
+  `npm test -- test/engine/workspace-forward-compat.test.ts`.
 - **Evidence:** C1's documentary half: the pack, its cases, its offline/untiered status and the
   correct (unexecuted) command form. C2 re-observed.
 
