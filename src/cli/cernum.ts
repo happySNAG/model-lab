@@ -49,7 +49,8 @@ import {
   validateWorkspaceCatalog, workspaceDifficultyProfileFor,
   workspaceCapabilityEvidence, workspaceInstructionText, workspaceTierEvidence,
   describeWorkspaceCapabilityEvidence, describeWorkspaceTierEvidence,
-  registeredWorkspaceStructuralProfiles, workspaceStructuralProfileFor, describeWorkspaceStructuralProfile,
+  registeredWorkspaceStructuralProfiles, registeredWorkspaceForwardCompatProfiles, workspaceStructuralProfileFor,
+  describeWorkspaceStructuralProfile,
   workspaceRecoveryEvidence, describeWorkspaceRecoveryEvidence, workspaceEmpiricalDiscrimination,
   describeWorkspaceEmpiricalDiscrimination, WORKSPACE_RECOVERY_REQUIRES_A_FAILED_ATTEMPT,
   workspacePromptRecordOf, workspaceRecordPaths, workspaceRecordRoot, workspaceTimeoutFor,
@@ -1852,7 +1853,11 @@ async function commandWorkspace(positional: string[], options: Options): Promise
   // WHAT THIS CASE DEMANDS, from the sealed difficulty profile rather than from an adjective. A case
   // this build has not judged prints that it has not been judged; nothing here infers a tier.
   const caseProfile = workspaceDifficultyProfileFor(registeredWorkspaceDifficultyProfiles(), workspaceCase.id);
-  const structuralProfile = workspaceStructuralProfileFor(registeredWorkspaceStructuralProfiles(), workspaceCase.id);
+  // Both untiered registries, for the preview alone: the forward-compatibility profiles are never
+  // handed to a matrix plan or to routing evidence, which read `registeredWorkspaceStructuralProfiles` only.
+  const structuralProfile = workspaceStructuralProfileFor(
+    [...registeredWorkspaceStructuralProfiles(), ...registeredWorkspaceForwardCompatProfiles()], workspaceCase.id,
+  );
   if (caseProfile !== undefined) {
     for (const line of describeWorkspaceDifficulty(caseProfile, workspaceCase.dimensions)) say(`  ${line}`);
   } else if (structuralProfile !== undefined) {

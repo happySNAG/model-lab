@@ -140,8 +140,10 @@ describe('the tier packs are sealed experiments in their own right', () => {
   it('validates the whole catalogue, difficulty claims included', () => {
     expect(() => validateWorkspaceCatalog()).not.toThrow();
     // Three tier packs and, since the discriminator pass, one untiered discriminator pack — which is
-    // a different family and is checked in `workspace-discriminator.test.ts`.
-    expect(registeredWorkspacePacks).toHaveLength(4);
+    // a different family and is checked in `workspace-discriminator.test.ts` — and, since the
+    // forward-compatibility pass, one untiered forward-compatibility pack, checked in
+    // `workspace-forward-compat.test.ts`.
+    expect(registeredWorkspacePacks).toHaveLength(5);
     expect(registeredWorkspacePacks).toContain(discriminatorOnePack);
     expect(workspacePackByID(tierTwoPack.id)).toBe(tierTwoPack);
     expect(workspacePackByID(tierThreePack.id)).toBe(tierThreePack);

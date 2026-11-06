@@ -22,6 +22,10 @@ import { hiddenScript } from './workspace-hidden-script';
 import { workspaceTierTwoSuite } from './workspace-catalog-tier-two';
 import { workspaceTierThreeSuite } from './workspace-catalog-tier-three';
 import { workspaceDiscriminatorSuite } from './workspace-catalog-discriminator';
+import {
+  FC_AGENDA_FILE_RESCHEDULE, FC_MEMBER_ROSTER_TRANSFER, registeredWorkspaceForwardCompatProfiles,
+  validateWorkspaceForwardCompatCatalogue, workspaceForwardCompatSuite,
+} from './workspace-catalog-forward-compat';
 import { validateWorkspaceDifficultyCatalogue } from './workspace-difficulty-catalog';
 import {
   registeredWorkspaceStructuralProfiles, validateWorkspaceStructuralCatalogue,
@@ -404,6 +408,7 @@ export const workspaceFoundationSuite: WorkspaceSuite = makeWorkspaceSuite(
 
 export const registeredWorkspaceSuites: WorkspaceSuite[] = [
   workspaceFoundationSuite, workspaceTierTwoSuite, workspaceTierThreeSuite, workspaceDiscriminatorSuite,
+  workspaceForwardCompatSuite,
 ];
 
 // MARK: - Packs
@@ -541,8 +546,34 @@ export const discriminatorOnePack: WorkspaceBenchmarkPack = makeWorkspaceBenchma
   repeatsPerCase: 3,
 });
 
+/**
+ * THE FORWARD-COMPATIBILITY PACK: the one discriminating question, asked in two more domains.
+ *
+ * WHY A SEPARATE PACK. `discriminator-one` has been RUN, and qualification evidence is bound to its
+ * `cwp1:`; adding cases to it would move that digest and turn the completed matrix into a record of
+ * an experiment that no longer exists. This pack is two cases in two fixtures unrelated to slabs
+ * and to each other, each asking what `ws.d1.asset-container.retitle` asks — does an editor keep
+ * what it cannot read — so a difference on that question can be told from noise. It carries no tier
+ * and sits outside the qualification policy and every routing input;
+ * `workspace-catalog-forward-compat.ts` says what each case is for. Running it is a separate,
+ * approved act.
+ *
+ * TWO CASES, THREE REPEATS, ONE ATTEMPT EACH: per candidate, six runs and six provider requests.
+ */
+export const WORKSPACE_PACK_FORWARD_COMPAT_ONE = 'pack.cernum.workspace.forward-compat-one';
+
+export const forwardCompatOnePack: WorkspaceBenchmarkPack = makeWorkspaceBenchmarkPack({
+  id: WORKSPACE_PACK_FORWARD_COMPAT_ONE,
+  version: '1',
+  title: 'Forward compatibility one',
+  description: 'Two sealed workspace cases in domains unrelated to each other — a calendar file and a member '
+    + 'roster — each asking whether an editor keeps what it cannot read, sampled three times each.',
+  caseIDs: [FC_AGENDA_FILE_RESCHEDULE.id, FC_MEMBER_ROSTER_TRANSFER.id],
+  repeatsPerCase: 3,
+});
+
 export const registeredWorkspacePacks: WorkspaceBenchmarkPack[] = [
-  foundationFourPack, tierTwoPack, tierThreePack, discriminatorOnePack,
+  foundationFourPack, tierTwoPack, tierThreePack, discriminatorOnePack, forwardCompatOnePack,
 ];
 
 /**
@@ -583,5 +614,11 @@ export function validateWorkspaceCatalog(): void {
   const cases = allWorkspaceCases();
   for (const pack of registeredWorkspacePacks) validateWorkspaceBenchmarkPack(pack, cases);
   validateWorkspaceStructuralCatalogue();
-  validateWorkspaceDifficultyCatalogue(registeredWorkspaceStructuralProfiles().map((profile) => profile.caseID));
+  validateWorkspaceForwardCompatCatalogue();
+  // Untiered on purpose, in two registries: the discriminator profiles, which routing evidence and
+  // the discriminator pack's digest read, and the forward-compatibility profiles, which nothing but
+  // this check and the preview read.
+  validateWorkspaceDifficultyCatalogue([
+    ...registeredWorkspaceStructuralProfiles(), ...registeredWorkspaceForwardCompatProfiles(),
+  ].map((profile) => profile.caseID));
 }
