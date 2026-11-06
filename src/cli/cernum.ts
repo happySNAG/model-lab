@@ -40,7 +40,7 @@ import {
   // object the engine's own surfaces read, imported from the one public boundary this file uses.
   ALWAYS_ALLOWED_ENVIRONMENT_NAMES, PROVIDER_IDS, ProviderBinding, ProviderBindingError,
   WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, WorkspaceBindingError, WorkspaceCampaign,
-  allWorkspaceCases, assertSandboxRootIsSafe, billingLabel, buildWorkspaceBinding, buildWorkspaceDriver,
+  allWorkspaceCases, assertSandboxRootIsSafe, billingLabel, buildWorkspaceBinding, defaultWorkspaceSandboxRoot, buildWorkspaceDriver,
   admitPreRunIdentity, describePreRunIdentity, describeScorecard, describeWorkspaceRequest, discloseWorkspaceDriver, isMetered,
   manifestSeal, providersWithWorkspaceDriver, readDiscoveryStore as readDiscoveryStoreForWorkspace,
   describeWorkspaceDifficulty, registeredWorkspaceDifficultyProfiles, resolvePreRunIdentity, sha256Text,
@@ -1672,7 +1672,7 @@ function defaultFixtureRoot(): string {
  * development machine. A person who wants it elsewhere says so.
  */
 function defaultWorkspaceSandbox(): string {
-  return path.join(os.tmpdir(), 'cernum-workspace-sandbox');
+  return defaultWorkspaceSandboxRoot();
 }
 
 /** A record name that is filesystem-safe and says what it is. Stable enough to type, unique enough to keep. */

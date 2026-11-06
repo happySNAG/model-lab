@@ -23,6 +23,7 @@
 // scores exactly what a model that changes nothing scores.
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { CanonicalValue, digestObject, sha256Text } from './canonical';
 import { CLIResult, runCLI } from './cli-process';
@@ -199,6 +200,22 @@ export interface WorkspaceRunOptions {
    * it is established once per process by `probeExecutionSandbox`, which runs a canary.
    */
   executionSandbox?: ExecutionSandbox;
+}
+
+/** The directory name the default workspace sandbox has under the OS temp directory. */
+export const DEFAULT_WORKSPACE_SANDBOX_NAME = 'cernum-workspace-sandbox';
+
+/**
+ * WHERE DISPOSABLE WORKSPACES ARE MADE WHEN NOBODY SAYS OTHERWISE: under `os.tmpdir()`, always.
+ *
+ * Every attempt's tree (`cernum-ws-*`), its baseline copy and its scratch `tmp` directory are made
+ * under this root, so a matrix's per-attempt file-system traffic lands on whatever disk the OS temp
+ * directory is on — never on the worktree or the fixture volume, which on a development machine is
+ * frequently an external drive several times slower. It is resolved at call time rather than at
+ * import, so a process whose TMPDIR is set before it asks gets that directory.
+ */
+export function defaultWorkspaceSandboxRoot(): string {
+  return path.join(os.tmpdir(), DEFAULT_WORKSPACE_SANDBOX_NAME);
 }
 
 /**
