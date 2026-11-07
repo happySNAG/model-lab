@@ -39,6 +39,25 @@ The tier and the context requirement pass through unchanged:
 The table is pinned to `ctt1` by the test. Changing a row changes which evidence a pass is routed on,
 so any change needs a new taxonomy version.
 
+## The table, `ctt2`
+
+`ctt2` stands beside `ctt1` and changes nothing in it. It is `ctt1`'s eight rows, unchanged, plus one:
+
+| Task type | Capability | Cost policy | Local only | Prefer subscription or free | Why |
+| --- | --- | --- | --- | --- | --- |
+| `preservation-critical` | `workspace:forwardCompatibilityReasoning` | `zeroMarginalCostOnly` | no | yes | The work must keep what exists working as the code moves forward: the capability the forward-compatibility pack `pack.cernum.workspace.forward-compat-one@1` measures. |
+
+The function is `routeQueryForTaskCtt2` (and `routeQueryForTaskUnder` by version name). It reads the tier,
+the context and the machine key exactly as `ctt1` does and refuses in the same words, naming `ctt2` and its
+nine types. `ctt2` is chosen **only** by an explicit `--taxonomy ctt2` on `cernum candidates --task` or on
+`cernum recommend … --contract crr2`. Without `--taxonomy` every answer is `ctt1`, exactly as before; an
+unknown `--taxonomy` value is refused with the reason and exit 2. The status export, the pass classifier
+(cpc1) and outcome ingest stay on `ctt1`.
+
+No route holds `workspace:forwardCompatibilityReasoning` evidence until the forward-compatibility pack has
+been run, so today `preservation-critical` correctly ranks nothing. Tests:
+`test/engine/task-taxonomy-ctt2.test.ts`.
+
 ## Refusal, never a default
 
 An input the table cannot read is **refused with the reason**. Nothing is guessed. A pass mapped to the
@@ -53,7 +72,7 @@ question looks exactly like one for the right question.
 ## The command
 
 ```
-cernum candidates --task <type> --tier <n> --context <tokens> [--machine <cmk1:…>] [--json] [--log]
+cernum candidates --task <type> --tier <n> --context <tokens> [--taxonomy ctt1|ctt2] [--machine <cmk1:…>] [--json] [--log]
 ```
 
 The query comes from the table, not from the flags. A capability, `--min-context`, `--cost-policy` or

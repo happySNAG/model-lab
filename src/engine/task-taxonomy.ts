@@ -76,10 +76,6 @@ export type TaskQueryAnswer =
   | { ok: true; taxonomyVersion: typeof TASK_TAXONOMY_VERSION; taskType: OrdraTaskType; row: TaskTaxonomyRow; query: RouteCandidateQuery }
   | { ok: false; taxonomyVersion: typeof TASK_TAXONOMY_VERSION; refusals: string[] };
 
-function isTaskType(value: string): value is OrdraTaskType {
-  return (ALL_ORDRA_TASK_TYPES as string[]).includes(value);
-}
-
 function tierFrom(value: number | string): WorkspaceDifficultyTier | undefined {
   const text = typeof value === 'number' ? (Number.isInteger(value) ? String(value) : '') : value.trim();
   const named = /^[0-9]+$/.test(text) ? `tier${text}` : text;
@@ -92,14 +88,18 @@ function tokensFrom(value: number | string): number | undefined {
 }
 
 /**
- * Translate one pass into its crc2 query. PURE: reads nothing, writes nothing, and refuses rather than
- * defaults — every input that cannot be read is named in `refusals`, all of them at once.
+ * The one translation both tables share: the same reading of the tier, the context and the machine key,
+ * the same refusals in the same words, with the table's own version and type list named in them.
  */
-export function routeQueryForTask(request: TaskQueryRequest): TaskQueryAnswer {
+function routeQueryUnder<Version extends string, Type extends string>(
+  version: Version, types: readonly Type[], table: Readonly<Record<Type, TaskTaxonomyRow>>, request: TaskQueryRequest,
+): { ok: true; taxonomyVersion: Version; taskType: Type; row: TaskTaxonomyRow; query: RouteCandidateQuery }
+  | { ok: false; taxonomyVersion: Version; refusals: string[] } {
   const refusals: string[] = [];
   const taskType = request.taskType.trim();
-  if (!isTaskType(taskType)) {
-    refusals.push(`task type '${request.taskType}' is not in task taxonomy ${TASK_TAXONOMY_VERSION} (${ALL_ORDRA_TASK_TYPES.join(', ')}); `
+  const known = (types as readonly string[]).includes(taskType);
+  if (!known) {
+    refusals.push(`task type '${request.taskType}' is not in task taxonomy ${version} (${types.join(', ')}); `
       + 'an unknown task type is refused, never mapped to a default capability');
   }
   const tier = tierFrom(request.tier);
@@ -111,12 +111,12 @@ export function routeQueryForTask(request: TaskQueryRequest): TaskQueryAnswer {
     refusals.push(`context requirement '${String(request.contextTokens)}' is not a positive whole number of tokens`);
   }
   if (request.machineKey.trim() === '') refusals.push('no machine key was given; the query must name the machine the work runs on');
-  if (refusals.length > 0 || !isTaskType(taskType) || tier === undefined || contextTokens === undefined) {
-    return { ok: false, taxonomyVersion: TASK_TAXONOMY_VERSION, refusals };
+  if (refusals.length > 0 || !known || tier === undefined || contextTokens === undefined) {
+    return { ok: false, taxonomyVersion: version, refusals };
   }
-  const row = TASK_TAXONOMY[taskType];
+  const row = table[taskType as Type];
   return {
-    ok: true, taxonomyVersion: TASK_TAXONOMY_VERSION, taskType, row,
+    ok: true, taxonomyVersion: version, taskType: taskType as Type, row,
     query: {
       machineKey: request.machineKey,
       capability: `workspace:${row.dimension}`,
@@ -127,4 +127,62 @@ export function routeQueryForTask(request: TaskQueryRequest): TaskQueryAnswer {
       preferSubscriptionOrFree: row.preferSubscriptionOrFree,
     },
   };
+}
+
+/**
+ * Translate one pass into its crc2 query under ctt1. PURE: reads nothing, writes nothing, and refuses rather
+ * than defaults — every input that cannot be read is named in `refusals`, all of them at once.
+ */
+export function routeQueryForTask(request: TaskQueryRequest): TaskQueryAnswer {
+  return routeQueryUnder(TASK_TAXONOMY_VERSION, ALL_ORDRA_TASK_TYPES, TASK_TAXONOMY, request);
+}
+
+// ---- ctt2, beside ctt1 and never a change to it ------------------------------------------------------
+//
+// ctt2 is ctt1's eight rows, unchanged, plus `preservation-critical`: work whose whole point is that what
+// exists keeps working as the code moves forward — the capability the forward-compatibility pack
+// (pack.cernum.workspace.forward-compat-one@1) exists to measure. It is chosen ONLY by asking for it by
+// name; every caller that does not name a taxonomy is answered by ctt1, exactly as before.
+
+export const TASK_TAXONOMY_CTT2_VERSION = 'ctt2';
+
+/** Every task taxonomy version this module answers. An unknown version is refused, never defaulted. */
+export type TaskTaxonomyVersion = typeof TASK_TAXONOMY_VERSION | typeof TASK_TAXONOMY_CTT2_VERSION;
+export const ALL_TASK_TAXONOMY_VERSIONS: TaskTaxonomyVersion[] = [TASK_TAXONOMY_VERSION, TASK_TAXONOMY_CTT2_VERSION];
+
+export type Ctt2TaskType = OrdraTaskType | 'preservation-critical';
+
+export const ALL_CTT2_TASK_TYPES: Ctt2TaskType[] = [...ALL_ORDRA_TASK_TYPES, 'preservation-critical'];
+
+/**
+ * THE TABLE, version ctt2: ctt1's rows, each the same object, plus one. Changing a row is a new version; the
+ * ctt2 test pins this exact table to `ctt2`.
+ */
+export const TASK_TAXONOMY_CTT2: Readonly<Record<Ctt2TaskType, TaskTaxonomyRow>> = {
+  ...TASK_TAXONOMY,
+  // Keeping what exists working while the code moves forward: forward-compatible change.
+  'preservation-critical': { dimension: 'forwardCompatibilityReasoning', ...ZERO_MARGINAL },
+};
+
+export type Ctt2TaskQueryAnswer =
+  | { ok: true; taxonomyVersion: typeof TASK_TAXONOMY_CTT2_VERSION; taskType: Ctt2TaskType; row: TaskTaxonomyRow; query: RouteCandidateQuery }
+  | { ok: false; taxonomyVersion: typeof TASK_TAXONOMY_CTT2_VERSION; refusals: string[] };
+
+/** Translate one pass into its crc2 query under ctt2. The same rules, refusals and purity as ctt1. */
+export function routeQueryForTaskCtt2(request: TaskQueryRequest): Ctt2TaskQueryAnswer {
+  return routeQueryUnder(TASK_TAXONOMY_CTT2_VERSION, ALL_CTT2_TASK_TYPES, TASK_TAXONOMY_CTT2, request);
+}
+
+/** Read a taxonomy version a caller asked for by name: the version, or the reason it is refused. */
+export function taskTaxonomyVersionFrom(value: string): { ok: true; version: TaskTaxonomyVersion } | { ok: false; refusal: string } {
+  const text = value.trim();
+  return (ALL_TASK_TAXONOMY_VERSIONS as string[]).includes(text)
+    ? { ok: true, version: text as TaskTaxonomyVersion }
+    : { ok: false, refusal: `task taxonomy '${value}' is not one of ${ALL_TASK_TAXONOMY_VERSIONS.join(', ')}; `
+      + 'an unknown taxonomy is refused, never defaulted' };
+}
+
+/** Translate one pass under the named version: ctt1 unless ctt2 is asked for explicitly. */
+export function routeQueryForTaskUnder(version: TaskTaxonomyVersion, request: TaskQueryRequest): TaskQueryAnswer | Ctt2TaskQueryAnswer {
+  return version === TASK_TAXONOMY_CTT2_VERSION ? routeQueryForTaskCtt2(request) : routeQueryForTask(request);
 }

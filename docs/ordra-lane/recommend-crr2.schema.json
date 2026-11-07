@@ -15,7 +15,7 @@
     "contractVersion": { "const": 1 },
     "jsonSchema": { "const": "docs/ordra-lane/recommend-crr2.schema.json" },
     "ok": { "const": true },
-    "taxonomyVersion": { "const": "ctt1" },
+    "taxonomyVersion": { "enum": ["ctt1", "ctt2"] },
     "routingContract": { "const": "crc2" },
     "routingPolicyVersion": { "enum": ["crp1", "crp2"] },
     "answeredAt": { "$ref": "#/$defs/instant" },
@@ -24,7 +24,7 @@
       "additionalProperties": false,
       "required": ["taskType", "machineKey", "capability", "allowMetered", "costPolicy", "routeQuery"],
       "properties": {
-        "taskType": { "enum": ["implement", "fix", "test-repair", "refactor", "docs", "verify", "plan", "review"] },
+        "taskType": { "enum": ["implement", "fix", "test-repair", "refactor", "docs", "verify", "plan", "review", "preservation-critical"] },
         "tier": { "enum": ["tier1", "tier2", "tier3"] },
         "contextTokens": { "type": "integer", "minimum": 1 },
         "machineKey": { "type": "string", "pattern": "^cmk1:" },

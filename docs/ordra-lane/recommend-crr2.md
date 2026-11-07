@@ -35,6 +35,14 @@ excluded with the reason that crr2 is subscription-only by default. With `--allo
 is ranked by the same rule, in the metered group, with `resourcePosture.requiresSpendingAuthorization`.
 `--allow-metered` is refused beside crr1.
 
+## Task taxonomy
+
+The task type is mapped by task taxonomy `ctt1` unless `--taxonomy ctt2` is given, when it is mapped by
+`ctt2` (ctt1's eight rows plus `preservation-critical` → `workspace:forwardCompatibilityReasoning`, see
+[task-taxonomy.md](task-taxonomy.md)) and the document's `taxonomyVersion` is `ctt2`. Without `--taxonomy`
+the document is exactly as before. An unknown `--taxonomy` is refused with exit 2, and `--taxonomy ctt2`
+is refused beside crr1.
+
 ## Fields
 
 | Field | What it holds |

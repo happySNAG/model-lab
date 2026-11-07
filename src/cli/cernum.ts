@@ -108,7 +108,9 @@ import {
   // The append-only log of what `candidates` answered, and why each answer moved.
   RoutingDecisionLogError, appendRoutingDecision, describeDecisionChange, readRoutingDecisionLog,
   // An Ordra pass's task type, tier and context, translated to the query `candidates` answers.
-  TASK_TAXONOMY_VERSION, TaskQueryAnswer, routeQueryForTask,
+  TASK_TAXONOMY_VERSION, TaskQueryAnswer, routeQueryForTaskUnder,
+  // ctt2 beside it, only when `--taxonomy ctt2` names it.
+  ALL_TASK_TAXONOMY_VERSIONS, Ctt2TaskQueryAnswer, TaskTaxonomyVersion, taskTaxonomyVersionFrom,
   // The candidate set in advisory fallback order, by rule cfc1. Never a selection.
   deriveFallbackChain, throttleEvidenceFromRecords,
   // An advisory per-task ranking of the qualified routes, by rule crr1. Never a selection.
@@ -3434,22 +3436,38 @@ function workspaceRunIdentity(run: { row: Record<string, unknown> }): string {
 }
 
 /**
- * `candidates --task <type> --tier <n> --context <tokens>`: the query comes from task taxonomy ctt1, not
+ * `--taxonomy <ctt1|ctt2>`: the task taxonomy a task type is mapped by. ctt1 unless ctt2 is named; a flag
+ * without a value, or a version this build does not know, is refused before anything is read.
+ */
+function taxonomyFromOptions(command: string, options: Options): TaskTaxonomyVersion {
+  if (options.taxonomy === undefined) return TASK_TAXONOMY_VERSION;
+  if (options.taxonomy === true) {
+    fail(`${command}: --taxonomy needs a value, one of ${ALL_TASK_TAXONOMY_VERSIONS.join(', ')}; nothing is defaulted. Nothing was read.`, 2);
+  }
+  const read = taskTaxonomyVersionFrom(String(options.taxonomy));
+  if (!read.ok) fail(`${command}: ${read.refusal}. Nothing was read.`, 2);
+  return read.version;
+}
+
+/**
+ * `candidates --task <type> --tier <n> --context <tokens>`: the query comes from task taxonomy ctt1 (or
+ * ctt2, when `--taxonomy ctt2` names it), not
  * from the flags. Everything the table decides — capability, cost policy, locality — is refused as a flag
  * beside --task rather than silently overriding it or being overridden; refused before anything is read.
  */
-function taskQueryFromOptions(positional: string[], options: Options, machine: string): TaskQueryAnswer & { ok: true } {
+function taskQueryFromOptions(positional: string[], options: Options, machine: string): (TaskQueryAnswer | Ctt2TaskQueryAnswer) & { ok: true } {
+  const taxonomy = taxonomyFromOptions('candidates', options);
   const clashing = ['min-context', 'cost-policy', 'local-only'].filter((name) => options[name] !== undefined);
   if (positional.length > 0) clashing.unshift('<capability>');
   if (clashing.length > 0) {
-    fail(`candidates: --task takes its capability, context, cost policy and locality from task taxonomy ${TASK_TAXONOMY_VERSION}; `
+    fail(`candidates: --task takes its capability, context, cost policy and locality from task taxonomy ${taxonomy}; `
       + `${clashing.join(', ')} cannot be given beside it. Nothing was read.`, 2);
   }
   const missing = ['tier', 'context'].filter((name) => options[name] === undefined || options[name] === true);
   if (missing.length > 0) {
     fail(`candidates: --task needs ${missing.map((name) => `--${name}`).join(' and ')}; nothing is defaulted. Nothing was read.`, 2);
   }
-  const answer = routeQueryForTask({ machineKey: machine, taskType: String(options.task),
+  const answer = routeQueryForTaskUnder(taxonomy, { machineKey: machine, taskType: String(options.task),
     tier: String(options.tier), contextTokens: String(options.context) });
   if (!answer.ok) fail(`candidates: refused by task taxonomy ${answer.taxonomyVersion}: ${answer.refusals.join('; ')}. Nothing was read.`, 2);
   return answer;
@@ -3458,6 +3476,10 @@ function taskQueryFromOptions(positional: string[], options: Options, machine: s
 async function commandCandidates(positional: string[], options: Options): Promise<void> {
   if (options.context !== undefined && options.task === undefined) {
     fail('candidates: --context is the context requirement of a --task; without --task use --min-context. Nothing was read.', 2);
+  }
+  if (options.taxonomy !== undefined && options.task === undefined) {
+    fail('candidates: --taxonomy names the task taxonomy a --task is mapped by; without --task there is nothing to map. '
+      + 'Nothing was read.', 2);
   }
   if (options['by-effort'] === true && (options.fallback === true || options.log === true)) {
     fail('candidates: --by-effort is its own read-only view (cek1); --fallback and --log answer crc2 and are refused beside it. '
@@ -3727,8 +3749,13 @@ async function commandRecommend(positional: string[], options: Options): Promise
     fail('recommend: --allow-metered belongs to --contract crr2; crr1 answers under the task taxonomy\'s own cost policy. '
       + 'Nothing was read.', 2);
   }
+  const taxonomy = taxonomyFromOptions('recommend', options);
+  if (taxonomy !== TASK_TAXONOMY_VERSION && contract !== 'crr2') {
+    fail(`recommend: --taxonomy ${taxonomy} belongs to --contract crr2; crr1 answers under task taxonomy ${TASK_TAXONOMY_VERSION} only. `
+      + 'Nothing was read.', 2);
+  }
   if (contract === 'crr2') {
-    await commandRecommendCrr2(positional[0]!, options, policyAsked);
+    await commandRecommendCrr2(positional[0]!, options, policyAsked, taxonomy);
     return;
   }
   const machine = machineFromOptions(options);
@@ -3808,9 +3835,12 @@ async function commandRecommend(positional: string[], options: Options): Promise
  * are read from the rollup of that key's runs alone; a route no run measured at any effort is derived pooled
  * so that its exclusion is still stated.
  */
-async function commandRecommendCrr2(taskType: string, options: Options, policyAsked: 'crp1' | 'crp2'): Promise<void> {
+async function commandRecommendCrr2(taskType: string, options: Options, policyAsked: 'crp1' | 'crp2',
+  taxonomy: TaskTaxonomyVersion): Promise<void> {
   const machine = machineFromOptions(options);
   const request = { machineKey: machine, taskType, allowMetered: options['allow-metered'] === true,
+    // ctt1 is the default and is not written into the request, so an answer without --taxonomy is built as before.
+    ...(taxonomy === TASK_TAXONOMY_VERSION ? {} : { taxonomyVersion: taxonomy }),
     ...(options.tier === undefined ? {} : { tier: String(options.tier) }),
     ...(options.context === undefined ? {} : { contextTokens: String(options.context) }) };
   const refused = recommendRoutesCrr2(request, { now: new Date(), routes: [] });

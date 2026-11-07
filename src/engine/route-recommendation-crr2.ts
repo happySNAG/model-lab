@@ -51,7 +51,7 @@ import {
   qualifiedRouteCandidates,
 } from './routing-contract';
 import { CURRENT_ROUTING_POLICY_VERSION, RoutingPolicyVersion } from './routing-policy';
-import { OrdraTaskType, TASK_TAXONOMY_VERSION, routeQueryForTask } from './task-taxonomy';
+import { Ctt2TaskType, TASK_TAXONOMY_VERSION, TaskTaxonomyVersion, routeQueryForTaskUnder } from './task-taxonomy';
 
 /** The contract. Changing a field, the order or what it admits means a new version. */
 export const ROUTE_RECOMMENDATION_CRR2_VERSION = 'crr2';
@@ -99,6 +99,8 @@ export interface Crr2Request {
   contextTokens?: number | string;
   /** Admit metered routes, in their own group and flagged as needing a spending authorization. Default false. */
   allowMetered?: boolean;
+  /** The task taxonomy the task type is mapped by. Default ctt1; ctt2 only when it is asked for by name. */
+  taxonomyVersion?: TaskTaxonomyVersion;
 }
 
 export interface Crr2Inputs {
@@ -216,12 +218,12 @@ export interface Crr2Recommendation {
   contractVersion: typeof ROUTE_RECOMMENDATION_CRR2_SCHEMA_VERSION;
   jsonSchema: typeof ROUTE_RECOMMENDATION_CRR2_JSON_SCHEMA;
   ok: true;
-  taxonomyVersion: typeof TASK_TAXONOMY_VERSION;
+  taxonomyVersion: TaskTaxonomyVersion;
   routingContract: typeof ROUTING_CONTRACT_VERSION;
   routingPolicyVersion: RoutingPolicyVersion;
   answeredAt: string;
   query: {
-    taskType: OrdraTaskType;
+    taskType: Ctt2TaskType;
     tier?: RouteCandidateQuery['structuralTier'];
     contextTokens?: number;
     machineKey: string;
@@ -262,7 +264,7 @@ export interface Crr2Recommendation {
 export interface Crr2Refusal {
   contract: typeof ROUTE_RECOMMENDATION_CRR2_VERSION;
   ok: false;
-  taxonomyVersion: typeof TASK_TAXONOMY_VERSION;
+  taxonomyVersion: TaskTaxonomyVersion;
   refusals: string[];
   isSelection: false;
   launches: false;
@@ -490,7 +492,7 @@ function uncertaintiesOf(key: string, reliability: Crr2Reliability, duration: Cr
  * is selected or launched, and no route the crc2 rules excluded can be ranked.
  */
 export function recommendRoutesCrr2(request: Crr2Request, inputs: Crr2Inputs): Crr2Recommendation | Crr2Refusal {
-  const answer = routeQueryForTask({ machineKey: request.machineKey, taskType: request.taskType,
+  const answer = routeQueryForTaskUnder(request.taxonomyVersion ?? TASK_TAXONOMY_VERSION, { machineKey: request.machineKey, taskType: request.taskType,
     tier: request.tier ?? 1, contextTokens: request.contextTokens ?? 1 });
   if (!answer.ok) {
     return { contract: ROUTE_RECOMMENDATION_CRR2_VERSION, ok: false, taxonomyVersion: answer.taxonomyVersion,
@@ -609,7 +611,7 @@ export function recommendRoutesCrr2(request: Crr2Request, inputs: Crr2Inputs): C
       : uncertainties.map((entry) => `${entry.code}${entry.key === undefined ? '' : ` (${entry.key})`}: ${entry.detail}`);
 
   const reasons: string[] = [
-    `task '${answer.taskType}' maps by task taxonomy ${TASK_TAXONOMY_VERSION} to ${query.capability}`
+    `task '${answer.taskType}' maps by task taxonomy ${answer.taxonomyVersion} to ${query.capability}`
       + `${query.structuralTier === undefined ? ', with no structural tier required (none was asked)' : ` at ${query.structuralTier}`}`
       + `${query.minimumContextTokens === undefined ? ', with no context requirement (none was asked)'
         : `, needing at least ${query.minimumContextTokens} context tokens`}`,
@@ -634,7 +636,7 @@ export function recommendRoutesCrr2(request: Crr2Request, inputs: Crr2Inputs): C
     contractVersion: ROUTE_RECOMMENDATION_CRR2_SCHEMA_VERSION,
     jsonSchema: ROUTE_RECOMMENDATION_CRR2_JSON_SCHEMA,
     ok: true,
-    taxonomyVersion: TASK_TAXONOMY_VERSION,
+    taxonomyVersion: answer.taxonomyVersion,
     routingContract: ROUTING_CONTRACT_VERSION,
     routingPolicyVersion,
     answeredAt: inputs.now.toISOString(),
