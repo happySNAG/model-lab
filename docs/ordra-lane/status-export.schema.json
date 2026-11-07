@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "cernum:status-export:cse1:1",
-  "title": "Cernum status export, cse1 version 1",
-  "description": "The read-only document `cernum status-export --json` prints. Every section is the output of the module that owns it; see docs/ordra-lane/status-export.md. Sections that carry another versioned document (cmr1, crg1, cqh1 entries) pin that document's schema id and its required fields and admit fields it adds.",
+  "title": "Cernum status export, cse1 version 1 (and version 2, which adds the optional expiryWarnings)",
+  "description": "The read-only document `cernum status-export --json` prints. Version 1 by default; `--expiry-warnings` makes it version 2 with expiryWarnings, the only optional top-level field. Every section is the output of the module that owns it; see docs/ordra-lane/status-export.md. Sections that carry another versioned document (cmr1, crg1, cqh1 entries) pin that document's schema id and its required fields and admit fields it adds.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema": { "const": "cse1" },
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "enum": [1, 2] },
     "jsonSchema": { "const": "docs/ordra-lane/status-export.schema.json" },
     "generatedAt": { "$ref": "#/$defs/instant" },
     "machineKey": { "type": "string", "minLength": 1 },
@@ -438,7 +438,22 @@
       }
     },
     "corrupt": { "$ref": "#/$defs/corrupt" },
-    "disclosure": { "type": "string", "minLength": 1 }
+    "disclosure": { "type": "string", "minLength": 1 },
+    "expiryWarnings": {
+      "description": "Version 2 only (`--expiry-warnings`): one entry per route whose latest cqp1 verdict is safeToRoute and whose qualification expires within the qualification planner's renewal window (7 days) or has expired, sorted by expiresAt then routeKey.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["routeKey", "expiresAt", "state", "reason"],
+        "properties": {
+          "routeKey": { "$ref": "#/$defs/routeKey" },
+          "expiresAt": { "$ref": "#/$defs/instant" },
+          "state": { "enum": ["expiring", "expired"] },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
   },
   "$defs": {
     "instant": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },

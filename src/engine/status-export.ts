@@ -35,8 +35,9 @@ import { LockInspection, LockOwnerState } from './lock';
 import { METRICS_ROLLUP_SCHEMA, MetricsCost, MetricsRollup, deriveMetricsRollup } from './metrics-rollup';
 import { OBSERVATION_STORE_SCHEMA, ObservationStoreContents, latestDiscoverySnapshot } from './observation-store';
 import { EffortLevel, ProviderID } from './provider';
+import { RENEWAL_WINDOW_MILLISECONDS, latestQualificationEvidence, qualificationExpiryState } from './qualification-planner';
 import {
-  QUALIFICATION_HISTORY_SCHEMA, QualificationHistoryEntry, deriveQualificationHistory, parseRouteKey,
+  QUALIFICATION_HISTORY_SCHEMA, QualificationHistory, QualificationHistoryEntry, deriveQualificationHistory, parseRouteKey,
 } from './qualification-history';
 import {
   REGRESSION_REPORT_SCHEMA, RegressionReport, RegressionThresholds, V1_REGRESSION_THRESHOLDS, detectRegressions,
@@ -59,6 +60,11 @@ import { WorkspaceRunRow } from './workspace-aggregate';
 /** The document's schema id. A field removed or changing meaning is a new id; a field added is a new version. */
 export const STATUS_EXPORT_SCHEMA = 'cse1';
 export const STATUS_EXPORT_SCHEMA_VERSION = 1;
+/**
+ * The version a document carrying `expiryWarnings` declares. Opt-in (`expiryWarnings: true`, the command's
+ * `--expiry-warnings`): without it the document is version 1, unchanged.
+ */
+export const STATUS_EXPORT_SCHEMA_VERSION_EXPIRY_WARNINGS = 2;
 /** Where the JSON schema the document validates against lives, relative to the repository. */
 export const STATUS_EXPORT_JSON_SCHEMA_PATH = 'docs/ordra-lane/status-export.schema.json';
 
@@ -102,8 +108,24 @@ export interface StatusExportInputs {
   /** How many of each route's newest qualification history entries to carry. */
   recentQualificationEntries?: number;
   currentDriverID?: string;
+  /**
+   * Add `expiryWarnings` and declare schemaVersion 2. Absent or false: the document is version 1, with exactly
+   * the keys it always had.
+   */
+  expiryWarnings?: boolean;
   /** The instant everything is answered for. */
   now: Date;
+}
+
+/**
+ * A safe qualification that expires within the qualification planner's renewal window, or has expired. The
+ * expiry instant is the planner's own (`latestQualificationEvidence`), never re-derived here.
+ */
+export interface StatusExpiryWarning {
+  routeKey: string;
+  expiresAt: string;
+  state: 'expiring' | 'expired';
+  reason: string;
 }
 
 export interface StatusDiscoveredModels {
@@ -217,7 +239,7 @@ export interface StatusLease {
 
 export interface StatusExport {
   schema: typeof STATUS_EXPORT_SCHEMA;
-  schemaVersion: typeof STATUS_EXPORT_SCHEMA_VERSION;
+  schemaVersion: typeof STATUS_EXPORT_SCHEMA_VERSION | typeof STATUS_EXPORT_SCHEMA_VERSION_EXPIRY_WARNINGS;
   jsonSchema: typeof STATUS_EXPORT_JSON_SCHEMA_PATH;
   generatedAt: string;
   machineKey: string;
@@ -255,6 +277,43 @@ export interface StatusExport {
   activeLeases: { read: boolean; activeCount: number; leases: StatusLease[] };
   corrupt: ObservationStoreContents['corrupt'];
   disclosure: string;
+  /** Version 2 only: every safe qualification due for renewal or expired, by expiresAt then routeKey. */
+  expiryWarnings?: StatusExpiryWarning[];
+}
+
+const isoOf = (milliseconds: number): string => new Date(milliseconds).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/**
+ * The expiry warnings for a set of route histories, at `now`. One entry per route whose newest cqh1 verdict is
+ * safeToRoute and whose qualification, by the qualification planner's own rule (`latestQualificationEvidence`
+ * and `qualificationExpiryState`), is due for renewal (`expiring`) or has `expired`. A route outside the
+ * window, whose newest verdict is not safe, or whose history has no dated evidence gets no entry. Sorted by
+ * expiresAt, then routeKey.
+ */
+export function deriveExpiryWarnings(histories: QualificationHistory[], policy: QualificationPolicy, now: Date,
+                                     renewalWindowMilliseconds: number = RENEWAL_WINDOW_MILLISECONDS): StatusExpiryWarning[] {
+  const at = now.getTime();
+  const warnings: { warning: StatusExpiryWarning; expiresAt: number }[] = [];
+  for (const history of histories) {
+    const evidence = latestQualificationEvidence(history, policy);
+    if (evidence === undefined || !evidence.safe) continue;
+    const state = qualificationExpiryState(evidence.expiresAt, at, renewalWindowMilliseconds);
+    if (state === 'current') continue;
+    const window = `${renewalWindowMilliseconds / 86_400_000}-day renewal window`;
+    warnings.push({
+      expiresAt: evidence.expiresAt,
+      warning: {
+        routeKey: history.routeKey, expiresAt: isoOf(evidence.expiresAt), state,
+        reason: `the ${policy.policyID} qualification resting on evidence to ${isoOf(evidence.evidenceTo)} `
+          + (state === 'expired'
+            ? `expired ${isoOf(evidence.expiresAt)}; it needs a renewal qualification, which the qualification planner plans`
+            : `expires ${isoOf(evidence.expiresAt)}, within the ${window}; the qualification planner plans its renewal`),
+      },
+    });
+  }
+  return warnings
+    .sort((a, b) => a.expiresAt - b.expiresAt || compareCodePoints(a.warning.routeKey, b.warning.routeKey))
+    .map(({ warning }) => warning);
 }
 
 const text = (row: Record<string, unknown>, key: string): string | undefined =>
@@ -415,11 +474,13 @@ export function deriveStatusExport(inputs: StatusExportInputs): StatusExport {
   });
 
   // ---- recent qualification results: the newest entries of each route's history --------------------
+  const histories: QualificationHistory[] = [];
   const recent = routeKeys.map((routeKey): StatusRecentQualification => {
     const history = deriveQualificationHistory({
       routeKey, machineKey, contents, workspaceRows, ...optional, policy, routingPolicyVersion,
       ...(inputs.spendFor === undefined ? {} : { spendAt: (at: Date) => spendOf(routeKey, at) as RouteSpendPosture }),
     });
+    histories.push(history);
     return { routeKey, historyEntryCount: history.entries.length,
       entries: history.entries.slice(Math.max(0, history.entries.length - entriesPerRoute)),
       undatedWorkspaceRuns: history.undatedWorkspaceRuns };
@@ -459,9 +520,10 @@ export function deriveStatusExport(inputs: StatusExportInputs): StatusExport {
   const leases = (inputs.leases ?? []).map(summariseLease)
     .sort((a, b) => compareCodePoints(a.endpoint ?? '', b.endpoint ?? ''));
 
+  const withWarnings = inputs.expiryWarnings === true;
   return {
     schema: STATUS_EXPORT_SCHEMA,
-    schemaVersion: STATUS_EXPORT_SCHEMA_VERSION,
+    schemaVersion: withWarnings ? STATUS_EXPORT_SCHEMA_VERSION_EXPIRY_WARNINGS : STATUS_EXPORT_SCHEMA_VERSION,
     jsonSchema: STATUS_EXPORT_JSON_SCHEMA_PATH,
     generatedAt: now.toISOString(),
     machineKey,
@@ -490,5 +552,6 @@ export function deriveStatusExport(inputs: StatusExportInputs): StatusExport {
     activeLeases: { read: inputs.leases !== undefined, activeCount: leases.filter((lease) => lease.active).length, leases },
     corrupt: contents.corrupt,
     disclosure: STATUS_EXPORT_IS_READ_ONLY,
+    ...(withWarnings ? { expiryWarnings: deriveExpiryWarnings(histories, policy, now) } : {}),
   };
 }

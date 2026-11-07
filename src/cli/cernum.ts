@@ -4226,6 +4226,7 @@ async function commandStatusExport(positional: string[], options: Options): Prom
       spendFor: ({ provider, modelID }, at) => routeSpendPosture({ provider, modelID, now: at }),
       routingPolicyVersion: policyAsked,
       ...(contextTokens === undefined ? {} : { contextTokens }),
+      ...(options['expiry-warnings'] === true ? { expiryWarnings: true } : {}),
     });
   } catch (error) {
     if (error instanceof StatusExportError) fail(`status-export: ${error.message}`, 2);
@@ -4245,6 +4246,10 @@ async function commandStatusExport(positional: string[], options: Options): Prom
   say(`  regressions         ${document.regressions.regressedRouteCount} regressed · ${document.regressions.staleRouteCount} stale`);
   say(`  fallback chains     ${document.fallbackChains.tasks.length} task type(s), each at ${document.fallbackChains.tasks[0]?.tiers.length ?? 0} tier(s)`);
   say(`  leases              ${document.activeLeases.activeCount} active of ${document.activeLeases.leases.length}`);
+  if (document.expiryWarnings !== undefined) {
+    say(`  expiry warnings     ${document.expiryWarnings.length}`);
+    for (const warning of document.expiryWarnings) say(`    ${warning.routeKey} · ${warning.state} · ${warning.expiresAt}`);
+  }
   say('');
   say(`The whole document: ${TERMINAL_COMMAND} status-export --json  (schema ${document.jsonSchema})`);
   for (const line of wrap(document.disclosure, 76)) say(line);

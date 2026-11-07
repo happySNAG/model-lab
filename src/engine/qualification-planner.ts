@@ -362,15 +362,42 @@ function splitRouteKey(routeKey: string): { provider: ProviderID; modelID: strin
   return { provider: routeKey.slice(0, at) as ProviderID, modelID: routeKey.slice(at + 1) };
 }
 
-/** The newest verdict, and when the qualification it states stops being current. */
-function latestEvidence(history: QualificationHistory | undefined, policy: QualificationPolicy):
-  { safe: boolean; evidenceTo: number; expiresAt: number } | undefined {
+/** The newest verdict of a route's qualification history, and when the qualification it states stops being current. */
+export interface LatestQualificationEvidence {
+  /** The newest cqh1 entry's verdict is `safeToRoute`. */
+  safe: boolean;
+  /** The newest entry's `evidenceWindow.to`, in milliseconds since the epoch. */
+  evidenceTo: number;
+  /** `evidenceTo` plus the policy's `maximumAgeMilliseconds`. */
+  expiresAt: number;
+}
+
+/**
+ * The newest verdict, and when the qualification it states stops being current. THE planner's expiry rule:
+ * exported so another reader (the status export) computes the same instant by calling it, not by copying it.
+ * Undefined when there is no entry or the newest entry's evidence window has no readable end.
+ */
+export function latestQualificationEvidence(history: QualificationHistory | undefined, policy: QualificationPolicy):
+  LatestQualificationEvidence | undefined {
   const latest = history?.entries[history.entries.length - 1];
   if (latest === undefined) return undefined;
   const evidenceTo = instant(latest.evidenceWindow.to);
   if (evidenceTo === undefined) return undefined;
   return { safe: latest.verdict === 'safeToRoute', evidenceTo, expiresAt: evidenceTo + policy.maximumAgeMilliseconds };
 }
+
+/**
+ * Where a qualification expiring at `expiresAt` stands at `now`, by the planner's rule: a renewal is due when
+ * `expiresAt - now <= renewalWindow`, and then it is `expired` when `expiresAt <= now`, else `expiring`;
+ * otherwise it is `current`.
+ */
+export function qualificationExpiryState(expiresAt: number, now: number, renewalWindow: number = RENEWAL_WINDOW_MILLISECONDS):
+  'current' | 'expiring' | 'expired' {
+  if (expiresAt - now > renewalWindow) return 'current';
+  return expiresAt <= now ? 'expired' : 'expiring';
+}
+
+const latestEvidence = latestQualificationEvidence;
 
 function lineageKeyOf(routeKey: string, stage: QualificationStage, trigger: QualificationTrigger, benchmark: { id: string; version: string }): string {
   return digestObject({ routeKey, stage, triggerKind: trigger.kind, since: trigger.since, benchmark: `${benchmark.id}@${benchmark.version}` });
@@ -440,12 +467,13 @@ export function deriveQualificationPlan(inputs: QualificationPlanInputs): Qualif
       ?? candidate(history.routeKey, [history.routeKey]);
     owner.history = history;
     const evidence = latestEvidence(history, policy);
-    if (evidence?.safe === true && evidence.expiresAt - now <= renewalWindow) {
+    const expiry = evidence === undefined ? undefined : qualificationExpiryState(evidence.expiresAt, now, renewalWindow);
+    if (evidence?.safe === true && expiry !== 'current') {
       owner.qualificationExpiresAt = isoOf(evidence.expiresAt);
       offer(owner, {
         kind: 'renewal', since: isoOf(evidence.expiresAt - renewalWindow), invalidatesEvidence: false, carriedFromLedger: false,
         detail: [`the ${policy.policyID} qualification resting on evidence to ${isoOf(evidence.evidenceTo)} `
-          + `${evidence.expiresAt <= now ? 'expired' : 'expires'} ${isoOf(evidence.expiresAt)}`],
+          + `${expiry === 'expired' ? 'expired' : 'expires'} ${isoOf(evidence.expiresAt)}`],
       });
     }
   }

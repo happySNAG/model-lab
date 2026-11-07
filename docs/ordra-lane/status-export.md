@@ -31,7 +31,7 @@ Office itself is out of scope. This page describes the interface it will read.
 
 ```
 cernum status-export --json [--root <dir>] [--machine <cmk1:key>] [--policy crp1|crp2]
-                            [--evidence-roots <dir,dir>] [--context <tokens>]
+                            [--evidence-roots <dir,dir>] [--context <tokens>] [--expiry-warnings]
 ```
 
 Without `--json` it prints a short summary and points at the full document. `--context` gives every
@@ -42,7 +42,8 @@ with exit 2 before anything is read.
 
 ## The document
 
-Every top-level field is required, and no other field is allowed.
+Every top-level field below is required, and no other field is allowed except `expiryWarnings`, which
+only version 2 carries (see [Expiry warnings](#expiry-warnings--version-2-opt-in)).
 
 | Field | What it holds |
 |---|---|
@@ -70,6 +71,37 @@ invents none. Without `--context`, each task query carries no `minimumContextTok
 requirement asks `cernum candidates --task <type> --tier <n> --context <tokens> --fallback`. With
 `--context <tokens>`, every task query carries it. As in `candidates`, a route whose context window is
 unknown cannot satisfy it and is excluded with that reason.
+
+## Expiry warnings — version 2, opt-in
+
+`cernum status-export --expiry-warnings --json` prints the same document as **version 2**: `schemaVersion`
+is `2` and one field is added, last, **`expiryWarnings`**. Without `--expiry-warnings` the document is
+version 1, with exactly the fields and order above; nothing else changes either way.
+
+`expiryWarnings` has one entry per route whose latest qualification history (`cqh1`) verdict is
+`safeToRoute` and whose qualification expires within the qualification planner's renewal window
+(`RENEWAL_WINDOW_MILLISECONDS`, 7 days, in `src/engine/qualification-planner.ts`) or has already expired.
+Each entry has:
+
+| Field | What it holds |
+|---|---|
+| `routeKey` | The route. |
+| `expiresAt` | The instant the qualification stops being current. |
+| `state` | `expiring` when it is within the window and not yet past; `expired` when `expiresAt` is at or before the export's instant. |
+| `reason` | The policy, the end of the evidence the qualification rests on, and the expiry. |
+
+Entries are sorted by `expiresAt`, then `routeKey`. A route outside the window, one whose latest verdict is
+not safe, and one with no dated evidence get no entry; an empty list means nothing is due.
+
+The expiry instant is the planner's own: `latestQualificationEvidence` (the newest entry's
+`evidenceWindow.to` plus the policy's `maximumAgeMilliseconds`) and `qualificationExpiryState` are exported
+from the planner and called here, not copied. So a route warned `expiring` or `expired` is exactly a route
+`plan-qualification` would plan a renewal for at the same instant, with the same `qualificationExpiresAt`.
+The warnings are information only: nothing is planned, written or sent. The function is
+`deriveExpiryWarnings` in `src/engine/status-export.ts`; tests: `test/engine/status-export-expiry.test.ts`.
+
+The JSON schema admits both versions: `schemaVersion` is `1` or `2`, and `expiryWarnings` is optional,
+with no other field allowed on its entries. The schema's `$id` is unchanged.
 
 ## Versioning
 
