@@ -114,3 +114,42 @@ Against the 6 GiB disk floor and ~11 GiB free on the internal disk, the suite's 
   `npm test -- test/engine/matrix-temp-location.test.ts test/engine/workspace-cell-selection.test.ts`.
 - The profile was bucketed by walking each sample's stack to the first `node:fs`/`node:child_process` frame and
   the nearest `src/` frame; the temp sampler and the analysis were inline `node` programs, not committed.
+
+## After (P2) (P-22512, G-22220 P2)
+
+Base: `c778500` (P1's checkpoint), no change under `src/`. Measured 2026-11-06 ~23:01 CST on the Ordra host in
+the session Ordra started (`os.getPriority() = 10`, as in P1). Node v26.0.0, vitest 3.2.7. Command, run twice:
+`npm test -- test/engine/workspace-cell-selection.test.ts --testTimeout=15000 --reporter=verbose`. Both runs:
+25 of 25 tests passed, exit 0.
+
+| run | test 21 (codex, 6 runs) | test 20 (claude, 6 runs) | whole file |
+|---|---|---|---|
+| 1st | 6.49 s | 6.49 s | 19.2 s tests / 21.4 s total |
+| 2nd | 6.48 s | 8.77 s | 22.1 s tests / 23.5 s total |
+
+Other heavy tests (1st / 2nd run): 19 (telemetry) 2.84 / 2.71 s; "Claude matrix can be selected" 1.37 / 2.18 s;
+2 (repeat 3 of 3) 0.91 / 0.87 s; "refuses a selected cell whose record already exists" 0.81 / 0.83 s.
+
+Against the stop threshold: the slowest of tests 20 and 21 is 8.77 s, under the 12 s at which P2 would have
+stopped, and every test is under the 15 s `--testTimeout` (half of the 30 s budget).
+
+Compared with P1's before figures: test 21 6.5 s vs 7.0-7.6 s, test 20 6.5-8.8 s vs 6.6-9.7 s, the file
+21-24 s vs 24-27 s total. Compared with D-19030 (at `bbadb36`): test 21 6.5 s vs 16.0-22.8 s at Ordra's
+background priority and 7.6-8.2 s on the SSD at normal priority; the file 21-24 s vs 53-75 s background and
+23-24 s normal. The after figures sit at or slightly below D-19030's normal-priority SSD figures. The gain over
+D-19030's background runs comes from the temp location (P1's `defaultWorkspaceSandboxRoot()` and the tests'
+`os.tmpdir()` roots on the internal disk) and the session's priority, not from any change to the runner's I/O;
+the spread between runs (test 20: 6.5 vs 8.8 s) is run-to-run noise of the same order as P1's.
+
+C2's five regression files (`workspace-discriminator`, `workspace-pack`, `workspace-tier-packs`,
+`route-outcome-ingest`, `workspace-forward-compat`) were also run once in this session: 157 of 157 tests passed,
+151 s. That is this session's observation only; Ordra's own runs are the evidence for C1 and C2.
+
+The remaining cost is left as it is, on purpose. About two-thirds of tests 20 and 21 is the cases' own child
+processes — the baseline, visible-verification and hidden-check `node` children each run spawns, which are part of
+what the cases measure and cannot be removed without changing a case or a test. About a quarter is the ledger's
+fsync durability — the file and directory fsyncs behind every `atomicWriteJSON` and every appended event or
+result line in `src/engine/ledger.ts` — which is the record store's durability contract for real campaigns and
+which this goal's bounds forbid weakening. Fixture copies, `meta.json` reads, git and cleanup were already
+negligible in P1. With the suite now comfortably inside half its timeout at Ordra's priority, neither is worth
+trading away.
