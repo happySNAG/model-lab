@@ -19,7 +19,9 @@
 // `load()` rebuilds from the log and REPORTS the drift rather than silently correcting it.
 
 import * as fs from 'node:fs';
+import * as nodeFileSystem from 'node:fs';
 import * as path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { CanonicalValue, canonicalJSON, sha256Text } from './canonical';
 import { redactValue } from './redaction';
 
@@ -180,31 +182,94 @@ export function buildPlan(catalog: PlannableCatalog, candidates: PlannableCandid
   return slots;
 }
 
+/**
+ * THE FILE-SYSTEM SEAM (IO-2 P3). Every call the ledger makes to the disk goes through one of these,
+ * and the default is `node:fs` itself, so production behaviour is exactly what it was. A test passes
+ * `{ ...fs, writeFileSync: halfThenENOSPC }` to reproduce a full disk mid-row without a full disk.
+ */
+export type LedgerFileSystem = Pick<typeof fs,
+  'openSync' | 'closeSync' | 'fsyncSync' | 'writeFileSync' | 'readFileSync' | 'existsSync' | 'mkdirSync'
+  | 'readdirSync' | 'renameSync' | 'unlinkSync' | 'ftruncateSync' | 'fstatSync' | 'readSync'>;
+
 /** fsync the directory so a rename is durable, not merely visible. Best effort: not every platform allows it. */
-function fsyncDirectory(directory: string): void {
+function fsyncDirectory(directory: string, fileSystem: LedgerFileSystem = fs): void {
   let handle: number | undefined;
   try {
-    handle = fs.openSync(directory, 'r');
-    fs.fsyncSync(handle);
+    handle = fileSystem.openSync(directory, 'r');
+    fileSystem.fsyncSync(handle);
   } catch {
     // Windows refuses to open a directory for fsync. The rename is still atomic there.
   } finally {
-    if (handle !== undefined) try { fs.closeSync(handle); } catch { /* already gone */ }
+    if (handle !== undefined) try { fileSystem.closeSync(handle); } catch { /* already gone */ }
   }
 }
 
-/** Write, fsync, rename, fsync the directory. A reader never observes a half-written file. */
-export function atomicWriteJSON(filePath: string, value: CanonicalValue): void {
-  const temporary = `${filePath}.tmp`;
-  const handle = fs.openSync(temporary, 'w');
+/**
+ * Write, fsync, rename, fsync the directory. A reader never observes a half-written file.
+ *
+ * THE TEMPORARY FILE IS UNIQUE AND NEVER OUTLIVES A FAILURE. It is named `<file>.<pid>-<random>.tmp`
+ * in the same directory — the same directory because a rename across file systems is not atomic, and
+ * unique because two writers of one file must not share a half-written temporary. If anything fails
+ * between creating it and renaming it (a full disk, a vanished volume), it is removed before the
+ * original error is rethrown, so a failed write leaves the directory as it found it.
+ */
+export function atomicWriteJSON(filePath: string, value: CanonicalValue, fileSystem: LedgerFileSystem = fs): void {
+  const temporary = `${filePath}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
   try {
-    fs.writeFileSync(handle, JSON.stringify(value, null, 2) + '\n', 'utf8');
-    fs.fsyncSync(handle);
-  } finally {
-    fs.closeSync(handle);
+    const handle = fileSystem.openSync(temporary, 'wx');
+    try {
+      fileSystem.writeFileSync(handle, JSON.stringify(value, null, 2) + '\n', 'utf8');
+      fileSystem.fsyncSync(handle);
+    } finally {
+      fileSystem.closeSync(handle);
+    }
+    fileSystem.renameSync(temporary, filePath);
+  } catch (error) {
+    try { fileSystem.unlinkSync(temporary); } catch { /* never created, or already gone with its volume */ }
+    throw error;
   }
-  fs.renameSync(temporary, filePath);
-  fsyncDirectory(path.dirname(filePath));
+  fsyncDirectory(path.dirname(filePath), fileSystem);
+}
+
+/** What `repairTornTail` truncated, when it truncated anything. */
+export interface TornTailRepair extends Record<string, CanonicalValue> {
+  file: string;
+  truncatedBytes: number;
+  at: number;
+  why: string;
+}
+
+/**
+ * BEFORE AN APPEND, CUT A TORN FINAL ROW (IO-2 P3).
+ *
+ * Every row this ledger writes ends in a newline, written in the same call as the row. A file that
+ * does not end in one therefore ends in a row that was never completely written — a full disk or a
+ * vanished volume mid-append — and that row never became a result. Appending after it would turn it
+ * into a corrupt NON-final line, which `load()` rightly refuses to guess about, and the ledger would
+ * become unopenable. So the tail is truncated back to its last newline (or to empty) and fsynced first.
+ */
+export function repairTornTail(filePath: string, fileSystem: LedgerFileSystem = fs): TornTailRepair | undefined {
+  if (!fileSystem.existsSync(filePath)) return undefined;
+  const handle = fileSystem.openSync(filePath, 'r+');
+  try {
+    const size = fileSystem.fstatSync(handle).size;
+    if (size === 0) return undefined;
+    const last = Buffer.alloc(1);
+    fileSystem.readSync(handle, last, 0, 1, size - 1);
+    if (last[0] === 0x0a) return undefined;
+    const contents = fileSystem.readFileSync(filePath);
+    const keep = contents.lastIndexOf(0x0a, size - 1) + 1;
+    fileSystem.ftruncateSync(handle, keep);
+    fileSystem.fsyncSync(handle);
+    return {
+      file: path.basename(filePath),
+      truncatedBytes: size - keep,
+      at: keep,
+      why: 'the final row was not fully written before a failed append; it never became a record, so it was removed before the next append',
+    };
+  } finally {
+    fileSystem.closeSync(handle);
+  }
 }
 
 function nowISO(): string {
@@ -225,7 +290,8 @@ export class Ledger {
   anomalies: LedgerAnomaly[] = [];
   private bySlotKey = new Map<string, PlanSlot>();
 
-  constructor(readonly root: string, private readonly clock: () => string = nowISO) {
+  constructor(readonly root: string, private readonly clock: () => string = nowISO,
+              private readonly fs: LedgerFileSystem = nodeFileSystem) {
     this.planPath = path.join(root, 'plan.json');
     this.metaPath = path.join(root, 'meta.json');
     this.resultsPath = path.join(root, 'results.jsonl');
@@ -238,9 +304,11 @@ export class Ledger {
   // ---------------------------------------------------------------------- creation
 
   static create(root: string, catalog: PlannableCatalog, candidates: PlannableCandidate[],
-                meta: Record<string, CanonicalValue> = {}, clock: () => string = nowISO): Ledger {
+                meta: Record<string, CanonicalValue> = {}, clock: () => string = nowISO,
+                fileSystem: LedgerFileSystem = nodeFileSystem): Ledger {
+    const fs = fileSystem;
     fs.mkdirSync(root, { recursive: true });
-    const ledger = new Ledger(root, clock);
+    const ledger = new Ledger(root, clock, fileSystem);
     fs.mkdirSync(ledger.abortsDirectory, { recursive: true });
     if (fs.existsSync(ledger.planPath)) {
       throw new LedgerError(`a plan already exists at ${ledger.planPath}; open it instead of recreating it — rewriting a plan mid-campaign would change the denominator`);
@@ -255,17 +323,17 @@ export class Ledger {
       slotCount: plan.length,
       planDigest: sha256Text(canonicalJSON(plan.map((slot) => slot.slotKey))),
       slots: plan as unknown as CanonicalValue,
-    });
-    atomicWriteJSON(ledger.metaPath, { ...meta, createdAt: clock(), ledgerFormatVersion: LEDGER_FORMAT_VERSION });
+    }, fileSystem);
+    atomicWriteJSON(ledger.metaPath, { ...meta, createdAt: clock(), ledgerFormatVersion: LEDGER_FORMAT_VERSION }, fileSystem);
     // Touch the append-only files so a crash before the first attempt still finds a well-formed,
     // empty ledger rather than a missing one.
     for (const file of [ledger.resultsPath, ledger.eventsPath]) if (!fs.existsSync(file)) fs.closeSync(fs.openSync(file, 'a'));
-    fsyncDirectory(root);
+    fsyncDirectory(root, fileSystem);
     return ledger.load();
   }
 
-  static open(root: string, clock: () => string = nowISO): Ledger {
-    return new Ledger(root, clock).load();
+  static open(root: string, clock: () => string = nowISO, fileSystem: LedgerFileSystem = nodeFileSystem): Ledger {
+    return new Ledger(root, clock, fileSystem).load();
   }
 
   static exists(root: string): boolean {
@@ -275,6 +343,7 @@ export class Ledger {
   // ---------------------------------------------------------------------- loading
 
   load(): this {
+    const { fs } = this;
     if (!fs.existsSync(this.planPath)) throw new LedgerError(`no plan.json at ${this.root}`);
     const planFile = JSON.parse(fs.readFileSync(this.planPath, 'utf8')) as { slots: PlanSlot[] };
     this.plan = planFile.slots;
@@ -289,6 +358,7 @@ export class Ledger {
 
   /** Parse results.jsonl; truncate a torn final line; first record per slot wins. */
   private readResults(): CanonicalValue | undefined {
+    const { fs } = this;
     if (!fs.existsSync(this.resultsPath)) return undefined;
     const raw = fs.readFileSync(this.resultsPath);
     const lines = raw.toString('utf8').split('\n');
@@ -332,7 +402,7 @@ export class Ledger {
       } finally {
         fs.closeSync(handle);
       }
-      fsyncDirectory(this.root);
+      fsyncDirectory(this.root, fs);
     }
     return repaired;
   }
@@ -342,6 +412,7 @@ export class Ledger {
    * RECORDED rather than silently corrected — a silent correction hides the one fact worth knowing.
    */
   private verifyCheckpoint(): void {
+    const { fs } = this;
     if (!fs.existsSync(this.checkpointPath)) return;
     let checkpoint: Checkpoint;
     try {
@@ -383,13 +454,7 @@ export class Ledger {
     // forget. There is one way into this file, and it goes through this line.
     const stored: SlotResult = redactValue(
       { recordedAt: this.clock(), ...record, status: record.status as TerminalSlotStatus, seq: this.results.size } as SlotResult);
-    const handle = fs.openSync(this.resultsPath, 'a');
-    try {
-      fs.writeFileSync(handle, canonicalJSON(stored as unknown as CanonicalValue) + '\n', 'utf8');
-      fs.fsyncSync(handle);
-    } finally {
-      fs.closeSync(handle);
-    }
+    this.appendLine(this.resultsPath, canonicalJSON(stored as unknown as CanonicalValue));
     this.results.set(key, stored);
     return stored;
   }
@@ -399,18 +464,34 @@ export class Ledger {
     // The same chokepoint for the operational trace. Refusals and transport failures are exactly the
     // events whose text a provider authored, which makes them exactly the ones worth scrubbing.
     const record = redactValue({ ...fields, kind, at: this.clock() });
-    const handle = fs.openSync(this.eventsPath, 'a');
+    this.appendLine(this.eventsPath, canonicalJSON(record as CanonicalValue));
+  }
+
+  /**
+   * One row, newline-terminated, written in one call and fsynced. A torn final row a previous failed
+   * append left behind is cut first (see `repairTornTail`), so a half row is never followed by a whole
+   * one and never read as a record. The cut is recorded as a `repairedTornWrite` anomaly.
+   */
+  private appendLine(filePath: string, line: string): void {
+    const { fs } = this;
+    const repaired = repairTornTail(filePath, fs);
+    if (repaired !== undefined) this.anomalies.push({ kind: 'repairedTornWrite', detail: repaired });
+    const handle = fs.openSync(filePath, 'a');
     try {
-      fs.writeFileSync(handle, canonicalJSON(record as CanonicalValue) + '\n', 'utf8');
+      fs.writeFileSync(handle, line + '\n', 'utf8');
       fs.fsyncSync(handle);
     } finally {
       fs.closeSync(handle);
     }
   }
 
+  /** Every complete event. A torn final row — no newline yet — is not an event and is not returned. */
   events(): Record<string, CanonicalValue>[] {
+    const { fs } = this;
     if (!fs.existsSync(this.eventsPath)) return [];
-    return fs.readFileSync(this.eventsPath, 'utf8').split('\n').filter((line) => line.trim().length > 0)
+    const text = fs.readFileSync(this.eventsPath, 'utf8');
+    const complete = text.endsWith('\n') ? text : text.slice(0, text.lastIndexOf('\n') + 1);
+    return complete.split('\n').filter((line) => line.trim().length > 0)
       .map((line) => JSON.parse(line) as Record<string, CanonicalValue>);
   }
 
@@ -431,11 +512,12 @@ export class Ledger {
       candidatesComplete: [...this.completedCandidates()].sort(),
       ...extra,
     };
-    atomicWriteJSON(this.checkpointPath, checkpoint as unknown as CanonicalValue);
+    atomicWriteJSON(this.checkpointPath, checkpoint as unknown as CanonicalValue, this.fs);
     return checkpoint;
   }
 
   readCheckpoint(): Checkpoint | undefined {
+    const { fs } = this;
     if (!fs.existsSync(this.checkpointPath)) return undefined;
     try { return JSON.parse(fs.readFileSync(this.checkpointPath, 'utf8')) as Checkpoint; } catch { return undefined; }
   }
@@ -453,12 +535,13 @@ export class Ledger {
       terminalAtAbort: this.results.size,
       note: 'blocked slots were never attempted and carry no result. They become runnable again only after the breach is resolved and the campaign is resumed; terminal slots never do.',
     };
-    atomicWriteJSON(this.abortPath, record as unknown as CanonicalValue);
+    atomicWriteJSON(this.abortPath, record as unknown as CanonicalValue, this.fs);
     this.event('abort', { reason, stage, blocked: blockedKeys.length });
     return record;
   }
 
   standingAbort(): AbortRecord | undefined {
+    const { fs } = this;
     if (!fs.existsSync(this.abortPath)) return undefined;
     try { return JSON.parse(fs.readFileSync(this.abortPath, 'utf8')) as AbortRecord; } catch { return undefined; }
   }
@@ -467,17 +550,20 @@ export class Ledger {
   clearAbort(why: string): AbortRecord | undefined {
     const current = this.standingAbort();
     if (!current) return undefined;
+    const { fs } = this;
     fs.mkdirSync(this.abortsDirectory, { recursive: true });
     const count = fs.readdirSync(this.abortsDirectory).length;
     const superseded: AbortRecord = { ...current, supersededAt: this.clock(), supersededBecause: why };
-    atomicWriteJSON(path.join(this.abortsDirectory, `abort-${String(count).padStart(3, '0')}.json`), superseded as unknown as CanonicalValue);
+    atomicWriteJSON(path.join(this.abortsDirectory, `abort-${String(count).padStart(3, '0')}.json`),
+      superseded as unknown as CanonicalValue, fs);
     fs.unlinkSync(this.abortPath);
-    fsyncDirectory(this.root);
+    fsyncDirectory(this.root, fs);
     this.event('abortSuperseded', { why });
     return superseded;
   }
 
   pastAborts(): AbortRecord[] {
+    const { fs } = this;
     if (!fs.existsSync(this.abortsDirectory)) return [];
     return fs.readdirSync(this.abortsDirectory).filter((name) => name.endsWith('.json')).sort()
       .map((name) => JSON.parse(fs.readFileSync(path.join(this.abortsDirectory, name), 'utf8')) as AbortRecord);
@@ -508,6 +594,7 @@ export class Ledger {
   }
 
   meta(): Record<string, CanonicalValue> {
+    const { fs } = this;
     if (!fs.existsSync(this.metaPath)) return {};
     return JSON.parse(fs.readFileSync(this.metaPath, 'utf8')) as Record<string, CanonicalValue>;
   }

@@ -2461,6 +2461,14 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   // was in flight. The handler cancels the matrix — the run in flight is stopped and sealed, every
   // later cell is recorded as cancelled — and stops every owned group at once. It is removed when
   // the matrix ends, however it ends.
+  //
+  // THE ROOTS MUST BE THERE BEFORE THE FIRST CELL (IO-2 P3). `runWorkspaceMatrix` refuses a missing or
+  // unwritable campaign or sandbox root and never creates one. Only this command's OWN defaults — the
+  // per-user campaign directory and the directory under the OS temp folder — are created here, because
+  // their absence just means a first run. A root the operator named (`--root`, `--sandbox` or the
+  // campaign-root environment override) is never created: missing, it is usually a drive not mounted.
+  if (options.root === undefined && environmentOverride('CAMPAIGN_ROOT') === undefined) fs.mkdirSync(root, { recursive: true });
+  if (options.sandbox === undefined) fs.mkdirSync(sandboxRoot, { recursive: true });
   const interruption = installMatrixSignalHandlers((stopped) => {
     say('');
     say('Stopping the matrix — the run in flight is stopped and recorded; no further cell starts.');
@@ -2521,6 +2529,18 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       for (const line of describeLimitEvidence(limit)) say(`  ${line}`);
       say('');
     },
+    onStorageFault: (fault) => {
+      say('');
+      say(`  ** STORAGE FAULT — the record root failed (${fault.code}); the matrix stops and no further run starts. **`);
+      say(`  ${fault.detail}`);
+      say('');
+    },
+  }).catch(async (error: unknown) => {
+    if (error instanceof WorkspaceMatrixError && error.code === 'storageRootUnavailable') {
+      if (collector !== undefined) await collector.stop();
+      return fail(`${error.code}: ${error.message}`, 6);
+    }
+    throw error;
   }).finally(() => interruption.dispose());
 
   // THE COLLECTOR IS STOPPED AFTER THE LAST RUN, with its grace period, so records still in the exporter's
@@ -2554,7 +2574,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   }
   for (const entry of result.skipped) {
     say(`  ${entry.disposition === 'providerThrottledBeforeExecution' || entry.disposition === 'measurementUnavailableBeforeExecution'
-      ? 'NOT EXECUTED' : 'skipped     '} `
+      || entry.disposition === 'storageUnavailable' ? 'NOT EXECUTED' : 'skipped     '} `
       + `${entry.cell.candidate} · ${entry.cell.caseID} · repeat ${entry.cell.repeat.repeatIndex}: `
       + entry.reasons.join('; '));
   }

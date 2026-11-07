@@ -52,8 +52,9 @@ import {
 } from './execution-sandbox';
 
 export class WorkspaceExecutionError extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
+  /** `options.cause` keeps the underlying error — for `evidenceWriteFailed`, the errno the disk returned. */
+  constructor(readonly code: string, message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = 'WorkspaceExecutionError';
   }
 }
@@ -903,7 +904,7 @@ function finalizeWorkspace(options: WorkspaceRunOptions, record: WorkspaceAttemp
     } catch (error) {
       throw new WorkspaceExecutionError('evidenceWriteFailed',
         `the evidence for attempt ${record.attemptIndex + 1} of ${options.case.id} could not be written under `
-        + `${directory}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+        + `${directory}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`, { cause: error });
     }
   }
 

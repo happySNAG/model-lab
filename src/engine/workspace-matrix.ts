@@ -1497,6 +1497,13 @@ export interface WorkspaceMatrixRunOptions {
   onStaleSandboxRemoved?: (removal: StaleSandboxRemoval) => void;
   /** Called once with the whole sweep, after it ran and before the first cell. Not called when it was skipped. */
   onStaleSandboxSweep?: (sweep: StaleSandboxSweep) => void;
+  /**
+   * The file system every record's manifest, ledger and derived record are written through. Defaults to
+   * `node:fs`; injected by the storage-fault tests to simulate a full or failing record root.
+   */
+  recordFileSystem?: Parameters<typeof WorkspaceCampaign.create>[0]['recordFileSystem'];
+  /** Called once, when a storage fault on the record root stops the matrix. */
+  onStorageFault?: (fault: WorkspaceStorageFault) => void;
 }
 
 /**
@@ -1520,7 +1527,102 @@ export type WorkspaceCellDisposition =
    * was not launched: a run whose effort cannot be measured cannot qualify its route. A measurement
    * fact about this machine — never a provider decline and never a model failure.
    */
-  | 'measurementUnavailableBeforeExecution';
+  | 'measurementUnavailableBeforeExecution'
+  /**
+   * An earlier cell's record write failed with ENOENT, EIO, ENOSPC or EROFS on the record root, so the
+   * matrix stopped and this cell was never started: no driver was asked and no record was written. A
+   * fact about this machine's storage — never a provider decline and never a model failure. See
+   * `docs/ordra-lane/storage-faults.md`.
+   */
+  | 'storageUnavailable';
+
+/** The error codes that mean the record root's storage is gone, read-only, full or failing. */
+export const STORAGE_FAULT_CODES: readonly string[] = ['ENOENT', 'EIO', 'ENOSPC', 'EROFS'];
+
+/** The storage fault that stopped a matrix: which cell met it, and the original error, verbatim. */
+export interface WorkspaceStorageFault {
+  candidate: string;
+  caseID: string;
+  repeatIndex: number;
+  recordRoot: string;
+  /** One of `STORAGE_FAULT_CODES`. */
+  code: string;
+  /** The path the failing call named, when it named one. */
+  path?: string;
+  /** The original error's message — the cell's own reason, unchanged. */
+  detail: string;
+}
+
+/**
+ * Is this error a storage fault on one of `roots`? Walks the error, its `cause` chain and the
+ * `recordWriteFailure` a guarded faulted-event write attaches, and answers with the first errno whose
+ * code is in `STORAGE_FAULT_CODES` and whose path is inside a root — or that names no path at all,
+ * which is how `write(2)` reports a full disk. An ENOENT on a fixture or a command is not one.
+ */
+export function storageFaultOf(error: unknown, roots: string[]): { code: string; path?: string } | undefined {
+  const resolvedRoots = roots.map((root) => path.resolve(root));
+  const inside = (candidate: string): boolean => {
+    const resolved = path.resolve(candidate);
+    return resolvedRoots.some((root) => resolved === root || resolved.startsWith(root.endsWith(path.sep) ? root : root + path.sep));
+  };
+  const seen = new Set<unknown>();
+  const visit = (value: unknown, depth: number): { code: string; path?: string } | undefined => {
+    if (value === null || typeof value !== 'object' || seen.has(value) || depth > 8) return undefined;
+    seen.add(value);
+    const errno = value as { code?: unknown; path?: unknown; cause?: unknown; recordWriteFailure?: unknown };
+    if (typeof errno.code === 'string' && STORAGE_FAULT_CODES.includes(errno.code)) {
+      if (typeof errno.path !== 'string') return { code: errno.code };
+      if (inside(errno.path)) return { code: errno.code, path: errno.path };
+    }
+    return visit(errno.cause, depth + 1) ?? visit(errno.recordWriteFailure, depth + 1);
+  };
+  return visit(error, 0);
+}
+
+/**
+ * WRITE A PROBE FILE AND REMOVE IT, or throw the errno that stopped it. Never creates `root`: a root
+ * that is missing is reported as missing (the stat's ENOENT), because creating it would put a campaign's
+ * records on whatever volume happens to sit at that path once the drive it named is gone.
+ */
+export function probeStorageRootOrThrow(root: string): void {
+  const status = fs.statSync(root);
+  if (!status.isDirectory()) {
+    throw Object.assign(new Error(`ENOTDIR: not a directory, '${root}'`), { code: 'ENOTDIR', path: root });
+  }
+  const probe = path.join(root, `.cernum-write-probe-${process.pid}-${Math.random().toString(36).slice(2, 10)}`);
+  const handle = fs.openSync(probe, 'wx');
+  try {
+    try {
+      fs.writeSync(handle, 'probe\n');
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+  } finally {
+    try { fs.unlinkSync(probe); } catch { /* the volume went with it; the write already answered */ }
+  }
+}
+
+/**
+ * THE ROOT CHECK, BEFORE ANY CELL (IO-2 P3). The campaign (record) root and the sandbox root must each
+ * exist, be a directory and accept a write-and-remove probe. Either failing is refused with
+ * `WorkspaceMatrixError('storageRootUnavailable')` naming the root and the errno, before any driver is
+ * built or asked anything. Neither root is created here.
+ */
+export function assertWorkspaceStorageRoots(roots: { campaignRoot: string; sandboxRoot: string }): void {
+  for (const [role, root] of [['campaign (record) root', roots.campaignRoot], ['sandbox root', roots.sandboxRoot]] as const) {
+    try {
+      probeStorageRootOrThrow(root);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      throw new WorkspaceMatrixError('storageRootUnavailable',
+        `the ${role} ${root} is not usable${typeof code === 'string' ? ` (${code})` : ''}: `
+        + `${error instanceof Error ? error.message : String(error)}. It must exist, be a directory and be writable `
+        + 'before a matrix starts; it is never created here, because a missing root is usually a drive that is not '
+        + 'mounted. No run was started and no driver was asked anything.');
+    }
+  }
+}
 
 export interface WorkspaceMatrixSkippedCell {
   cell: WorkspaceMatrixCell;
@@ -1559,6 +1661,11 @@ export interface WorkspaceMatrixRunResult {
   notExecutedBecauseMeasurementUnavailableCount: number;
   /** Every executed run's applied-effort verdict, in execution order. Empty when no run measured one. */
   appliedEffortVerdicts: WorkspaceRunAppliedEffort[];
+  /**
+   * The storage fault that stopped the matrix, when one did. Absent — the key is not written — on every
+   * matrix whose record root stayed writable, so those results are exactly what they were.
+   */
+  storageFault?: WorkspaceStorageFault;
 }
 
 /** One executed run's requested and applied effort, as sealed. */
@@ -1635,6 +1742,28 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
   } catch {
     sandboxRootIsSafe = false;
   }
+
+  // THE ROOT CHECK, BEFORE ANY CELL AND BEFORE THE SWEEP (IO-2 P3). A record root or a sandbox root that
+  // is missing, not a directory or not writable is refused here, naming the root, before any driver is
+  // built. An UNSAFE sandbox root is not probed — nothing is written into somebody's checkout to find
+  // out — and the first cell reports its refusal exactly as before.
+  assertWorkspaceStorageRoots({
+    campaignRoot: request.campaignRoot,
+    sandboxRoot: sandboxRootIsSafe ? request.sandboxRoot : request.campaignRoot,
+  });
+  // Both spellings of the record root, because an errno names the path it was called with and on macOS
+  // the temp directory is reached through a symlink.
+  const recordRoots = [request.campaignRoot, fs.realpathSync(request.campaignRoot)];
+  let storageFault: WorkspaceStorageFault | undefined;
+  const stopForStorage = (cell: WorkspaceMatrixCell, error: unknown, fault: { code: string; path?: string }): void => {
+    storageFault = {
+      candidate: cell.candidate, caseID: cell.caseID, repeatIndex: cell.repeat.repeatIndex, recordRoot: cell.recordRoot,
+      code: fault.code, ...(fault.path === undefined ? {} : { path: fault.path }),
+      detail: error instanceof Error ? error.message : String(error),
+    };
+    options.onStorageFault?.(storageFault);
+  };
+
   if (sandboxRootIsSafe) {
     const sweep = sweepStaleWorkspaceSandboxes(request.sandboxRoot, {
       maximumAgeMilliseconds: options.staleSandboxAgeMilliseconds ?? STALE_WORKSPACE_SANDBOX_AGE_MILLISECONDS,
@@ -1647,6 +1776,18 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
     // A TURN OF THE EVENT LOOP between cells. Creating and sealing a record writes and fsyncs
     // synchronously; without this a caller's own timers and I/O wait for every cell in a row.
     await new Promise((resolve) => setImmediate(resolve));
+    // A RECORD ROOT THAT HAS FAILED STOPS EVERYTHING AFTER IT. Nothing this cell did could be recorded,
+    // so it is not started: no driver is built or asked, and no directory is made.
+    if (storageFault !== undefined) {
+      skipped.push({
+        cell,
+        disposition: 'storageUnavailable',
+        reasons: [`the record root ${request.campaignRoot} failed (${storageFault.code}) during `
+          + `${storageFault.candidate} · ${storageFault.caseID} · repeat ${storageFault.repeatIndex}, so this run was not `
+          + 'started and nothing was written for it. A storage fact about this machine, not a provider or model failure.'],
+      });
+      continue;
+    }
     // FIRST, because a cell the breaker has already excluded must not even be looked up: no driver
     // is built for it, no case is resolved, and nothing is sent.
     if (throttle !== undefined
@@ -1670,6 +1811,19 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
         disposition: 'refusedInPlan',
         reasons: cell.refusals.length > 0 ? cell.refusals : ['this cell was refused when the matrix was planned'],
       });
+      continue;
+    }
+    // THE RECORD ROOT IS STILL THERE AND STILL WRITABLE — checked again before every runnable cell, and
+    // before its driver exists. A drive unplugged between cells is met here with its own errno, rather
+    // than by `WorkspaceCampaign.create` quietly re-creating the root on whatever now sits at that path.
+    try {
+      probeStorageRootOrThrow(request.campaignRoot);
+    } catch (error) {
+      // Any other errno (EACCES, ENOTDIR) is this cell's harness fault and the matrix carries on, as for
+      // every other cell fault: only the four storage codes are taken to mean the root is gone.
+      skipped.push({ cell, disposition: 'harnessFault', reasons: [error instanceof Error ? error.message : String(error)] });
+      const fault = storageFaultOf(error, recordRoots);
+      if (fault !== undefined) stopForStorage(cell, error, fault);
       continue;
     }
     // A ROUTE THAT REQUIRES MEASUREMENT IS NOT LAUNCHED WITHOUT IT. Checked before the driver exists,
@@ -1732,6 +1886,7 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
         shouldCancel: options.shouldCancel,
         runCommand: options.runCommand,
         telemetryCapture: otlp === undefined ? undefined : collector?.capture,
+        recordFileSystem: options.recordFileSystem,
       });
       const { outcome } = await campaign.run();
       // 1. SEAL FIRST, ALWAYS. The run that observed the decline is a complete, durable record with
@@ -1783,11 +1938,15 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
         if (throttle !== undefined) options.onProviderThrottled?.(throttle);
       }
     } catch (error) {
+      // THE CELL KEEPS ITS ORIGINAL ERROR, whatever it was. What changes with a storage fault on the record
+      // root is only what happens NEXT: every later cell is `storageUnavailable` and nothing more is asked.
       skipped.push({
         cell,
         disposition: 'harnessFault',
         reasons: [error instanceof Error ? error.message : String(error)],
       });
+      const fault = storageFaultOf(error, recordRoots);
+      if (fault !== undefined) stopForStorage(cell, error, fault);
     }
   }
 
@@ -1807,6 +1966,7 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
     measurementFailure,
     notExecutedBecauseMeasurementUnavailableCount: unmeasurable.length,
     appliedEffortVerdicts,
+    ...(storageFault === undefined ? {} : { storageFault }),
   };
 }
 
@@ -1850,6 +2010,13 @@ export function describeWorkspaceMatrixRunResult(result: WorkspaceMatrixRunResul
     lines.push(`measurement     the effort telemetry collector FAILED (${result.measurementFailure}); `
       + `${result.notExecutedBecauseMeasurementUnavailableCount} run(s) were not launched. A harness fact, not a finding `
       + 'about the provider or the models.');
+  }
+  if (result.storageFault !== undefined) {
+    const fault = result.storageFault;
+    const stopped = result.skipped.filter((entry) => entry.disposition === 'storageUnavailable').length;
+    lines.push(`storage         the record root FAILED (${fault.code}${fault.path === undefined ? '' : ` at ${fault.path}`}) during `
+      + `${fault.candidate} · ${fault.caseID} · repeat ${fault.repeatIndex}; the matrix stopped and ${stopped} later run(s) `
+      + 'were not started (storageUnavailable). A storage fact about this machine, not a finding about the models.');
   }
   if (result.throttle !== undefined) {
     lines.push('');

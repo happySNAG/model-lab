@@ -38,7 +38,7 @@ import { CanonicalValue, canonicalJSON, digestObject } from './canonical';
 import { DEFAULT_EXECUTION_POLICY, ExecutionPolicy } from './execution';
 import { guardPolicyForFrontierOnly } from './guards';
 import { FrozenManifest, HardwareIdentity, freezeManifest, manifestSeal } from './manifest';
-import { Ledger, PlannableCatalog, atomicWriteJSON, slotKey } from './ledger';
+import { Ledger, LedgerFileSystem, PlannableCatalog, atomicWriteJSON, slotKey } from './ledger';
 import { OperationalEnvelope, ProviderBinding, buildOperationalEnvelope, isMetered } from './provider';
 import { SpendTracker, SpendingAuthorization } from './spending';
 import { PreRunIdentity } from './workspace-binding';
@@ -308,6 +308,11 @@ export interface WorkspaceCampaignInputs {
    * verdict so a reader can go from the row to the evidence file that verdict rests on.
    */
   telemetryCapture?: WorkspaceTelemetryCapture;
+  /**
+   * The file system this record's manifest, case, ledger and derived record are written through.
+   * Defaults to `node:fs`. Injected by the storage-fault tests to simulate a full or vanished disk.
+   */
+  recordFileSystem?: LedgerFileSystem;
 }
 
 /**
@@ -528,8 +533,9 @@ export class WorkspaceCampaign {
       frozenAt,
     });
 
-    fs.mkdirSync(inputs.root, { recursive: true });
-    atomicWriteJSON(paths.manifest, manifest as unknown as CanonicalValue);
+    const recordFileSystem = inputs.recordFileSystem ?? fs;
+    recordFileSystem.mkdirSync(inputs.root, { recursive: true });
+    atomicWriteJSON(paths.manifest, manifest as unknown as CanonicalValue, recordFileSystem);
     // THE CASE ITSELF, VERBATIM, BESIDE ITS DIGEST. `cwc1:` proves a case did not change; it does not
     // tell a reader six months from now what the task WAS. Both are needed and neither substitutes.
     atomicWriteJSON(paths.workspaceCase, {
@@ -537,7 +543,7 @@ export class WorkspaceCampaign {
       caseDigest: workspaceCaseDigest(workspaceCase),
       comparabilityKey: workspaceComparabilityKey(workspaceCase),
       instructionAsSent: workspaceInstructionText(workspaceCase),
-    });
+    }, recordFileSystem);
 
     const ledger = Ledger.create(paths.ledger, catalogue, [{
       name: inputs.binding.candidate, modelID: inputs.binding.requestedModelID,
@@ -559,7 +565,7 @@ export class WorkspaceCampaign {
       // WRITTEN BEFORE THE REQUEST, so a selected run that faults before it seals still says which cell of
       // which selection — and which source campaign — it was.
       ...cellSelectionFieldsOf(inputs.cellSelection),
-    });
+    }, undefined, recordFileSystem);
 
     const disclosure = discloseWorkspaceDriver(inputs.driver, workspaceCase);
     ledger.event('workspaceRecordCreated', {
@@ -649,10 +655,23 @@ export class WorkspaceCampaign {
       // A THROW HERE IS THE CALLER HAVING ASKED FOR SOMETHING IMPOSSIBLE — a missing fixture, a
       // sandbox inside a working tree. It is recorded in the event stream and re-thrown: it is not
       // an outcome of the model, so it must not become a terminal row that looks like one.
-      this.ledger.event('workspaceRunFaulted', {
-        code: error instanceof WorkspaceHostError ? error.code : 'executionError',
-        detail: error instanceof Error ? error.message : String(error),
-      });
+      //
+      // THE FAULTED EVENT IS GUARDED (IO-2 P3). On a vanished or full record root this write fails
+      // too, and if its throw escaped it would replace the error that explains the cell with one that
+      // only says the ledger was unwritable. The original is always the one rethrown; the second
+      // failure rides on it as `recordWriteFailure`, so a caller can still tell the record root broke.
+      try {
+        this.ledger.event('workspaceRunFaulted', {
+          code: error instanceof WorkspaceHostError ? error.code : 'executionError',
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      } catch (secondary) {
+        if (error !== null && typeof error === 'object') {
+          try {
+            Object.defineProperty(error, 'recordWriteFailure', { value: secondary, enumerable: false, configurable: true });
+          } catch { /* a frozen error keeps only itself, which is still the right one to rethrow */ }
+        }
+      }
       throw error;
     }
 
@@ -933,7 +952,7 @@ export class WorkspaceCampaign {
 
       disclosures: [WORKSPACE_ENVIRONMENT_IS_NOT_A_SANDBOX, PATH_RECONCILIATION_IS_NOT_OBSERVATION],
     };
-    atomicWriteJSON(this.paths.record, record as unknown as CanonicalValue);
+    atomicWriteJSON(this.paths.record, record as unknown as CanonicalValue, this.inputs.recordFileSystem);
     return record;
   }
 }
