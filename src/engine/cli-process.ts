@@ -151,36 +151,79 @@ export class OwnedProcess {
    * the grace period whether or not SIGTERM was acknowledged — a tool that ignores SIGTERM is
    * exactly the tool that must not survive a pause.
    */
+  //
+  // THE GROUP, NOT THE LEADER, IS WHAT IS STOPPED (IO-2 P1). Whether the leader is still alive is
+  // not consulted: a leader that exited 0 can leave a grandchild that ignores SIGTERM and still
+  // holds stdout, and that grandchild is exactly what must not outlive the run. A process group
+  // outlives its leader for as long as any member is alive, and its id cannot be reused while it
+  // does, so signalling `-pid` after the leader has gone reaches the survivors and nothing else.
+  // The SIGKILL is sent after the grace period unconditionally; a group that already emptied
+  // answers ESRCH, which is the outcome wanted.
   terminate(graceMilliseconds = 2_000): void {
     const pid = this.child.pid;
-    if (pid === undefined || this.child.exitCode !== null || this.child.signalCode !== null) return;
-    signalGroup(pid, 'SIGTERM');
+    if (pid === undefined) return;
+    signalGroup(pid, 'SIGTERM', this.leaderExited());
     if (this.killTimer) return;
     this.killTimer = setTimeout(() => {
-      if (this.child.exitCode === null && this.child.signalCode === null) signalGroup(pid, 'SIGKILL');
+      signalGroup(pid, 'SIGKILL', this.leaderExited());
     }, graceMilliseconds);
     // A pending kill timer must not be the reason a terminal command refuses to exit.
     this.killTimer.unref?.();
   }
 
+  /** True once the leader has been reaped. Its pid may then belong to someone else; its GROUP does not. */
+  leaderExited(): boolean {
+    return this.child.exitCode !== null || this.child.signalCode !== null;
+  }
+
+  /** True while any process is still in this child's group, leader or not. */
+  groupHasMembers(): boolean {
+    const pid = this.child.pid;
+    if (pid === undefined) return false;
+    try {
+      process.kill(-pid, 0);
+      return true;
+    } catch (error) {
+      // EPERM means it exists and is not ours to signal — still a member.
+      return (error as NodeJS.ErrnoException).code === 'EPERM';
+    }
+  }
+
+  /**
+   * The run has settled. The pending SIGKILL is cancelled only when the group is empty: a member
+   * that ignored SIGTERM and let go of the pipes is still owed its SIGKILL after the promise resolves.
+   */
   settled(): void {
-    if (this.killTimer) clearTimeout(this.killTimer);
-    this.killTimer = undefined;
+    if (this.killTimer && !this.groupHasMembers()) {
+      clearTimeout(this.killTimer);
+      this.killTimer = undefined;
+    }
     live.delete(this);
   }
 }
 
-function signalGroup(pid: number, signal: NodeJS.Signals): void {
+function signalGroup(pid: number, signal: NodeJS.Signals, leaderExited: boolean): void {
   try {
     // Negative pid is the process group. `detached: true` at spawn is what makes the child the
     // leader of one, so this reaches its descendants too.
     process.kill(-pid, signal);
   } catch {
     // The group may already be gone — which is the outcome we wanted. Fall back to the process
-    // itself in case the platform did not give it its own group.
+    // itself in case the platform did not give it its own group, but ONLY while the leader has not
+    // been reaped: once it has, its bare pid may already name an unrelated process.
+    if (leaderExited) return;
     try { process.kill(pid, signal); } catch { /* already gone */ }
   }
 }
+
+/**
+ * How long past the SIGKILL `runCLI` waits for the pipes to close before it settles anyway.
+ *
+ * SIGKILL to the group ends every member, so the pipes normally close at once. A descendant that left
+ * the group (`setsid`) and kept a copy of stdout is out of reach of the group signal, and without
+ * this bound it would hold `close` — and the run — open for as long as it liked.
+ */
+export const PIPE_DRAIN_MILLISECONDS = 500;
 
 /**
  * Stop every child this module owns.
@@ -192,6 +235,48 @@ export function terminateAllCLIProcesses(graceMilliseconds = 2_000): number {
   const count = live.size;
   for (const owned of [...live]) owned.terminate(graceMilliseconds);
   return count;
+}
+
+/** What `installMatrixSignalHandlers` hands back: the cancel flag a matrix polls, and the way out. */
+export interface MatrixSignalHandlers {
+  /** True once SIGINT or SIGTERM has arrived. Passed to the matrix as its `shouldCancel`. */
+  shouldCancel: () => boolean;
+  /** What a SIGINT or SIGTERM runs. Exposed so a test can drive it without signalling the test runner. */
+  interrupt: () => void;
+  /** Remove both handlers. Safe to call twice. */
+  dispose: () => void;
+}
+
+/**
+ * Make SIGINT and SIGTERM stop a matrix rather than orphan it.
+ *
+ * Every command a matrix runs is a detached process group, so a terminal signal that merely ends this
+ * process leaves them running. The handler sets the matrix's cancel flag — the run in flight is
+ * stopped and sealed, and every later cell is recorded as cancelled — and stops every owned group at
+ * once. The caller removes the handlers when the matrix ends, however it ends.
+ */
+export function installMatrixSignalHandlers(onInterrupt?: (stoppedCount: number) => void,
+                                            graceMilliseconds = 2_000): MatrixSignalHandlers {
+  let stopping = false;
+  let installed = true;
+  const interrupt = (): void => {
+    if (stopping) return;
+    stopping = true;
+    const stopped = terminateAllCLIProcesses(graceMilliseconds);
+    onInterrupt?.(stopped);
+  };
+  process.on('SIGINT', interrupt);
+  process.on('SIGTERM', interrupt);
+  return {
+    shouldCancel: () => stopping,
+    interrupt,
+    dispose: () => {
+      if (!installed) return;
+      installed = false;
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+    },
+  };
 }
 
 /** How many children are running right now. For a status view and for the tests. */
@@ -260,6 +345,27 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
     let firstOutputMilliseconds: number | undefined;
     let outcome: { kind: CLIFailureKind; detail: string } | undefined;
     let finished = false;
+    let leaderExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+
+    // THE BOUND ON SETTLING. `close` waits for every holder of stdout and stderr, and a holder need
+    // not be the tool: anything it spawned inherits the pipes. Once the group has been told to stop
+    // (or the leader has gone), the run settles within the grace period plus a short drain whether
+    // or not every holder has let go — so no grandchild can keep a run, or a matrix, open.
+    let forceTimer: NodeJS.Timeout | undefined;
+    const settleBy = (milliseconds: number): void => {
+      if (finished || forceTimer) return;
+      forceTimer = setTimeout(() => {
+        if (finished) return;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        settle(leaderExit?.code ?? null, leaderExit?.signal ?? null);
+      }, milliseconds);
+      forceTimer.unref?.();
+    };
+    const stopGroup = (): void => {
+      owned.terminate(grace);
+      settleBy(grace + PIPE_DRAIN_MILLISECONDS);
+    };
 
     const deadline = setTimeout(() => {
       outcome = {
@@ -267,7 +373,7 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
         detail: `the tool did not finish within ${options.timeoutMilliseconds} ms and was stopped; `
           + 'a request still in flight at its deadline is an unfinished measurement, not a slow one',
       };
-      owned.terminate(grace);
+      stopGroup();
     }, options.timeoutMilliseconds);
     deadline.unref?.();
 
@@ -276,11 +382,31 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
     const cancelPoll = options.shouldCancel
       ? setInterval(() => {
         if (finished || !options.shouldCancel?.()) return;
-        outcome = { kind: 'cancelled', detail: 'the run was paused or aborted, and this request was stopped before it finished' };
-        owned.terminate(grace);
+        outcome ??= { kind: 'cancelled', detail: 'the run was paused or aborted, and this request was stopped before it finished' };
+        stopGroup();
       }, 200)
       : undefined;
     cancelPoll?.unref?.();
+
+    const settle = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(deadline);
+      if (cancelPoll) clearInterval(cancelPoll);
+      if (forceTimer) clearTimeout(forceTimer);
+      // Anything still in the group after the leader is an orphan of this run: it is stopped too, and
+      // its SIGKILL timer is left to fire after this promise has settled.
+      if (owned.groupHasMembers()) owned.terminate(grace);
+      owned.settled();
+      const failure = outcome ?? (code === 0 ? undefined : {
+        kind: 'exitFailure' as const,
+        detail: `the tool exited with status ${code ?? 'unknown'}${signal ? ` after ${signal}` : ''}`,
+      });
+      resolve({
+        stdout: redactSecrets(stdout), stderr: redactSecrets(stderr), exitCode: code, signal,
+        elapsedMilliseconds: now() - startedAt, firstOutputMilliseconds, failure,
+      });
+    };
 
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
@@ -300,6 +426,7 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
       finished = true;
       clearTimeout(deadline);
       if (cancelPoll) clearInterval(cancelPoll);
+      if (forceTimer) clearTimeout(forceTimer);
       owned.settled();
       resolve({
         stdout: redactSecrets(stdout), stderr: redactSecrets(stderr), exitCode: null, signal: null,
@@ -314,20 +441,19 @@ export function runCLI(options: CLIRunOptions): Promise<CLIResult> {
       });
     });
 
-    child.on('close', (code, signal) => {
+    // THE LEADER'S EXIT IS NOT THE END OF THE RUN when it left members behind. A tool that exits
+    // with a helper still holding its stdout would otherwise keep `close` from ever firing; so the
+    // survivors are signalled at once — SIGTERM, then SIGKILL after the grace period — and the run
+    // settles within that bound. A well-behaved tool leaves an empty group and nothing is sent.
+    child.on('exit', (code, signal) => {
+      leaderExit = { code, signal: signal as NodeJS.Signals | null };
       if (finished) return;
-      finished = true;
-      clearTimeout(deadline);
-      if (cancelPoll) clearInterval(cancelPoll);
-      owned.settled();
-      const failure = outcome ?? (code === 0 ? undefined : {
-        kind: 'exitFailure' as const,
-        detail: `the tool exited with status ${code ?? 'unknown'}${signal ? ` after ${signal}` : ''}`,
-      });
-      resolve({
-        stdout: redactSecrets(stdout), stderr: redactSecrets(stderr), exitCode: code, signal: signal as NodeJS.Signals | null,
-        elapsedMilliseconds: now() - startedAt, firstOutputMilliseconds, failure,
-      });
+      if (owned.groupHasMembers()) owned.terminate(grace);
+      settleBy(grace + PIPE_DRAIN_MILLISECONDS);
+    });
+
+    child.on('close', (code, signal) => {
+      settle(code, signal as NodeJS.Signals | null);
     });
 
     if (options.input !== undefined) {

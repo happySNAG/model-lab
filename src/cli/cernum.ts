@@ -35,7 +35,7 @@ import {
   METERED_AUTHORIZATION_NOTE, UNPRICED_METERED_DISCLOSURE, authorizationClassOf, authorizeSmoke,
   buildSmokeBinding, isSmokeAuthorizationRefusal, projectedMeteredBoundMicroUSD, renderMicroUSD,
   plannedWorkFor, pricingFor, privacyDisclosure, residencyDisclosure, steppingClock, syntheticCandidate,
-  terminateAllCLIProcesses,
+  terminateAllCLIProcesses, installMatrixSignalHandlers,
   // The workspace path: a case, a binding, a driver, a durable record — every one of them the same
   // object the engine's own surfaces read, imported from the one public boundary this file uses.
   ALWAYS_ALLOWED_ENVIRONMENT_NAMES, PROVIDER_IDS, ProviderBinding, ProviderBindingError,
@@ -2455,6 +2455,17 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
   }
 
   // 4. EXECUTION. One durable record per run, sealed as it finishes.
+  //
+  // CTRL-C STOPS THE MATRIX AND ITS CHILDREN (IO-2 P1). Every agent and verification command is a
+  // detached process group, so without a handler a SIGINT ends this process and orphans whatever
+  // was in flight. The handler cancels the matrix — the run in flight is stopped and sealed, every
+  // later cell is recorded as cancelled — and stops every owned group at once. It is removed when
+  // the matrix ends, however it ends.
+  const interruption = installMatrixSignalHandlers((stopped) => {
+    say('');
+    say('Stopping the matrix — the run in flight is stopped and recorded; no further cell starts.');
+    if (stopped > 0) say(`  stopping ${stopped} command(s) in flight.`);
+  });
   const result = await runWorkspaceMatrix(plan, {
     identityAdmission,
     localModels,
@@ -2487,6 +2498,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
     },
     runtimeVersion: `${PRODUCT.name} ${PRODUCT.version}`,
     preserveFailedWorkspaces: options['preserve-failed'] === true,
+    shouldCancel: interruption.shouldCancel,
     onCellStarted: (cell) => say(`→ ${cell.candidate} · ${cell.caseID} · repeat `
       + `${cell.repeat.repeatIndex}/${cell.repeat.repeatsPlanned}`),
     onCellFinished: (cell, outcome) => say(`  ${describeScorecard(outcome.scorecard)}`),
@@ -2504,7 +2516,7 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
       for (const line of describeLimitEvidence(limit)) say(`  ${line}`);
       say('');
     },
-  });
+  }).finally(() => interruption.dispose());
 
   // THE COLLECTOR IS STOPPED AFTER THE LAST RUN, with its grace period, so records still in the exporter's
   // queue land. What arrives now is REPORTED against the sealed rows and can only withdraw a qualification.
