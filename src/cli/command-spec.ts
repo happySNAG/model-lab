@@ -669,6 +669,8 @@ export const COMMAND_SPECS: CommandSpec[] = [
         summary: 'crr2 only: also admit metered routes, each needing a spending authorization. Default: subscription-only' },
       { name: 'taxonomy', takesValue: true,
         summary: 'the task taxonomy: ctt1 (default) or, with --contract crr2, ctt2 (ctt1 plus preservation-critical)' },
+      { name: 'recommend-effort', takesValue: false,
+        summary: 'crr2 only: add effortRecommendation, an observed effort and its escalation, or why there is none' },
       { name: 'json', takesValue: false, summary: 'print the recommendation as JSON' }],
     detail: [
       'Task taxonomy ctt1 maps the task type (implement|fix|test-repair|refactor|docs|verify|plan|review)',
@@ -693,6 +695,12 @@ export const COMMAND_SPECS: CommandSpec[] = [
       'unchanged, plus preservation-critical → workspace:forwardCompatibilityReasoning, and the document names',
       'ctt2. Without --taxonomy every answer is ctt1. An unknown --taxonomy, or ctt2 beside crr1, is refused',
       'with the reason and exit 2.',
+      '',
+      '--recommend-effort (with --contract crr2) adds effortRecommendation: an effort only when the selected',
+      'entry is a cek1 effort-keyed record whose effort was observed, otherwise unobservable with the reason;',
+      'and an escalation to the next higher effort of the same provider:model only when an observed entry for',
+      'it is ranked, otherwise none with the reason. No effort is read from a model name. Without the flag the',
+      'crr2 document is unchanged; beside crr1 it is refused with exit 2.',
     ],
   },
   {

@@ -143,6 +143,7 @@ export * from './task-taxonomy';
 export * from './fallback-chain';
 export * from './route-recommendation';
 export * from './route-recommendation-crr2';
+export * from './recommend-effort';
 export * from './route-outcome-ingest';
 export * from './outcome-learning';
 export * from './route-quarantine';

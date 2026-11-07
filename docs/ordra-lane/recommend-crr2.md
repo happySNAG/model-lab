@@ -104,3 +104,24 @@ The command derives each route once per effort key its sealed runs fall under, a
 from the rollup of the runs under that key; evidence gathered at another effort is never pooled in. A
 route no run measured at any effort is derived pooled, so that its exclusion is still stated; its effort
 is `unobservable` with `pooled: true`. No effort is ever read from a model name.
+
+## Effort recommendation (`--recommend-effort`)
+
+`cernum recommend <task-type> --contract crr2 --recommend-effort --json` adds one optional top-level
+property, `effortRecommendation`, as the document's last key (engine: `src/engine/recommend-effort.ts`,
+tests: `test/engine/recommend-effort.test.ts`). It reads the ranking alone and changes nothing in it:
+
+- **The effort.** `{ state: 'observed', effort, routeKey, basis }` only when the selected (first-ranked)
+  entry is a cek1 effort-keyed record whose key state is `observed` — the tool's telemetry measured the
+  applied effort. Otherwise `{ state: 'unobservable', code, reason }`, where `code` is `nothingRanked`,
+  `pooled` (the record was derived without an effort key) or `effortUnobservable` (an
+  `@unobservable:<requested>` key: an accepted request is not an observed effort).
+- **The escalation.** `{ effort, routeKey, rank, reason }` naming the next higher level in
+  `EFFORT_LEVELS` (`none, minimal, low, medium, high, xhigh, max`) of the same provider:model, only when an
+  observed cek1 entry for that exact key is in the ranking. Otherwise `{ none: true, code, reason }`, with
+  `code` `noObservedEffort`, `highestEffort` or `notRanked`. A level is never skipped or substituted.
+
+The effort comes from the entry's cek1 key and the escalation key is built from the entry's provider and
+model id; no effort is read from a model name. `contractVersion` stays 1: the property is optional, and
+without `--recommend-effort` the document is byte-identical to before. `--recommend-effort` beside crr1 is
+refused with exit 2.

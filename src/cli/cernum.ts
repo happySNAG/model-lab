@@ -117,6 +117,8 @@ import {
   availabilityFromStore, recommendRoutes,
   // The recommendation contract crr2, beside crr1: reliability, then zero marginal cost, then latency. Advisory.
   Crr2Recommendation, recommendRoutesCrr2,
+  // crr2's effort recommendation, only with --recommend-effort: an observed effort and its escalation.
+  effortRecommendationOf, withEffortRecommendation,
   // Evidence keyed by the effort it was gathered at (cek1), beside crc2 and never in place of it.
   effortKeyedRouteCandidatesFromStore, routeEffortKeys, runsAtEffortKey,
   // Ordra route telemetry ingested as sealed outcomes (cro1): rollup input only, never a verdict.
@@ -3749,6 +3751,10 @@ async function commandRecommend(positional: string[], options: Options): Promise
     fail('recommend: --allow-metered belongs to --contract crr2; crr1 answers under the task taxonomy\'s own cost policy. '
       + 'Nothing was read.', 2);
   }
+  if (options['recommend-effort'] !== undefined && contract !== 'crr2') {
+    fail('recommend: --recommend-effort belongs to --contract crr2; crr1 ranks pooled routes and names no effort. '
+      + 'Nothing was read.', 2);
+  }
   const taxonomy = taxonomyFromOptions('recommend', options);
   if (taxonomy !== TASK_TAXONOMY_VERSION && contract !== 'crr2') {
     fail(`recommend: --taxonomy ${taxonomy} belongs to --contract crr2; crr1 answers under task taxonomy ${TASK_TAXONOMY_VERSION} only. `
@@ -3891,8 +3897,10 @@ async function commandRecommendCrr2(taskType: string, options: Options, policyAs
   });
   if (!answer.ok) fail(`recommend: refused by task taxonomy ${answer.taxonomyVersion}: ${answer.refusals.join('; ')}.`, 2);
   const crr2: Crr2Recommendation = answer;
+  // --recommend-effort appends effortRecommendation as the last key; without it the document is as before.
+  const effortRecommendation = options['recommend-effort'] === true ? effortRecommendationOf(crr2) : undefined;
   if (options.json === true) {
-    say(JSON.stringify(crr2, null, 2));
+    say(JSON.stringify(effortRecommendation === undefined ? crr2 : withEffortRecommendation(crr2), null, 2));
     return;
   }
   say(`Recommendation ${crr2.contract} v${crr2.contractVersion} · task taxonomy ${crr2.taxonomyVersion} · routing contract `
@@ -3918,6 +3926,15 @@ async function commandRecommendCrr2(taskType: string, options: Options, policyAs
   say(`Fallback order (${crr2.fallback.schema}): ${crr2.fallback.chain.length === 0 ? 'none' : crr2.fallback.chain.join(' → ')}`);
   say(`Confidence: ${crr2.confidence.level}`);
   for (const entry of crr2.uncertainties) for (const line of wrap(`- ${entry.code}: ${entry.detail}`, 74)) say(`  ${line}`);
+  if (effortRecommendation !== undefined) {
+    say(effortRecommendation.state === 'observed'
+      ? `Effort: ${effortRecommendation.effort} (${effortRecommendation.routeKey}, observed)`
+      : 'Effort: unobservable');
+    if (effortRecommendation.state === 'unobservable') for (const line of wrap(`- ${effortRecommendation.reason}`, 74)) say(`  ${line}`);
+    const escalation = effortRecommendation.escalation;
+    say('effort' in escalation ? `Escalation: ${escalation.effort} (${escalation.routeKey}, ranked ${escalation.rank})` : 'Escalation: none');
+    for (const line of wrap(`- ${escalation.reason}`, 74)) say(`  ${line}`);
+  }
   say('');
   for (const reason of crr2.reasons) for (const line of wrap(`- ${reason}`, 76)) say(line);
   say('');
