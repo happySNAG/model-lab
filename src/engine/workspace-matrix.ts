@@ -53,6 +53,10 @@ import {
 } from './workspace-matrix-admission';
 import { WorkspaceAgentDriver } from './workspace-agent';
 import {
+  STALE_WORKSPACE_SANDBOX_AGE_MILLISECONDS, StaleSandboxRemoval, StaleSandboxSweep, assertSandboxRootIsSafe,
+  sweepStaleWorkspaceSandboxes,
+} from './workspace-execution';
+import {
   LocalModelIdentitySource, PreRunIdentity, WorkspaceBindingError, buildWorkspaceBinding, resolveLocalPreRunIdentity,
   resolvePreRunIdentity, workspaceTimeoutFor,
 } from './workspace-binding';
@@ -1484,6 +1488,15 @@ export interface WorkspaceMatrixRunOptions {
   onCellDeferred?: (cell: WorkspaceMatrixCell, signal: ProviderThrottleSignal) => void;
   /** Injected by the tests so a verification command need not be a real process. */
   runCommand?: Parameters<typeof WorkspaceCampaign.create>[0]['runCommand'];
+  /**
+   * How old a `cernum-ws-*` directory under the sandbox root must be before the sweep at matrix start
+   * removes it. Defaults to `STALE_WORKSPACE_SANDBOX_AGE_MILLISECONDS` (six hours).
+   */
+  staleSandboxAgeMilliseconds?: number;
+  /** Called once for each stale attempt root the sweep at matrix start removed. */
+  onStaleSandboxRemoved?: (removal: StaleSandboxRemoval) => void;
+  /** Called once with the whole sweep, after it ran and before the first cell. Not called when it was skipped. */
+  onStaleSandboxSweep?: (sweep: StaleSandboxSweep) => void;
 }
 
 /**
@@ -1610,6 +1623,25 @@ export async function runWorkspaceMatrix(plan: WorkspaceMatrixPlan, request: Wor
   // which claims each conversation id that run reports. See `workspace-matrix-telemetry.ts`.
   const collector = request.effortTelemetry?.collector;
   let measurementFailure: string | undefined;
+
+  // THE STALE-SANDBOX SWEEP, ONCE, BEFORE THE FIRST CELL. Attempt roots a killed process or a restarted
+  // host left behind are removed here, by age, from the sandbox root and nowhere else. Skipped for a
+  // sandbox root the runner would refuse anyway (inside a working tree, overlapping the fixtures): the
+  // first cell then reports that refusal, and nothing in such a directory is deleted on its say-so.
+  // The age is compared with the wall clock, not `request.now`, because a modification time is one.
+  let sandboxRootIsSafe = true;
+  try {
+    assertSandboxRootIsSafe(request.sandboxRoot, request.fixtureRoot);
+  } catch {
+    sandboxRootIsSafe = false;
+  }
+  if (sandboxRootIsSafe) {
+    const sweep = sweepStaleWorkspaceSandboxes(request.sandboxRoot, {
+      maximumAgeMilliseconds: options.staleSandboxAgeMilliseconds ?? STALE_WORKSPACE_SANDBOX_AGE_MILLISECONDS,
+      onRemoved: options.onStaleSandboxRemoved,
+    });
+    options.onStaleSandboxSweep?.(sweep);
+  }
 
   for (const cell of plan.cells) {
     // A TURN OF THE EVENT LOOP between cells. Creating and sealing a record writes and fsyncs

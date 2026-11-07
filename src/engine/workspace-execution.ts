@@ -394,13 +394,44 @@ interface AttemptContext {
   now: () => number;
 }
 
+/**
+ * Whether the attempt root survives the attempt. Set by `finalizeWorkspace` alone, and only when the
+ * caller asked for a failed attempt to be preserved and this one failed.
+ */
+interface AttemptDisposal { keep: boolean }
+
+/**
+ * ONE ATTEMPT, AND ITS DISPOSABLE DIRECTORY REMOVED ON EVERY PATH.
+ *
+ * The removal is in a `finally`, so it happens after a success, after a failure, after a thrown
+ * `WorkspaceExecutionError` and after an evidence write that failed. The one thing that keeps the
+ * directory is `--preserve-failed` on an attempt that failed, decided in `finalizeWorkspace` exactly
+ * as before. A removal that itself fails is not allowed to replace the attempt's own result or
+ * error: the directory is left for `sweepStaleWorkspaceSandboxes` at the next matrix start.
+ */
 async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptContext): Promise<WorkspaceAttemptRecord> {
+  const startedAtMilliseconds = context.now();
+  fs.mkdirSync(options.sandboxRoot, { recursive: true });
+  const attemptRoot = fs.mkdtempSync(path.join(fs.realpathSync(options.sandboxRoot),
+    `${WORKSPACE_ATTEMPT_ROOT_PREFIX}${options.case.id}-${context.attemptIndex}-`));
+  const disposal: AttemptDisposal = { keep: false };
+  try {
+    return await runAttemptInside(options, context, attemptRoot, startedAtMilliseconds, disposal);
+  } finally {
+    if (!disposal.keep) {
+      try {
+        fs.rmSync(attemptRoot, { recursive: true, force: true });
+      } catch {
+        // Left for the stale-sandbox sweep; see above.
+      }
+    }
+  }
+}
+
+async function runAttemptInside(options: WorkspaceRunOptions, context: AttemptContext, attemptRoot: string,
+                                startedAtMilliseconds: number, disposal: AttemptDisposal): Promise<WorkspaceAttemptRecord> {
   const workspaceCase = options.case;
   const { attemptIndex, now } = context;
-  const startedAtMilliseconds = now();
-
-  fs.mkdirSync(options.sandboxRoot, { recursive: true });
-  const attemptRoot = fs.mkdtempSync(path.join(fs.realpathSync(options.sandboxRoot), `cernum-ws-${workspaceCase.id}-${attemptIndex}-`));
   const workRoot = path.join(attemptRoot, 'work');
   // THE BUILDER IS MADE AFTER THE WORKSPACE IS NAMED, so it can reconcile the paths a driver reports
   // against the tree this attempt actually measures. The root is handed over rather than looked up,
@@ -435,7 +466,7 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
       ...skeleton(), agent: emptyAgent, transcript: transcript.build(),
       terminationReason: reason, harnessFault: { code, detail },
     };
-    return finalizeWorkspace(options, record, { attemptRoot, workRoot });
+    return finalizeWorkspace(options, record, { attemptRoot, workRoot }, disposal);
   };
 
   try {
@@ -650,8 +681,11 @@ async function runOneAttempt(options: WorkspaceRunOptions, context: AttemptConte
       terminationReason,
     };
 
-    return finalizeWorkspace(options, record, { attemptRoot, workRoot });
+    return finalizeWorkspace(options, record, { attemptRoot, workRoot }, disposal);
   } catch (error) {
+    // A WorkspaceExecutionError (the caller asked for something impossible, or the evidence could not
+    // be written) is rethrown as it is. It is never turned into a harness fault here, because that
+    // would call `finalizeWorkspace` a second time against the same evidence root.
     if (error instanceof WorkspaceExecutionError) throw error;
     return finishWithFault('harnessThrew', redactSecrets(error instanceof Error ? error.message : String(error)));
   }
@@ -834,33 +868,136 @@ function checkInvariant(workRoot: string, invariant: { path: string; mustExist?:
 // MARK: - Teardown, and the one case where it does not happen
 
 /**
- * Delete the attempt directory, or keep it and write the evidence beside it.
+ * Write the attempt's evidence, and decide whether its directory is kept.
  *
  * PRESERVATION IS OPT-IN AND IS RECORDED ON THE ROW. A harness that kept every failed workspace
  * would fill a disk on a long campaign, and a harness that kept one silently would leave a model's
  * output on a machine nobody expected it on. So the caller asks, the attempt says where it was kept,
  * and the guards' disk floor is what stops a diagnostic run from filling the volume.
+ *
+ * THE DIRECTORY IS REMOVED BY `runOneAttempt`'s `finally`, not here, so it goes on every path. This
+ * function only says whether to keep it, and says so BEFORE writing any evidence, so a failed attempt
+ * that asked to be preserved is still preserved if the evidence write then fails.
+ *
+ * AN EVIDENCE WRITE THAT FAILS IS THROWN ONCE, as `WorkspaceExecutionError('evidenceWriteFailed')`
+ * carrying the original error's message. It is not turned into a harness-fault record, because writing
+ * that record would mean calling this function again against the same evidence root. That second call
+ * is how the original failure used to be replaced by another one, with the attempt root left behind.
  */
 function finalizeWorkspace(options: WorkspaceRunOptions, record: WorkspaceAttemptRecord,
-                           roots: { attemptRoot: string; workRoot: string }): WorkspaceAttemptRecord {
+                           roots: { attemptRoot: string; workRoot: string }, disposal: AttemptDisposal): WorkspaceAttemptRecord {
   const failed = record.harnessFault !== undefined || !attemptSucceeded(record);
   const preserve = failed && options.preserveFailedWorkspaces === true;
+  disposal.keep = preserve;
 
   if (options.evidenceRoot !== undefined) {
     const directory = path.join(options.evidenceRoot, options.case.id, `attempt-${record.attemptIndex}`);
-    fs.mkdirSync(directory, { recursive: true });
-    if (record.patch.text.length > 0) fs.writeFileSync(path.join(directory, 'patch.diff'), record.patch.text, 'utf8');
-    fs.writeFileSync(path.join(directory, 'transcript.jsonl'),
-      record.transcript.events.map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
-    atomicWriteJSON(path.join(directory, 'attempt.json'), {
-      ...record, patch: { ...record.patch, text: undefined }, transcript: { ...record.transcript, events: undefined },
-    } as unknown as CanonicalValue);
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      if (record.patch.text.length > 0) fs.writeFileSync(path.join(directory, 'patch.diff'), record.patch.text, 'utf8');
+      fs.writeFileSync(path.join(directory, 'transcript.jsonl'),
+        record.transcript.events.map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+      atomicWriteJSON(path.join(directory, 'attempt.json'), {
+        ...record, patch: { ...record.patch, text: undefined }, transcript: { ...record.transcript, events: undefined },
+      } as unknown as CanonicalValue);
+    } catch (error) {
+      throw new WorkspaceExecutionError('evidenceWriteFailed',
+        `the evidence for attempt ${record.attemptIndex + 1} of ${options.case.id} could not be written under `
+        + `${directory}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+    }
   }
 
-  if (preserve) {
-    record.preservedAt = roots.attemptRoot;
-    return record;
-  }
-  fs.rmSync(roots.attemptRoot, { recursive: true, force: true });
+  if (preserve) record.preservedAt = roots.attemptRoot;
   return record;
+}
+
+// MARK: - The stale-sandbox sweep
+
+/** Every attempt root is named `<prefix><case id>-<attempt index>-<random>`. The sweep matches this prefix only. */
+export const WORKSPACE_ATTEMPT_ROOT_PREFIX = 'cernum-ws-';
+
+/** How old an attempt root must be before the sweep at matrix start removes it: six hours. */
+export const STALE_WORKSPACE_SANDBOX_AGE_MILLISECONDS = 6 * 60 * 60 * 1000;
+
+export interface StaleSandboxRemoval {
+  /** Absolute, directly under the sandbox root's real path. */
+  path: string;
+  ageMilliseconds: number;
+}
+
+export interface StaleSandboxSweep {
+  /** The sandbox root's real path, or the path as given when it does not exist. */
+  sandboxRoot: string;
+  maximumAgeMilliseconds: number;
+  removed: StaleSandboxRemoval[];
+  /** Matching directories no older than the age, left alone. */
+  keptYounger: string[];
+  /** Entries not considered: a name without the prefix, a symlink, or anything that is not a directory. */
+  ignored: string[];
+  /** Stale directories that could not be removed, with the reason. */
+  failures: { path: string; detail: string }[];
+}
+
+/**
+ * REMOVE ATTEMPT ROOTS A PREVIOUS PROCESS LEFT BEHIND. Run once at the start of a workspace matrix.
+ *
+ * An attempt root is removed in a `finally`, but a process that is killed, or a host that restarts,
+ * runs no `finally`. So the matrix sweeps its sandbox root first. An entry is removed only when all of
+ * these hold:
+ *
+ *   - it is a direct child of the sandbox root's real path (nothing above or beside the root is read);
+ *   - its name starts with `cernum-ws-`;
+ *   - `lstat` says it is a directory, so a symlink is never followed and never removed;
+ *   - its modification time is more than `maximumAgeMilliseconds` ago (default six hours), so an
+ *     attempt another matrix is running right now is left alone.
+ *
+ * Removal is `rmSync(recursive)`, which deletes a symlink inside the directory without following it.
+ * A sandbox root that does not exist is not created. One bad entry does not stop the sweep: a removal
+ * that fails is put in `failures` and the sweep goes on. Nothing here throws once the root is listed.
+ */
+export function sweepStaleWorkspaceSandboxes(sandboxRoot: string, options: {
+  now?: number; maximumAgeMilliseconds?: number; onRemoved?: (removal: StaleSandboxRemoval) => void;
+} = {}): StaleSandboxSweep {
+  const maximumAgeMilliseconds = options.maximumAgeMilliseconds ?? STALE_WORKSPACE_SANDBOX_AGE_MILLISECONDS;
+  const now = options.now ?? Date.now();
+  const sweep: StaleSandboxSweep = {
+    sandboxRoot: path.resolve(sandboxRoot), maximumAgeMilliseconds, removed: [], keptYounger: [], ignored: [], failures: [],
+  };
+  let root: string;
+  let names: string[];
+  try {
+    if (!fs.statSync(sandboxRoot).isDirectory()) return sweep;
+    root = fs.realpathSync(sandboxRoot);
+    names = fs.readdirSync(root);
+  } catch {
+    return sweep;
+  }
+  sweep.sandboxRoot = root;
+
+  for (const name of names) {
+    const candidate = path.join(root, name);
+    // A name from readdir has no separator. This is the structural check that nothing outside the root is touched.
+    if (path.dirname(candidate) !== root || !name.startsWith(WORKSPACE_ATTEMPT_ROOT_PREFIX)) {
+      sweep.ignored.push(candidate);
+      continue;
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(candidate);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) { sweep.ignored.push(candidate); continue; }
+    const ageMilliseconds = now - stat.mtimeMs;
+    if (ageMilliseconds <= maximumAgeMilliseconds) { sweep.keptYounger.push(candidate); continue; }
+    try {
+      fs.rmSync(candidate, { recursive: true, force: true });
+      const removal: StaleSandboxRemoval = { path: candidate, ageMilliseconds };
+      sweep.removed.push(removal);
+      options.onRemoved?.(removal);
+    } catch (error) {
+      sweep.failures.push({ path: candidate, detail: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return sweep;
 }

@@ -2499,6 +2499,11 @@ async function commandWorkspaceBenchmark(positional: string[], options: Options)
     runtimeVersion: `${PRODUCT.name} ${PRODUCT.version}`,
     preserveFailedWorkspaces: options['preserve-failed'] === true,
     shouldCancel: interruption.shouldCancel,
+    onStaleSandboxRemoved: (removal) => say(`  removed stale sandbox ${removal.path} `
+      + `(${Math.round(removal.ageMilliseconds / 60_000)} min old)`),
+    onStaleSandboxSweep: (sweep) => {
+      for (const failure of sweep.failures) say(`  could not remove stale sandbox ${failure.path}: ${failure.detail}`);
+    },
     onCellStarted: (cell) => say(`→ ${cell.candidate} · ${cell.caseID} · repeat `
       + `${cell.repeat.repeatIndex}/${cell.repeat.repeatsPlanned}`),
     onCellFinished: (cell, outcome) => say(`  ${describeScorecard(outcome.scorecard)}`),
