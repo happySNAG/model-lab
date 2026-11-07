@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import { IPC, BenchmarkConfiguration, BuildInfo, CampaignCreateRequest, Diagnostics, ScreenID, Settings } from '../shared/ipc';
 import { LabService } from './lab-service';
 import { CampaignService } from './campaign-service';
+import { readRoutingStatus } from './routing-status-service';
 import { SettingsStore, evidenceRootFor } from './settings';
 import { detectOllama, ModelPuller, openDownloadPage, startOllama, OLLAMA_DOWNLOAD_URL } from './ollama-runtime';
 import { menuTemplate } from './menu';
@@ -256,6 +257,9 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle(IPC.campaignRoot, () => campaigns.root());
   ipcMain.handle(IPC.campaignDisclosure, (_e, name: string) => campaigns.disclosure(name));
   ipcMain.handle(IPC.leasedEndpoints, () => campaigns.leasedEndpoints());
+  // Read-only: the cse1 status export for the same root the Campaigns screen uses. Writes nothing,
+  // contacts nothing, changes no route. Feeds the Qualification and Routing screens.
+  ipcMain.handle(IPC.routingStatus, () => readRoutingStatus({ root: campaigns.root() }));
   // Reaches nothing. A PATH lookup and a credential check, which is why the Providers screen may
   // call it on every refresh and why opening the application sends zero provider requests.
   ipcMain.handle(IPC.providerStatuses, () => campaigns.providerStatuses());

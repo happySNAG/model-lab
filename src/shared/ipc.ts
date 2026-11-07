@@ -10,6 +10,15 @@ import type { RunOverview } from '../core/history';
 import type { ThinkingMode, OllamaInstalledModel } from '../core/ollama';
 import type { StoreIntegrity } from '../core/store';
 import type { ComparabilityReason } from '../core/comparability';
+import type { StatusExport } from '../engine/status-export';
+
+/**
+ * The read-only routing status behind the Qualification and Routing screens: the cse1 status-export
+ * document (schemaVersion 2, with expiryWarnings) for the campaign root, or the reason it could not be read.
+ */
+export type RoutingStatusResult =
+  | { ok: true; root: string; document: StatusExport }
+  | { ok: false; root: string; reason: string };
 
 export interface Settings {
   ollamaEndpoint: string;
@@ -724,12 +733,19 @@ export interface CernumAPI {
   terminalCommand(): Promise<TerminalCommandRow>;
   installTerminalCommand(): Promise<TerminalCommandRow>;
   uninstallTerminalCommand(): Promise<TerminalCommandRow>;
+  /**
+   * The cse1 status export for the campaign root, read-only: reads the evidence on disk, writes nothing,
+   * contacts nothing and changes no route. Feeds the Qualification and Routing screens.
+   */
+  getRoutingStatus(): Promise<RoutingStatusResult>;
   /** The host platform, so copy can say "this Mac" / "this PC" truthfully. Fixed for the process lifetime. */
   readonly platform: 'darwin' | 'win32' | 'linux' | string;
 }
 
-export type ScreenID = 'home' | 'models' | 'providers' | 'benchmark' | 'live' | 'results' | 'campaigns' | 'history' | 'settings';
-export const SCREEN_ORDER: ScreenID[] = ['home', 'models', 'providers', 'benchmark', 'live', 'results', 'campaigns', 'history', 'settings'];
+export type ScreenID = 'home' | 'models' | 'providers' | 'benchmark' | 'live' | 'results' | 'campaigns' | 'history' | 'settings'
+  | 'qualification' | 'routing';
+export const SCREEN_ORDER: ScreenID[] = ['home', 'models', 'providers', 'benchmark', 'live', 'results', 'campaigns', 'history', 'settings',
+  'qualification', 'routing'];
 
 export const IPC = {
   buildInfo: 'lab:buildInfo',
@@ -783,6 +799,7 @@ export const IPC = {
   terminalCommand: 'lab:terminal:status',
   installTerminalCommand: 'lab:terminal:install',
   uninstallTerminalCommand: 'lab:terminal:uninstall',
+  routingStatus: 'lab:routing:status',
 } as const;
 
 /**

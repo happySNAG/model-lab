@@ -60,6 +60,7 @@ const api: CernumAPI = {
   terminalCommand: () => ipcRenderer.invoke(IPC.terminalCommand),
   installTerminalCommand: () => ipcRenderer.invoke(IPC.installTerminalCommand),
   uninstallTerminalCommand: () => ipcRenderer.invoke(IPC.uninstallTerminalCommand),
+  getRoutingStatus: () => ipcRenderer.invoke(IPC.routingStatus),
   onCampaignProgress: (listener) => subscribe<CampaignProgressEvent>(IPC.eventCampaign, listener),
   platform: process.platform,
 };

@@ -12,6 +12,8 @@ import { ResultsView } from './views/Results';
 import { CampaignsView } from './views/Campaigns';
 import { HistoryView } from './views/History';
 import { SettingsView } from './views/Settings';
+import { QualificationView } from './views/Qualification';
+import { RoutingView } from './views/Routing';
 
 export type Screen = ScreenID;
 
@@ -30,7 +32,13 @@ const NAV: { id: Screen; label: string; icon: React.ReactNode }[] = [
   { id: 'campaigns', label: 'Campaigns', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /><path d="M8 13h8" /><path d="M8 16.5h5" /></svg> },
   { id: 'history', label: 'History', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 12a8 8 0 1 0 2.5-5.8" /><path d="M4 4v4.5h4.5" /><path d="M12 8v4.5l3 1.5" /></svg> },
   { id: 'settings', label: 'Settings', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg> },
+  // Read-only screens fed by the cse1 status export. Sidebar only: the application menu's shortcuts stay as they are.
+  { id: 'qualification', label: 'Qualification', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z" /><path d="m9 12 2 2 4-4" /></svg> },
+  { id: 'routing', label: 'Routing', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="12" r="2" /><path d="M8 6h3a3 3 0 0 1 3 3v0a3 3 0 0 0 2 2.8M8 18h3a3 3 0 0 0 3-3v0a3 3 0 0 1 2-2.8" /></svg> },
 ];
+
+/** The first nine screens keep their shortcut tooltip; the read-only screens after them have no menu shortcut, so their tooltip names none. */
+const SHORTCUT_COUNT = 9;
 
 export interface Shell {
   go: (screen: Screen, params?: Record<string, string>) => void;
@@ -81,7 +89,7 @@ export function App() {
         <nav aria-label="Screens">
           {NAV.map((item, index) => (
             <button key={item.id} className={`nav-item${screen === item.id ? ' active' : ''}`} onClick={() => go(item.id)} data-nav={item.id}
-                    aria-current={screen === item.id ? 'page' : undefined} title={`${item.label} (${modifier}${index + 1})`}>
+                    aria-current={screen === item.id ? 'page' : undefined} title={index < SHORTCUT_COUNT ? `${item.label} (${modifier}${index + 1})` : item.label}>
               {item.icon}<span>{item.label}</span>
               {item.id === 'live' && running && <span className="nav-badge">live</span>}
             </button>
@@ -101,6 +109,8 @@ export function App() {
         {screen === 'campaigns' && <CampaignsView shell={shell} />}
         {screen === 'history' && <HistoryView shell={shell} />}
         {screen === 'settings' && <SettingsView shell={shell} />}
+        {screen === 'qualification' && <QualificationView shell={shell} />}
+        {screen === 'routing' && <RoutingView shell={shell} />}
       </main>
       {toastMessage && <div className="toast" role="status">{toastMessage}</div>}
     </div>
