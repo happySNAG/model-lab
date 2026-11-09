@@ -299,6 +299,14 @@ export const DESIRED_CANDIDATE_LADDER: LadderEntry[] = [
   // This row is born `unproven` like every other, and the observation above is not what promotes
   // it. An identity smoke test is.
   { provider: 'claudeCLI', modelID: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', desiredEfforts: ['none'] },
+  // SONNET 5.5 AND HAIKU 5.5 ARE BORN UNPROVEN, AND THEIR IDS ARE THE OWNER'S, NOT A DISCOVERY.
+  //
+  // Authorised on 2026-11-08 under `CLAUDE_SONNET_HAIKU_5_5_ADDITIONS` as candidates only, with no
+  // routing change. Unlike Opus 5.5 above, no CLI metadata has named either identifier yet, so these
+  // rows are a plan in the strictest sense: `selectableModels` drops them and the campaign builder
+  // refuses them. Only an identity smoke test that comes back naming the model promotes either one.
+  { provider: 'claudeCLI', modelID: 'claude-sonnet-5-5', displayName: 'Claude Sonnet 5.5', desiredEfforts: ['none'] },
+  { provider: 'claudeCLI', modelID: 'claude-haiku-5-5', displayName: 'Claude Haiku 5.5', desiredEfforts: ['none'] },
   { provider: 'claudeCLI', modelID: 'claude-opus-5', displayName: 'Claude Opus 5', desiredEfforts: ['none'] },
   { provider: 'claudeCLI', modelID: 'claude-fable-5-1', displayName: 'Claude Fable 5.1', desiredEfforts: ['high'] },
   { provider: 'claudeCLI', modelID: 'claude-haiku-4-5', displayName: 'Claude Haiku 4.5', desiredEfforts: ['none'] },

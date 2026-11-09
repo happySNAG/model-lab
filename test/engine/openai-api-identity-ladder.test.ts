@@ -103,9 +103,10 @@ describe('the OpenAI API smoke ladder is exactly what was approved', () => {
   it('leaves the Claude, Codex and OpenCode ladders exactly as they were', () => {
     // `claude-opus-5-5` was added by the V1 final qualification schedule, under its own
     // authorisation, and is listed first. This assertion's job is to prove the OPENAI API scope
-    // changed no other provider's ladder, and it still does that.
+    // changed no other provider's ladder, and it still does that. `claude-sonnet-5-5` and
+    // `claude-haiku-5-5` follow it, authorised by the owner on 2026-11-08 as unproven candidates.
     expect(ladderFor('claudeCLI').map((entry) => entry.modelID)).toEqual([
-      'claude-opus-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-haiku-4-5', 'claude-sonnet-5',
+      'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-haiku-4-5', 'claude-sonnet-5',
       'claude-opus-4-8',
     ]);
     expect(ladderFor('codexCLI').map((entry) => `${entry.modelID}:${entry.desiredEfforts.join('+')}`)).toEqual([

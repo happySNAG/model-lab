@@ -148,12 +148,35 @@ export const CLAUDE_OPUS_5_5_ADDITIONS: RequestedConfiguration[] = [
 ];
 
 /**
+ * Claude Sonnet 5.5 and Claude Haiku 5.5, authorised as Cernum candidates, born unproven.
+ *
+ * ITS OWN LIST, for the reason every list above gives: each authorisation stays legible as the thing
+ * somebody actually granted, and the frozen Pass 5C request stays frozen.
+ *
+ * ON WHOSE AUTHORITY. The repository owner, in writing, on 2026-11-08: a separate Cernum candidate
+ * authorisation list, born unproven, with no routing change. That is all it grants.
+ *
+ * THE IDENTIFIERS ARE THE OWNER'S, NOT DISCOVERED. Unlike Opus 5.5, whose id the CLI's own metadata
+ * reported before it was written here, `claude-sonnet-5-5` and `claude-haiku-5-5` were supplied by
+ * the owner. They are confirmed only by a later identity smoke test — a separate act, not this one —
+ * and until one returns naming the model that answered, neither id is known to be what this account
+ * is served under.
+ *
+ * WHAT THIS AUTHORISES IS A PLAN, NOT A CAPABILITY. As with every entry here, presence makes the row
+ * legal in the ladder and nothing else; it routes nothing, and only proof makes it selectable.
+ */
+export const CLAUDE_SONNET_HAIKU_5_5_ADDITIONS: RequestedConfiguration[] = [
+  { provider: 'claudeCLI', modelID: 'claude-sonnet-5-5', displayName: 'Claude Sonnet 5.5', effort: 'none' },
+  { provider: 'claudeCLI', modelID: 'claude-haiku-5-5', displayName: 'Claude Haiku 5.5', effort: 'none' },
+];
+
+/**
  * Everything the ladder is allowed to contain: the frozen request, plus what was added since, each
  * authorisation in its own list and in the order it arrived.
  */
 export const AUTHORIZED_COHORT: RequestedConfiguration[] = [
   ...REQUESTED_COHORT, ...CERNUM_V2_ADDITIONS, ...OPENAI_API_IDENTITY_ADDITIONS, ...FREE_OPENCODE_POOL_ADDITIONS,
-  ...CLAUDE_OPUS_5_5_ADDITIONS,
+  ...CLAUDE_OPUS_5_5_ADDITIONS, ...CLAUDE_SONNET_HAIKU_5_5_ADDITIONS,
 ];
 
 /**

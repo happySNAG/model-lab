@@ -26,6 +26,7 @@ import {
 } from '../../src/engine/opencode-cli';
 import {
   AUTHORIZED_COHORT, CERNUM_V2_ADDITIONS, FREE_OPENCODE_POOL_ADDITIONS, CLAUDE_OPUS_5_5_ADDITIONS, OPENAI_API_IDENTITY_ADDITIONS, REQUESTED_COHORT,
+  CLAUDE_SONNET_HAIKU_5_5_ADDITIONS,
   configurationKey, ladderConfigurations, reconcileCohort,
 } from '../../src/engine/reconciliation';
 import { billingBasisOf, executionClassOf } from '../../src/engine/provider';
@@ -265,7 +266,8 @@ describe('the existing cohort invariants still hold, unchanged by the addition',
     expect(FREE_OPENCODE_POOL_ADDITIONS.map((entry) => entry.modelID).sort()).toEqual([...ADDED].sort());
     expect(AUTHORIZED_COHORT).toHaveLength(
       REQUESTED_COHORT.length + CERNUM_V2_ADDITIONS.length + OPENAI_API_IDENTITY_ADDITIONS.length
-      + FREE_OPENCODE_POOL_ADDITIONS.length + CLAUDE_OPUS_5_5_ADDITIONS.length);
+      + FREE_OPENCODE_POOL_ADDITIONS.length + CLAUDE_OPUS_5_5_ADDITIONS.length
+      + CLAUDE_SONNET_HAIKU_5_5_ADDITIONS.length);
   });
 
   it('reconciles with nothing missing and nothing extra', () => {

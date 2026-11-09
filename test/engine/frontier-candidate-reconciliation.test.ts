@@ -21,6 +21,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AUTHORIZED_COHORT, CERNUM_V2_ADDITIONS, FORBIDDEN_SUBSTITUTIONS, FREE_OPENCODE_POOL_ADDITIONS, CLAUDE_OPUS_5_5_ADDITIONS,
+  CLAUDE_SONNET_HAIKU_5_5_ADDITIONS,
   HISTORICAL_IDENTITY_EVIDENCE, OPENAI_API_IDENTITY_ADDITIONS,
   RECONCILED_IN_PASS_5C, REQUESTED_COHORT,
   assertCohortComplete, configurationKey, historicalEvidenceFor, ladderConfigurations, reconcileCohort,
@@ -111,9 +112,13 @@ describe('the requested cohort survives being forgotten', () => {
     // assertion: the union is its authorisation lists and nothing besides, so a row that appeared in
     // the ladder without one of these lists growing to admit it still fails here.
     expect(CLAUDE_OPUS_5_5_ADDITIONS.every((e) => e.provider === 'claudeCLI')).toBe(true);
+    // Claude Sonnet 5.5 and Haiku 5.5 are a sixth, authorised by the owner on 2026-11-08 as
+    // candidates born unproven. Same rule: the sum grows only because a list grew to admit them.
+    expect(CLAUDE_SONNET_HAIKU_5_5_ADDITIONS.every((e) => e.provider === 'claudeCLI')).toBe(true);
     expect(AUTHORIZED_COHORT).toHaveLength(
       REQUESTED_COHORT.length + CERNUM_V2_ADDITIONS.length + OPENAI_API_IDENTITY_ADDITIONS.length
-      + FREE_OPENCODE_POOL_ADDITIONS.length + CLAUDE_OPUS_5_5_ADDITIONS.length);
+      + FREE_OPENCODE_POOL_ADDITIONS.length + CLAUDE_OPUS_5_5_ADDITIONS.length
+      + CLAUDE_SONNET_HAIKU_5_5_ADDITIONS.length);
   });
 
   // THE SPECIMEN CHANGED, THE RULE DID NOT. This named `opencode/big-pickle`, which was then an
